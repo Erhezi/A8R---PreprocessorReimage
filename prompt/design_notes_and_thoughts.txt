@@ -1,0 +1,200 @@
+Phase 1 -- Task Registration and Intake
+  - Task Creation, Sourcing, Define Intent (EXPIRE, NEW, UPDATE)
+    - if on the same contract, user intended to Expire some items and add/update some other items, it should be split into 2 tasks.
+    - per task should be (contract id, organization, intention), intention 'UPDATE/NEW' in this case will be grouped togather as they 'UPSERT' items, 'EXPIRE' will be on its own group as it 'DELETE' items
+  - Contract Number Identification, Sourcing, Provide the Contract Number related to item to be processed (if NEW, leave as 'Pending - [a short descriptive name]')
+  - Vendor Identification & Standardization, Sourcing (MDM may help, sourcing should explicitly checkbox and comment on what's needed), Provide Vendor (Infor ID + Purchase From Location if applicable)
+  - Contract Process Type Identification, Sourcing, Identify Process Type (MANUFACTURER, DISTRIBUTOR)
+  - Contract Source Type Identification, Sourcing, Identify Source Type (PREMIER, LOCAL)
+  - Contract Company Identification, Sourcing, Identify Applicable Company (Organization) (ALL, WHITE PLAINS, ST. LUKE'S, NYACK, BURKE, NEW ROCHELLE, MOUNT VERNON, SCHAFFER)
+    - If All is selected, the others will be greyed out
+    - Per task only will handle one organization at a time, if user have same contract for multiple organization, they should create a different task
+  - Contract OEM Naming, Sourcing, Provide manufacturer name string (can write 'multiple' if it is for local distributor contract, otherwise provide the exact string as it will be appeared on CCX)
+  - Label Contract start and end date, Sourcing, Check those are make sense and consistent with contract terms
+  - Notes, Sourcing, Free text notes if need to note down anything here (like we may expect price change in next 6 month etc.)
+  - File Upload, Sourcing, Provide the raw list of items we would like to process 
+    - template with all these columns at least for single contract process (pretty much the old template can also be used here)
+      - Vendor Catalog #
+      - Manufacturer Catalog #
+      - Description
+      - UOM
+      - Unit Price
+      - QOE (Conversion Factor to EA)
+      - Tier Description (Only required if multiple contract tier applied to the same contract)
+      - Tier Level (Only required if multiple contract tier applied to the same contract)
+      - the item-level start and expiration date requirement no longer in place, if in rare case we find same contract contains same item twice with different pricing, the original file can be saved under the task and sourcing can write notes under the task to log this as future price update pending and we can revisit)
+    - template with all these columns at least for multiple contract item batch process (user can upload in one goal, but system will automatically separate them out by contract and organization)
+      - Organization
+      - Contract Number
+      - Intention
+      - ERP Vendor ID (with purchase from location if applicable)
+      - Contract Process Type
+      - Contract Source Type
+      - Contract Company
+      - Contract Manufacturer (OEM Name)
+      - Vendor Catalog #
+      - Manufacturer Catalog #
+      - Description
+      - UOM
+      - Unit Price
+      - QOE (Conversion Factor to EA)
+      - Tier Description
+      - Tier Level
+  -  Pre-check & Structuring, Preprocessor, Validate, Transform and Annotate Data for Next Steps
+    - input standardization
+      - remove leading/trailing space
+      - remove special chars
+      - make utf-8
+      - upper case for all text field
+      - int for QOE
+      - decimal for Unit Price
+      - UOM subsitution based on a small mapping (Box - BX, Case - CS etc.), and if mapping happens, show what's mapped
+    - null/empty checks for all fields
+    - validation on per contract
+      - input itself has no duplicates (different logic for Manufacturer contract and distributor contract)
+      - input itself has no conflict on intention (same item one want to add/update, one want to expire)
+      - input itself are complete (no empty, no null value)
+      - input vendor ID is valid (exist on vendor list on Infor)
+      - UOM and QOE consistency check
+      - date check (expiration date need to be at least +2 days from today, effective date < expiration date
+    - fetching support for UPDATE or EXPIRE intention once the contract number is provided
+      - current ERP Vendor ID (marked as synced on CCX side)
+      - current company account (marked as synced on CCX side)
+      - current OEM Manufacturer Name
+      - current contract start and end date
+    - support user overwrites
+      - ERP Vendor ID on existing contract (UPDATE) -> trigger sync change need to be reviewed by MDM
+      - company accounts on existing contract (UPDATE)  -> trigger sync change need to be reviewed by MDM
+      - OEM Manufacturer Name on existing contract (UPDATE) -> trigger sync change need to be reviewed by MDM
+      - contract start date -> not supported, contact MDM for support
+      - contract end date -> only apply to UPDATE intention, trigger entire contract expiration date update on all contracted items (notify the user about the changes, ask if this is what they want, log their input 'Change all items to new expiration date' or 'Only apply this expiration to the items on the list')
+  - on pre-check failure (PC1)
+    - items passing this initial check will be marked as 'PENDING NUVIA' under the task, failed item enter Pre-Check Error Queue 1, and sourcing need to fix the issues in app and re-check. 
+    - sourcing user should specifically tell the program to proceed with 'Good items' while they are still working on Pre-Check Error Queue for each task, otherwise system will hold all the items until they all passes the pre-check here
+  - status on task level
+    - all check passed for all items - 'PENDING NUVIA'
+    - all check passed for a subset of all submitted items & user explicitly wish to proceed with items passed pre-check - 'PENDING NUVIA' + 'ERROR PC1'
+    - vendor information missing but all check passed for all items - 'PENDING NUVIA' + 'MDM HELP PC1'
+    - vendor information missing & all check passed for a subset of all submitted items & user explicitly wish to proceed - 'PENDING NUVIA' + 'MDM HELP PC1' + 'ERROR PC1'
+    - else, 'ON HOLD PC1'
+  - once sourcing user filled up the form and submit the item to process and reaches 90% or pre-check clearance by submitted line count, they can click on create task and system will creat task id for them.
+    - sourcing can attempt to fixing the ERROR in the ERROR display queue and re-check to push things to PENDING NUVIA queue
+    - sourcing can also clear the ERROR by downloading the ERROR lines related the task, the preprocessor will automatically note that X rows are not being processed for this tasks decided by sourcing user Y, and tell user if later they fixed and they wish to run again, they should wait at least 48 hours and create a new task for it.
+  - Summary Phase 1: 
+    - Sourcing fill in the header information of associated with a Task and upload the items for pre-checking
+    - Preprocessor (System) checks the file and pass the 'good' items to phase2, direct the ones with error in ERROR PC1 error queue/log
+    - Once correction on error items are confirmed, user should be able to 're-check' the item per task and if check passed, item will automatically be added to 'PENDING NUVIA' queue
+
+
+Phase 2 -- Identity & Standardization
+  - Run Nuvia, MDM, Standardize item description using a third-party solution
+    - add Nuvia Description (In a different column, name it as 'Standardized Description')
+    - this only need to be done for the items labeled with intention 'NEW/UPDATE'
+  - Fix Vendor ID & From Location, MDM, if sourcing specifically say they need help, help to verify and correct
+  - Check if the infor manufacturer exist, MDM, MDM need to locate the 4-digit manufacturer code on Infor for the contract
+  - Sync change validation and approval if anything is submitted by sourcing from phase 1 triggers sync change review
+    - If changes denied, those task will not get executed and the entire task contract item set will be on-hold
+  - Create Header and Acquire the Contract Number for NEW contract, MDM, Get the contract number from CCX by register the header information (line will be handled in batch process)
+    - Enter the Contract Number back to preprocessor under the approporiate task
+  - Pre-check Again, Preprocessor, Validate, Transform for Next Steps
+    - upper case description (the Nuvia replaced one)
+    - check nulls and empties
+    - highlight duplicated Nuvia Descriptions for warning so MDM user can review
+      - preprocessor should supports in app overwrite for Standardized Description field
+      - user can also fix in their local copy of excel and upload again and run the pre-check
+  - on pre-check failure (PC2)
+      - we don't support partial flow to next step, in this step, anything tagged with 'PENDING NUVIA' should pass pre-check, otherwise all items will be held in 'ERROR PC2'
+  - status on task level
+    - all check passed for all items ('PENDING NUVIA') - 'PENDING PREPROCESSOR'
+    - else, 'ON HOLD PC2'
+  - Summary Phase 2:
+    - MDM gets the items passed check and run Nuvia process to get the standardized description attached to the items
+    - MDM help resolve vendor identity and directly link the manfuacturer name to infor manufacturer 4-digit code
+    - If the contract is brand new, create contract header in CCX and fill in the acquired contract number back to preproceessor
+    - preprocessor runs a final pre-check to ensure all data fields are filled and ready to really enter the 'preprocess' workflows
+
+
+Phase 3 -- Preprocess Core (Find Dups, Find Item Number, Remove False Positive Matches)
+  - Duplication detection, Preprocessor/DA, duplication discovery & validate
+    - SKU matching
+      - manufacturer (regardless of premier or local) contract: use reduced manfuacturer number to match on reduced manufacturer number on all contract items
+      - distributor premier contract (should all have manufacturer number, some lines will have vendor catalog number): use reduced manufacturer number to match on reduced manufacturer number on all contract items union use reduced vendor number (for available items) match on reduced vendor number on all contract items
+      - distributor local contract (manufacturer number might not be correct, should all have vendor catalog number): use reduced  manufacturer number to match on reduced manufacturer number on all contract items union use reduced vendor number match on reduced vendor number on all contract items union use reduced vendor number match on  manufacturer number on all contract items
+    - Similarity Calculation
+      - for each matched pair (input id, matched item contract line id), compute the matching similarity (rules + local small LM first pass)
+      - tag similarity as HIGH, MED, LOW by final matching score
+    - Contract Check
+      - for all matched items, bin by contract, bring contract description, vendor and manufacturer per contract
+      - for each contract, bring total items, contract vendor, manufacturer and description
+        - compute numbers of matched items per contract
+        - compute numbers of exact manufacturer catalog number + QOE match per contract
+        - compute the average similarity score on matched items for each contract
+        - compute the highest similiarity score on matched items for each contract
+      - compute the number of contracts vs. number of items matched
+        - if numbers of items matched / number of contracts > 3 and numbers of contracts < 30: review by contract then by item
+        - else: directly review by item
+      - review by contract:
+        - if contract manufacturer is the same or if the highest similarity score is 100%, auto-include
+        - for the rest, ask human review to include/exclude (for now, future we will send that to LLM to decide)
+      - review by item:
+        - by checking HIGH, MED, LOW bucket, user will decide the items to be send to LLM for matching review
+        - by default, HIGH - keep, LOW - drop, MED - user manually decide keep/drop. we need to add another function to label it as 'send to LLM'. 
+        - once send to LLM, LLM will help to decide if the pair of items are describing the same items or not.
+        - the returned LLM judgement will be reviewed by human and human will approve or deny
+      - finally we will pruning out any false-postive matches and get the set of duplicated items (regardless of the UOM and packaging at this stage) from CCX
+  
+  - Item Master matching, Preprocessor/DA, label any items that are linked to item master item on Infor (this is different from previous design, we will start with the uploaded item + all true postivie items here)
+    - Match to Infor Contract Line
+       - similar to SKU matching logic, but now all contract items becomes infor all contract items
+       - using (contract number, manufacturer number) as identification key, inherit the false-positive, true-postive flag from ccx items, if we have items that we couldn't find the true/false positive label, send the items to do similarity calculation
+         - for some items it is possible that the (contract number, manufacturer number) combination yield more than one matches, we count the final matched results, and if that happens, we will add in UOM and QOE to further pin down the match
+       - repeat similarity calculation if there are obsolete items that only matches input(TP) and Infor contract line, ask user to select the true duplicates
+       - we get the set of duplicated items (regardless of the UOM and packaging at this stage) from Infor with infor's contract line ID and Item # if Item Type == 'itemmast' attached to each matched item
+    - Match to Item Master (Vendor Item)
+    - for items that attached with Infor Item Number, bring the Item's default buyUOM and corresponding buyUOMMultiplier
+
+  - By far we should have:
+    - a. input (TP) set of items cleansed
+    - b. CCX set of items labeled with input (TP) item reference
+    - c. Infor set of items labeled with input (TP) item reference and CCX item reference
+    - d. input (TP) set of items with Item Number linked given that same Infor item should take the same Infor Item Number
+
+  - CCX - Infor Sync mark
+    - for CCX and Infor set of items with the same (vendor id, contract number, manufacturer catalog number, UOM (EDI translated)) - if they also have same vendor catalog number, same QOE, same price, mark as 'infor synced' on CCX set, else 'infor unsynced' (this include joinable but information different, ones only in ccx, ones only in Infor)
+  
+  - Preprocessed data set per task should inlcuding those fields:
+    - taskID
+    - contract number (ccx)
+    - vendor (ID + purchase from loc if applicable)
+    - manufacturer (4-digits code)
+    - input reference (will just be the PK number from the 'PENDING PREPROCESSOR' table)
+    - source data set (INPUT, CCX, INFOR)
+    - contract source type (PREMIER, LOCAL)
+    - contract process type (DISTRIBUTOR, MANUFACTURER)
+    - organization group (ALL, WHITE PLAINS, ST. LUKE'S, NYACK, BURKE, NEW ROCHELLE, MOUNT VERNON, SCHAFFER)
+    - manufacturer part number
+    - vendor part number
+    - UOM
+    - QOE
+    - Price
+    - Description
+    - Intention
+    - Infor Item # (by input ref)
+    - Contract Line Infor Item # (by contract item reference)
+    - Contract Start Date
+    - Contract End Date
+    - Item Price Start Date
+    - Item Price End Date
+    - Infor Sync
+    - timestamp
+
+
+Phase 4 -- Dedup & Data Integrity Resolution
+  -  Duplication Resolution
+  -  Integratity Validation
+
+Phase 5 -- Export
+
+Phase 6 -- Monitoring and Reporting
+
+Extra Function 1 -- Data Conflict Resolution Space/Visual Aid

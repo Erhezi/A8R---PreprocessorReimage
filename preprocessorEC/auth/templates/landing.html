@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Contract Atlas{% endblock %}
+{% block content %}
+<div class="container mt-5 text-center">
+  <h2>Contract Atlas</h2>
+  <p class="lead">Contract preprocessing &amp; management tool</p>
+  <div class="mt-4">
+    <a href="{{ url_prefix }}/auth/login" class="btn btn-primary btn-lg me-2">Log In</a>
+    <a href="{{ url_prefix }}/auth/register" class="btn btn-outline-secondary btn-lg">Register</a>
+  </div>
+</div>
+{% endblock %}

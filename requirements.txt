@@ -1,0 +1,20 @@
+# Contract Atlas — preprocessorEC
+# Core
+flask>=3.0,<4
+flask-login>=0.6
+flask-session>=0.5
+waitress>=3.0
+
+# Database
+sqlalchemy>=2.0,<3
+pyodbc>=5.0
+
+# Data processing
+pandas>=2.0
+openpyxl>=3.1
+
+# ML / similarity
+sentence-transformers>=2.2
+
+# Security
+werkzeug>=3.0

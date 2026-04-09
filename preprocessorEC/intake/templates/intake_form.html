@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% block title %}Intake — Task #{{ task_id }}{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-3">
+  <a href="{{ url_prefix }}/tasks/{{ task_id }}" class="text-decoration-none">&larr; Task #{{ task_id }}</a>
+  <h4 class="mt-1">Phase 1: Intake</h4>
+
+  <!-- Upload -->
+  <div class="card mb-3">
+    <div class="card-header">Upload Items</div>
+    <div class="card-body">
+      <form id="uploadForm" enctype="multipart/form-data">
+        <div class="input-group input-group-sm">
+          <input type="file" class="form-control" name="file" accept=".xlsx,.xls,.csv" required>
+          <button class="btn btn-outline-primary" type="submit">Upload</button>
+        </div>
+      </form>
+      <div id="uploadResult" class="mt-2"></div>
+    </div>
+  </div>
+
+  <!-- Pre-check -->
+  <div class="card mb-3">
+    <div class="card-header d-flex justify-content-between">
+      <span>Pre-Check (PC1)</span>
+      <button class="btn btn-sm btn-warning" id="btnPrecheck">Run Pre-Check</button>
+    </div>
+    <div class="card-body">
+      <div id="precheckResult"></div>
+    </div>
+  </div>
+
+  <!-- Items table -->
+  <div class="card mb-3">
+    <div class="card-header">Items <span class="badge bg-secondary" id="itemCount">0</span></div>
+    <div class="card-body p-0">
+      <div class="table-responsive">
+        <table class="table table-sm table-hover mb-0">
+          <thead class="table-light">
+            <tr>
+              <th>ID</th><th>Mfg #</th><th>Vendor #</th><th>Description</th>
+              <th>UOM</th><th>QOE</th><th>Price</th><th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="itemsBody">
+            <tr><td colspan="8" class="text-center text-muted">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Errors -->
+  <div class="card mb-3" id="errorsCard" style="display:none">
+    <div class="card-header text-danger">PC1 Errors</div>
+    <div class="card-body p-0">
+      <table class="table table-sm mb-0">
+        <thead class="table-light">
+          <tr><th>Item</th><th>Type</th><th>Detail</th><th>Resolved</th></tr>
+        </thead>
+        <tbody id="errorsBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Proceed -->
+  <div class="d-flex justify-content-end">
+    <button class="btn btn-success" id="btnProceed" disabled>Proceed to Identity &rarr;</button>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const PREFIX = "{{ url_prefix }}";
+const TASK_ID = "{{ task_id }}";
+
+async function refresh() {
+  const resp = await fetch(`${PREFIX}/api/intake/${TASK_ID}`);
+  const data = await resp.json();
+
+  document.getElementById("itemCount").textContent = data.item_count;
+
+  const ibody = document.getElementById("itemsBody");
+  if (!data.items.length) {
+    ibody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">No items uploaded</td></tr>';
+  } else {
+    ibody.innerHTML = data.items.map(i => `
+      <tr>
+        <td>${i.item_id}</td>
+        <td>${i.mfg_catalog_num || "—"}</td>
+        <td>${i.vendor_catalog_num || "—"}</td>
+        <td class="text-truncate" style="max-width:200px">${i.description}</td>
+        <td>${i.uom}</td>
+        <td>${i.qoe}</td>
+        <td>${i.unit_price}</td>
+        <td><span class="badge bg-${i.status.includes('ERROR') ? 'danger' : i.status.includes('PASSED') ? 'success' : 'secondary'}">${i.status}</span></td>
+      </tr>
+    `).join("");
+  }
+
+  // Errors
+  if (data.errors.length) {
+    document.getElementById("errorsCard").style.display = "";
+    document.getElementById("errorsBody").innerHTML = data.errors.map(e => `
+      <tr>
+        <td>${e.item_id}</td>
+        <td>${e.error_type}</td>
+        <td>${e.error_detail}</td>
+        <td>${e.resolved ? "Yes" : "No"}</td>
+      </tr>
+    `).join("");
+  }
+
+  // Enable proceed if any passed
+  const hasPassed = data.items.some(i => i.status.includes("PASSED"));
+  document.getElementById("btnProceed").disabled = !hasPassed;
+}
+
+// Upload
+document.getElementById("uploadForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const resp = await fetch(`${PREFIX}/api/intake/${TASK_ID}/upload`, { method: "POST", body: fd });
+  const result = await resp.json();
+  document.getElementById("uploadResult").innerHTML = resp.ok
+    ? `<span class="text-success">${result.uploaded} items uploaded</span>`
+    : `<span class="text-danger">${result.error}</span>`;
+  if (resp.ok) { e.target.reset(); refresh(); }
+});
+
+// Precheck
+document.getElementById("btnPrecheck").addEventListener("click", async () => {
+  const resp = await fetch(`${PREFIX}/api/intake/${TASK_ID}/precheck`, { method: "POST" });
+  const result = await resp.json();
+  document.getElementById("precheckResult").innerHTML = `
+    <p>Total: ${result.total} | Passed: ${result.passed} | Failed: ${result.failed}</p>
+  `;
+  refresh();
+});
+
+// Proceed
+document.getElementById("btnProceed").addEventListener("click", async () => {
+  const resp = await fetch(`${PREFIX}/api/intake/${TASK_ID}/proceed`, { method: "POST" });
+  const result = await resp.json();
+  if (resp.ok) {
+    location.href = `${PREFIX}/tasks/${TASK_ID}`;
+  } else {
+    alert(result.error || "Failed to proceed");
+  }
+});
+
+refresh();
+</script>
+{% endblock %}

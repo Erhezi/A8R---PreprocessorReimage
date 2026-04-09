@@ -1,0 +1,518 @@
+{% extends "base.html" %}
+{% block title %}Identity — Task #{{ task_id }}{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-3">
+  <a href="{{ url_prefix }}/tasks/{{ task_id }}" class="text-decoration-none">&larr; Task #{{ task_id }}</a>
+  <h4 class="mt-1">Phase 2: Identity Resolution</h4>
+
+  <div class="row">
+    <!-- LEFT COLUMN: Header Card + Controls -->
+    <div class="col-lg-4">
+
+      <!-- Header Reference Card -->
+      <div class="card mb-3">
+        <div class="card-header">Task Header</div>
+        <div class="card-body p-2">
+          <table class="table table-sm table-borderless mb-0" style="font-size:.85rem">
+            <tr><td class="text-muted" style="width:45%">Contract #</td><td id="hdrContractNum">—</td></tr>
+            <tr><td class="text-muted">Organization</td><td id="hdrOrg">—</td></tr>
+            <tr><td class="text-muted">Vendor ID</td><td id="hdrVendor">—</td></tr>
+            <tr><td class="text-muted">OEM Name</td><td id="hdrOem">—</td></tr>
+            <tr><td class="text-muted">Process Type</td><td id="hdrProcess">—</td></tr>
+            <tr><td class="text-muted">Source Type</td><td id="hdrSource">—</td></tr>
+            <tr><td class="text-muted">Intention</td><td id="hdrIntention">—</td></tr>
+            <tr><td class="text-muted">Phase / Status</td><td><span id="hdrPhase">—</span> / <span id="hdrStatus">—</span></td></tr>
+          </table>
+        </div>
+      </div>
+
+      <!-- Contract Number (NEW only) -->
+      <div class="card mb-3" id="contractNumCard" style="display:none">
+        <div class="card-header">Contract Number (MDM)</div>
+        <div class="card-body">
+          <p class="text-muted small mb-2">Required for NEW contracts. Set the contract number before proceeding.</p>
+          <div class="input-group input-group-sm">
+            <input type="text" class="form-control" id="contractNumInput" placeholder="Enter contract #">
+            <button class="btn btn-outline-primary" id="btnSetContract">Set Contract #</button>
+          </div>
+          <div id="contractResult" class="mt-2"></div>
+        </div>
+      </div>
+
+      <!-- Manufacturer Code (MDM) -->
+      <div class="card mb-3">
+        <div class="card-header">Manufacturer Code (MDM)</div>
+        <div class="card-body">
+          <div class="mb-2">
+            <span class="text-muted small">User-entered OEM Name:</span>
+            <strong id="mfgOemName">—</strong>
+          </div>
+
+          <!-- UPDATE / MIX: show fetched info + Confirm / Edit (search modal) -->
+          <div id="mfgUpdatePane" style="display:none">
+            <div class="mb-2" id="mfgInfoLoading">
+              <span class="spinner-border spinner-border-sm"></span> Fetching manufacturer from Infor...
+            </div>
+            <div id="mfgInfoResult" style="display:none">
+              <table class="table table-sm table-borderless mb-2" style="font-size:.85rem">
+                <tr><td class="text-muted" style="width:50%">Infor Mfg Code</td><td id="mfgInforCode">—</td></tr>
+                <tr><td class="text-muted">Infor Mfg Name</td><td id="mfgInforName">—</td></tr>
+              </table>
+              <div id="mfgActionBtns">
+                <button class="btn btn-sm btn-success me-1" id="btnMfgConfirm">Confirm</button>
+                <button class="btn btn-sm btn-outline-secondary" id="btnMfgEdit"
+                        data-bs-toggle="modal" data-bs-target="#mfgSearchModal">Edit</button>
+              </div>
+            </div>
+            <div id="mfgNotFound" style="display:none" class="text-warning small">
+              No manufacturer info found in Infor for this contract. Please search and select.
+              <div class="mt-2">
+                <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#mfgSearchModal">Search Manufacturers</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- EXPIRE: auto-confirmed, read-only display -->
+          <div id="mfgExpirePane" style="display:none">
+            <div id="mfgExpireLoading">
+              <span class="spinner-border spinner-border-sm"></span> Fetching manufacturer from Infor...
+            </div>
+            <div id="mfgExpireResult" style="display:none">
+              <table class="table table-sm table-borderless mb-2" style="font-size:.85rem">
+                <tr><td class="text-muted" style="width:50%">Infor Mfg Code</td><td id="mfgExpireCode">—</td></tr>
+                <tr><td class="text-muted">Infor Mfg Name</td><td id="mfgExpireName">—</td></tr>
+              </table>
+              <span class="badge bg-success">Auto-Confirmed</span>
+              <small class="text-muted ms-1">EXPIRE contracts use the existing Infor manufacturer</small>
+            </div>
+            <div id="mfgExpireNotFound" style="display:none" class="text-danger small">
+              Could not locate manufacturer in Infor. Check contract number and organization.
+            </div>
+          </div>
+
+          <!-- NEW: search modal trigger -->
+          <div id="mfgNewPane" style="display:none">
+            <p class="text-muted small mb-2">Search and select a manufacturer for this new contract.</p>
+            <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal" data-bs-target="#mfgSearchModal">
+              Search Manufacturers
+            </button>
+            <div id="mfgSelectedResult" class="mt-2"></div>
+          </div>
+
+          <div id="mfgConfirmedBadge" style="display:none" class="mt-2">
+            <span class="badge bg-success">Manufacturer Confirmed</span>
+            <span id="mfgConfirmedText" class="ms-1 small"></span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- RIGHT COLUMN: Description + Items + PC2 -->
+    <div class="col-lg-8">
+
+      <!-- Standardized Description (Nuvia) -->
+      <div class="card mb-3">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <span>Standardized Description (Nuvia)</span>
+          <button class="btn btn-sm btn-outline-primary" id="btnCopyDesc">Copy from Description</button>
+        </div>
+        <div class="card-body">
+          <p class="text-muted small mb-2">
+            For now, copies the original description to standardized description for all PASSED_PC1 items.
+            Future: Fetch Standardized Description (Nuvia/LLM) or manual cleanse upload.
+          </p>
+          <div id="descResult"></div>
+        </div>
+      </div>
+
+      <!-- Items table -->
+      <div class="card mb-3">
+        <div class="card-header">Items <span class="badge bg-secondary" id="itemCount">0</span></div>
+        <div class="card-body p-0">
+          <div class="table-responsive" style="max-height:360px;overflow-y:auto">
+            <table class="table table-sm table-hover mb-0">
+              <thead class="table-light">
+                <tr>
+                  <th>ID</th><th>Mfg #</th><th>Description</th>
+                  <th>Std. Description</th><th>UOM</th><th>Price</th><th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="itemsBody">
+                <tr><td colspan="7" class="text-center text-muted">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- PC2 Errors -->
+      <div class="card mb-3" id="errorsCard" style="display:none">
+        <div class="card-header text-danger">PC2 Errors</div>
+        <div class="card-body p-0">
+          <table class="table table-sm mb-0">
+            <thead class="table-light">
+              <tr><th>Item</th><th>Type</th><th>Detail</th></tr>
+            </thead>
+            <tbody id="errorsBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Pre-check + Proceed -->
+      <div class="card mb-3">
+        <div class="card-header d-flex justify-content-between">
+          Pre-Check PC2
+          <button class="btn btn-sm btn-warning" id="btnPC2">Run PC2</button>
+        </div>
+        <div class="card-body" id="pc2Result"></div>
+      </div>
+
+      <div class="d-flex justify-content-end">
+        <button class="btn btn-success" id="btnProceed" disabled>Proceed to Preprocess &rarr;</button>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- Manufacturer Search Modal (NEW contracts) -->
+<div class="modal fade" id="mfgSearchModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Search Manufacturers</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="input-group input-group-sm mb-3">
+          <input type="text" class="form-control" id="mfgSearchInput" placeholder="Search by code or name...">
+          <button class="btn btn-outline-primary" id="btnMfgSearch">Search</button>
+        </div>
+        <div class="table-responsive" style="max-height:400px;overflow-y:auto">
+          <table class="table table-sm table-hover">
+            <thead class="table-light">
+              <tr><th>Code</th><th>Manufacturer Name</th><th>Active</th><th></th></tr>
+            </thead>
+            <tbody id="mfgSearchResults">
+              <tr><td colspan="4" class="text-center text-muted">Enter a search term above</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const PREFIX = "{{ url_prefix }}";
+const TASK_ID = "{{ task_id }}";
+let TASK_DATA = null;
+
+// ── Helpers ─────────────────────────────────────────────
+function statusBadge(status) {
+  const cls = status.includes("ERROR") ? "danger"
+            : status.includes("PASSED") ? "success"
+            : status.includes("WARN") ? "warning"
+            : "secondary";
+  return `<span class="badge bg-${cls}">${status}</span>`;
+}
+
+function escHtml(s) {
+  if (!s) return "";
+  return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+
+// ── Refresh ─────────────────────────────────────────────
+async function refresh() {
+  const resp = await fetch(`${PREFIX}/api/identity/${TASK_ID}`);
+  const data = await resp.json();
+  TASK_DATA = data;
+  const t = data.task || {};
+
+  // Header card
+  document.getElementById("hdrContractNum").textContent = t.contract_number || "—";
+  document.getElementById("hdrOrg").textContent = t.organization || "—";
+  document.getElementById("hdrVendor").textContent = t.vendor_id || "—";
+  document.getElementById("hdrOem").textContent = t.oem_name || "—";
+  document.getElementById("hdrProcess").textContent = t.process_type || "—";
+  document.getElementById("hdrSource").textContent = t.source_type || "—";
+  document.getElementById("hdrIntention").textContent = t.intention || "—";
+  document.getElementById("hdrPhase").textContent = data.phase || "—";
+  document.getElementById("hdrStatus").textContent = data.status || "—";
+
+  // OEM name in manufacturer section
+  document.getElementById("mfgOemName").textContent = t.oem_name || "—";
+
+  const intention = (t.intention || "").toUpperCase();
+
+  // Contract number card (NEW only)
+  if (intention === "NEW") {
+    document.getElementById("contractNumCard").style.display = "";
+    if (t.contract_number) {
+      document.getElementById("contractNumInput").value = t.contract_number;
+    }
+  } else {
+    document.getElementById("contractNumCard").style.display = "none";
+  }
+
+  // Manufacturer panes
+  if (intention === 'EXPIRE') {
+    document.getElementById('mfgUpdatePane').style.display = 'none';
+    document.getElementById('mfgNewPane').style.display = 'none';
+    document.getElementById('mfgExpirePane').style.display = '';
+    if (!data.manufacturer_confirmed) {
+      autoConfirmExpire();
+    } else {
+      document.getElementById('mfgExpireLoading').style.display = 'none';
+      document.getElementById('mfgExpireResult').style.display = '';
+      document.getElementById('mfgExpireCode').textContent = data.manufacturer_code || '—';
+      document.getElementById('mfgExpireName').textContent = data.manufacturer_name || '—';
+      showMfgConfirmed(data.manufacturer_code, data.manufacturer_name);
+    }
+  } else if (intention === 'UPDATE' || intention === 'MIX') {
+    document.getElementById("mfgUpdatePane").style.display = "";
+    document.getElementById("mfgNewPane").style.display = "none";
+    if (!data.manufacturer_confirmed) {
+      loadMfgInfo();
+    } else {
+      showMfgConfirmed(data.manufacturer_code, data.manufacturer_name);
+    }
+  } else if (intention === 'NEW') {
+    document.getElementById('mfgExpirePane').style.display = 'none';
+    document.getElementById('mfgUpdatePane').style.display = 'none';
+    document.getElementById('mfgNewPane').style.display = '';
+    if (data.manufacturer_confirmed) {
+      showMfgConfirmed(data.manufacturer_code, data.manufacturer_name);
+    }
+  }
+
+  // Items table
+  const items = data.items || [];
+  document.getElementById("itemCount").textContent = items.length;
+  const ibody = document.getElementById("itemsBody");
+  if (!items.length) {
+    ibody.innerHTML = '<tr><td colspan="7" class="text-center text-muted">No items</td></tr>';
+  } else {
+    ibody.innerHTML = items.map(i => `
+      <tr>
+        <td>${i.item_id}</td>
+        <td>${escHtml(i.mfg_catalog_num) || "—"}</td>
+        <td class="text-truncate" style="max-width:200px">${escHtml(i.description)}</td>
+        <td class="text-truncate" style="max-width:200px">${escHtml(i.standardized_description) || '<span class="text-muted">—</span>'}</td>
+        <td>${i.uom}</td>
+        <td>${i.unit_price}</td>
+        <td>${statusBadge(i.status)}</td>
+      </tr>
+    `).join("");
+  }
+
+  // Errors
+  const errors = data.errors || [];
+  if (errors.length) {
+    document.getElementById("errorsCard").style.display = "";
+    document.getElementById("errorsBody").innerHTML = errors.map(e => `
+      <tr>
+        <td>${e.item_id || "—"}</td>
+        <td>${e.error_type}</td>
+        <td>${escHtml(e.error_detail)}</td>
+      </tr>
+    `).join("");
+  } else {
+    document.getElementById("errorsCard").style.display = "none";
+  }
+
+  // Enable proceed: PC2 must have passed + manufacturer confirmed + (NEW → contract # set)
+  const allPassed = items.length > 0 && items.every(i => i.status === "PASSED_PC2");
+  const mfgOk = data.manufacturer_confirmed;
+  const contractOk = intention !== "NEW" || !!(t.contract_number && t.contract_number.trim());
+  document.getElementById("btnProceed").disabled = !(allPassed && mfgOk && contractOk);
+}
+
+// ── Manufacturer Info (UPDATE) ──────────────────────────
+async function loadMfgInfo() {
+  document.getElementById("mfgInfoLoading").style.display = "";
+  document.getElementById("mfgInfoResult").style.display = "none";
+  document.getElementById("mfgNotFound").style.display = "none";
+
+  const resp = await fetch(`${PREFIX}/api/identity/${TASK_ID}/manufacturer-info`);
+  const info = await resp.json();
+
+  document.getElementById("mfgInfoLoading").style.display = "none";
+
+  if (info.found) {
+    document.getElementById("mfgInfoResult").style.display = "";
+    document.getElementById("mfgInforCode").textContent = info.manufacturer_code || "—";
+    document.getElementById("mfgInforName").textContent = info.manufacturer_name || "—";
+  } else {
+    document.getElementById("mfgNotFound").style.display = "";
+  }
+}
+
+function showMfgConfirmed(code, name) {
+  document.getElementById("mfgConfirmedBadge").style.display = "";
+  document.getElementById("mfgConfirmedText").textContent = `${code} — ${name}`;
+  // Hide action buttons
+  document.getElementById("mfgInfoLoading").style.display = "none";
+  const actionBtns = document.getElementById("mfgActionBtns");
+  if (actionBtns) actionBtns.style.display = "none";
+  const editRow = document.getElementById("mfgEditRow");
+  if (editRow) editRow.style.display = "none";
+}
+
+// ── Copy Descriptions ───────────────────────────────────
+document.getElementById("btnCopyDesc").addEventListener("click", async () => {
+  const btn = document.getElementById("btnCopyDesc");
+  btn.disabled = true;
+  btn.textContent = "Copying...";
+  const resp = await fetch(`${PREFIX}/api/identity/${TASK_ID}/copy-descriptions`, { method: "POST" });
+  const result = await resp.json();
+  btn.disabled = false;
+  btn.textContent = "Copy from Description";
+  document.getElementById("descResult").innerHTML =
+    `<span class="text-success">Copied ${result.updated} of ${result.total} items</span>`;
+  refresh();
+});
+
+// ── Contract Number ─────────────────────────────────────
+document.getElementById("btnSetContract").addEventListener("click", async () => {
+  const val = document.getElementById("contractNumInput").value.trim();
+  if (!val) { alert("Enter a contract number"); return; }
+  const resp = await fetch(`${PREFIX}/api/identity/${TASK_ID}/contract-number`, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({ contract_number: val }),
+  });
+  const result = await resp.json();
+  if (resp.ok) {
+    document.getElementById("contractResult").innerHTML =
+      `<span class="text-success">Contract # set to ${escHtml(result.contract_number)}</span>`;
+    refresh();
+  } else {
+    document.getElementById("contractResult").innerHTML =
+      `<span class="text-danger">${escHtml(result.error)}</span>`;
+  }
+});
+
+// ── EXPIRE Auto-Confirm ────────────────────────────────
+async function autoConfirmExpire() {
+  const resp = await fetch(`${PREFIX}/api/identity/${TASK_ID}/manufacturer-auto-confirm`, { method: 'POST' });
+  const result = await resp.json();
+  document.getElementById('mfgExpireLoading').style.display = 'none';
+  if (result.found !== false) {
+    document.getElementById('mfgExpireResult').style.display = '';
+    document.getElementById('mfgExpireCode').textContent = result.manufacturer_code || '—';
+    document.getElementById('mfgExpireName').textContent = result.manufacturer_name || '—';
+    showMfgConfirmed(result.manufacturer_code, result.manufacturer_name);
+    refresh();
+  } else {
+    document.getElementById('mfgExpireNotFound').style.display = '';
+  }
+}
+
+// ── Manufacturer Confirm (UPDATE) ───────────────────────
+document.getElementById("btnMfgConfirm").addEventListener("click", async () => {
+  const code = document.getElementById("mfgInforCode").textContent.trim();
+  const name = document.getElementById("mfgInforName").textContent.trim();
+  const resp = await fetch(`${PREFIX}/api/identity/${TASK_ID}/manufacturer-confirm`, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({ code, name }),
+  });
+  if (resp.ok) {
+    showMfgConfirmed(code, name);
+    refresh();
+  }
+});
+
+document.getElementById("btnMfgEdit").addEventListener("click", () => {
+  // The button already has data-bs-toggle="modal" data-bs-target="#mfgSearchModal" in markup.
+  // No additional JS needed — Bootstrap opens the modal automatically.
+});
+
+// ── Manufacturer Search (NEW) ───────────────────────────
+document.getElementById("btnMfgSearch").addEventListener("click", async () => {
+  const q = document.getElementById("mfgSearchInput").value.trim();
+  if (!q) return;
+  const resp = await fetch(`${PREFIX}/api/identity/manufacturers/search?q=${encodeURIComponent(q)}`);
+  const results = await resp.json();
+  const tbody = document.getElementById("mfgSearchResults");
+  if (!results.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">No results found</td></tr>';
+    return;
+  }
+        tbody.innerHTML = results.map(r => {
+    const isActive = r.active && r.active !== 'No' && r.active !== 0;
+    const rowCls = isActive ? '' : 'class="table-secondary text-muted"';
+    const btnDisabled = isActive ? '' : 'disabled title="Inactive — cannot select"';
+    return `
+      <tr ${rowCls}>
+        <td>${escHtml(r.manufacturer_code)}</td>
+        <td>${escHtml(r.manufacturer_name)}</td>
+        <td>${isActive ? 'Yes' : '<span class="text-muted">No</span>'}</td>
+        <td><button class="btn btn-sm btn-outline-primary btnSelectMfg" ${btnDisabled}
+              data-code="${escHtml(r.manufacturer_code)}"
+              data-name="${escHtml(r.manufacturer_name)}">Select</button></td>
+      </tr>`;
+  }).join("");
+
+  // Bind select buttons
+  tbody.querySelectorAll(".btnSelectMfg").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const code = btn.dataset.code;
+      const name = btn.dataset.name;
+      const resp = await fetch(`${PREFIX}/api/identity/${TASK_ID}/manufacturer-select`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ code, name }),
+      });
+      if (resp.ok) {
+        // Close modal
+        bootstrap.Modal.getInstance(document.getElementById("mfgSearchModal")).hide();
+        document.getElementById("mfgSelectedResult").innerHTML =
+          `<span class="text-success">Selected: ${escHtml(code)} — ${escHtml(name)}</span>`;
+        showMfgConfirmed(code, name);
+        refresh();
+      }
+    });
+  });
+});
+
+// Allow Enter key in search
+document.getElementById("mfgSearchInput").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") document.getElementById("btnMfgSearch").click();
+});
+
+// ── PC2 ─────────────────────────────────────────────────
+document.getElementById("btnPC2").addEventListener("click", async () => {
+  const btn = document.getElementById("btnPC2");
+  btn.disabled = true;
+  btn.textContent = "Running...";
+  const resp = await fetch(`${PREFIX}/api/identity/${TASK_ID}/precheck2`, { method: "POST" });
+  const result = await resp.json();
+  btn.disabled = false;
+  btn.textContent = "Run PC2";
+  document.getElementById("pc2Result").innerHTML = `
+    <p>Total: ${result.total} | Passed: ${result.passed} | Failed: ${result.failed}</p>
+  `;
+  refresh();
+});
+
+// ── Proceed ─────────────────────────────────────────────
+document.getElementById("btnProceed").addEventListener("click", async () => {
+  const resp = await fetch(`${PREFIX}/api/identity/${TASK_ID}/proceed`, { method: "POST" });
+  const result = await resp.json();
+  if (resp.ok) {
+    location.href = `${PREFIX}/tasks/${TASK_ID}`;
+  } else {
+    alert(result.error || "Failed to proceed");
+  }
+});
+
+// ── Init ────────────────────────────────────────────────
+refresh();
+</script>
+{% endblock %}

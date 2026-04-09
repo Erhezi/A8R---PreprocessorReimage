@@ -1,0 +1,835 @@
+{% extends "base.html" %}
+{% block title %}Tasks — Contract Atlas{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-3">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h4>Tasks</h4>
+    <button class="btn btn-primary btn-sm" data-bs-toggle="modal" data-bs-target="#newTaskModal">
+      + New Task
+    </button>
+  </div>
+
+  <!-- Filters -->
+  <div class="row g-2 mb-3">
+    <div class="col-auto">
+      <select id="filterPhase" class="form-select form-select-sm">
+        <option value="">All Phases</option>
+        <option>INTAKE</option>
+        <option>IDENTITY</option>
+        <option>PREPROCESS</option>
+        <option>DEDUP</option>
+        <option>EXPORT</option>
+        <option>MONITORING</option>
+      </select>
+    </div>
+    <div class="col-auto">
+      <select id="filterStatus" class="form-select form-select-sm">
+        <option value="">All Statuses</option>
+        <option>DRAFT</option>
+        <option>PENDING_NUVIA</option>
+        <option>PENDING_PREPROCESSOR</option>
+        <option>PREPROCESSING</option>
+        <option>EXPORTED</option>
+        <option>COMPLETED</option>
+      </select>
+    </div>
+    <div class="col-auto">
+      <button id="btnRefresh" class="btn btn-outline-secondary btn-sm">Refresh</button>
+    </div>
+  </div>
+
+  <!-- Task table -->
+  <div class="table-responsive">
+    <table class="table table-hover table-sm" id="taskTable">
+      <thead class="table-light">
+        <tr>
+          <th>ID</th>
+          <th>Contract #</th>
+          <th>Vendor</th>
+          <th>Type</th>
+          <th>Org</th>
+          <th>Intention</th>
+          <th>Phase</th>
+          <th>Status</th>
+          <th>Wrike ID</th>
+          <th>Owner</th>
+          <th>Updated</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="taskTableBody">
+        <tr><td colspan="12" class="text-center text-muted">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ================================================================ -->
+<!-- New Task Modal                                                    -->
+<!-- ================================================================ -->
+<div class="modal fade" id="newTaskModal" tabindex="-1">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Create New Task</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+
+        <!-- Mode toggle -->
+        <div class="d-flex align-items-center mb-3">
+          <span class="me-2 fw-semibold">Mode:</span>
+          <div class="btn-group btn-group-sm" role="group">
+            <input type="radio" class="btn-check" name="intakeMode" id="modeSingle" value="SINGLE" checked>
+            <label class="btn btn-outline-primary" for="modeSingle">Per Contract + Intention</label>
+            <input type="radio" class="btn-check" name="intakeMode" id="modeBatch" value="BATCH">
+            <label class="btn btn-outline-primary" for="modeBatch">Batch Upload</label>
+          </div>
+        </div>
+
+        <!-- ===================== SINGLE MODE ======================== -->
+        <div id="singleModePanel">
+
+          <!-- Step indicator -->
+          <div class="mb-3">
+            <small class="text-muted">Step <span id="singleStep">1</span> of 2</small>
+            <div class="progress" style="height:4px">
+              <div class="progress-bar" id="singleProgress" style="width:50%"></div>
+            </div>
+          </div>
+
+          <!-- Step 1: Header info -->
+          <div id="singleStep1">
+            <form id="newTaskForm">
+              <div class="mb-2">
+                <label class="form-label">Contract Number</label>
+                <div class="input-group input-group-sm">
+                  <input type="text" class="form-control" name="contract_number" id="contractInput" placeholder="Enter contract ID…" required>
+                  <button class="btn btn-outline-secondary" type="button" id="btnFetch">Fetch</button>
+                </div>
+                <div id="fetchStatus" class="form-text"></div>
+              </div>
+              <div class="mb-2">
+                <label class="form-label">Vendor</label>
+                <input type="hidden" id="singleVendorId" name="vendor_id">
+                <input type="hidden" id="singleVendorName" name="erp_vendor_name">
+                <input type="hidden" id="singlePurchaseFromLoc" name="purchase_from_loc">
+                <input type="hidden" id="singlePurchaseFromLocName" name="purchase_from_loc_name">
+                <div class="d-flex align-items-center gap-2">
+                  <button type="button" class="btn btn-outline-secondary btn-sm" id="btnOpenVendorSearch">Search Vendor</button>
+                  <span id="singleVendorDisplay" class="text-muted small">No vendor selected</span>
+                </div>
+              </div>
+              <div class="row g-2 mb-2">
+                <div class="col">
+                  <label class="form-label">Process Type</label>
+                  <select name="process_type" class="form-select form-select-sm" required>
+                    <option value="">Select…</option>
+                    <option value="MANUFACTURER">MANUFACTURER</option>
+                    <option value="DISTRIBUTOR">DISTRIBUTOR</option>
+                  </select>
+                </div>
+                <div class="col">
+                  <label class="form-label">Source Type</label>
+                  <select name="source_type" class="form-select form-select-sm" required>
+                    <option value="">Select…</option>
+                    <option value="PREMIER">PREMIER</option>
+                    <option value="LOCAL">LOCAL</option>
+                  </select>
+                </div>
+              </div>
+              <div class="mb-2">
+                <label class="form-label">Organization</label>
+                <select name="organization" class="form-select form-select-sm" required>
+                  <option value="">Select…</option>
+                  {% for db_val, display in org_choices %}
+                  <option value="{{ db_val }}">{{ display }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="mb-2">
+                <label class="form-label">Intention</label>
+                <select name="intention" class="form-select form-select-sm" required>
+                  <option value="">Select…</option>
+                  <option value="NEW">NEW</option>
+                  <option value="UPDATE">UPDATE</option>
+                  <option value="EXPIRE">EXPIRE</option>
+                </select>
+              </div>
+              <div class="mb-2">
+                <label class="form-label">OEM / Manufacturer</label>
+                <input type="text" class="form-control form-control-sm" name="oem_name" required>
+              </div>
+              <div class="row g-2 mb-2">
+                <div class="col">
+                  <label class="form-label">Start Date</label>
+                  <input type="date" class="form-control form-control-sm" name="contract_start_date" required>
+                </div>
+                <div class="col">
+                  <label class="form-label">End Date</label>
+                  <input type="date" class="form-control form-control-sm" name="contract_end_date" required>
+                </div>
+              </div>
+              <div class="mb-2">
+                <label class="form-label">Notes</label>
+                <textarea class="form-control form-control-sm" name="notes" rows="2"></textarea>
+              </div>
+              <div class="mb-2">
+                <label class="form-label">Wrike ID <small class="text-muted">(10 digits)</small></label>
+                <input type="text" class="form-control form-control-sm" name="wrike_id"
+                       id="singleWrikeId" pattern="\d{10}" maxlength="10"
+                       placeholder="0000000000" required>
+              </div>
+            </form>
+            <div class="text-end">
+              <button class="btn btn-primary btn-sm" id="btnToStep2">Next — Upload Items to Task</button>
+            </div>
+          </div>
+
+          <!-- Step 2: File upload + column mapping -->
+          <div id="singleStep2" style="display:none">
+            <div id="tierAlert" class="alert alert-warning py-2 small" style="display:none">
+              <strong>Multi-tier contract detected.</strong> Your upload <em>must</em> include <strong>Tier Level</strong> and <strong>Tier Description</strong> columns.
+            </div>
+
+            <div class="mb-2">
+              <label class="form-label">Upload Item File <small class="text-muted">(.xlsx only)</small></label>
+              <input type="file" class="form-control form-control-sm" id="singleFileInput" accept=".xlsx">
+            </div>
+
+            <!-- Column mapping panel (hidden until file parsed) -->
+            <div id="singleColMapPanel" style="display:none">
+              <p class="fw-semibold small mb-1">Map your file columns to required fields:</p>
+              <div id="singleColMapFields"></div>
+              <div id="singlePreview" class="mt-2"></div>
+            </div>
+
+            <div class="d-flex justify-content-between mt-3">
+              <button class="btn btn-outline-secondary btn-sm" id="btnBackStep1">← Back</button>
+              <button class="btn btn-primary btn-sm" id="btnCreateTask" disabled>Create Task & Upload</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===================== BATCH MODE ========================= -->
+        <div id="batchModePanel" style="display:none">
+          <div class="alert alert-info py-2 small">
+            Upload an Excel file with multiple contracts. The system will separate items by <strong>Contract ID</strong>, <strong>Organization</strong>, <strong>Vendor</strong>, and <strong>Intention</strong> automatically.
+          </div>
+
+          <div class="mb-2">
+            <label class="form-label">Upload Batch File <small class="text-muted">(.xlsx only)</small></label>
+            <input type="file" class="form-control form-control-sm" id="batchFileInput" accept=".xlsx">
+          </div>
+
+          <!-- Column mapping panel for batch -->
+          <div id="batchColMapPanel" style="display:none">
+            <p class="fw-semibold small mb-1">Map your file columns to required fields:</p>
+            <div id="batchColMapFields"></div>
+            <div id="batchPreview" class="mt-2"></div>
+          </div>
+
+          <div class="mb-2">
+            <label class="form-label">Notes</label>
+            <textarea class="form-control form-control-sm" id="batchNotes" rows="2"></textarea>
+          </div>
+          <div class="mb-2">
+            <label class="form-label">Wrike ID <small class="text-muted">(10 digits)</small></label>
+            <input type="text" class="form-control form-control-sm" id="batchWrikeId"
+                   pattern="\d{10}" maxlength="10" placeholder="0000000000" required>
+          </div>
+
+          <div class="text-end mt-2">
+            <button class="btn btn-primary btn-sm" id="btnCreateBatchTask" disabled>Create Batch Task & Upload</button>
+          </div>
+        </div>
+
+      </div><!-- modal-body -->
+    </div>
+  </div>
+</div>
+
+<!-- Vendor Search Modal (Single mode) -->
+<div class="modal fade" id="vendorSearchModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Search Vendor</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="input-group input-group-sm mb-3">
+          <input type="text" class="form-control" id="vendorSearchInput" placeholder="Search by vendor name or purchase-from location...">
+          <button class="btn btn-outline-primary" id="btnVendorSearch">Search</button>
+        </div>
+        <div class="table-responsive" style="max-height:400px;overflow-y:auto">
+          <table class="table table-sm table-hover">
+            <thead class="table-light">
+              <tr><th>ERP Vendor ID</th><th>Vendor Name</th><th>Purchase From</th><th></th></tr>
+            </thead>
+            <tbody id="vendorSearchResults">
+              <tr><td colspan="4" class="text-center text-muted">Enter a search term above</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const PREFIX = "{{ url_prefix }}";
+
+/* ================================================================
+   Column definitions
+   ================================================================ */
+const SINGLE_REQUIRED_COLS = [
+  {key: "mfg_catalog_num",    label: "Manufacturer Part #",  aliases: ["manufacturer part number","manufacturer catalog number","mfg_catalog_num","mfg_cat_num","mfg_cat_#","mfg#","manufacturer_part_number","mfg_part_number","manufacturer catalog #","manufacturer part #","mfg part num","mfn"]},
+  {key: "vendor_catalog_num", label: "Vendor Part #",        aliases: ["vendor part number","vendor_catalog_num","vendor_cat_num","vendor_cat_#","vendor#","vendor catalog #","vendor part #","vendor part num","vpn"]},
+  {key: "description",        label: "Item Description",     aliases: ["item description","description","desc","item_description"]},
+  {key: "unit_price",         label: "Contract Price",       aliases: ["contract price","unit_price","price","cost","contract_price"]},
+  {key: "uom",                label: "UOM",                  aliases: ["uom","unit_of_measure","unit of measure"]},
+  {key: "qoe",                label: "QOE",                  aliases: ["qoe","quantity","qty","conversion_factor","conversion factor to ea","qoe (conversion factor to ea)"]},
+];
+const SINGLE_OPTIONAL_COLS = [
+  {key: "tier_description",   label: "Tier Description",     aliases: ["tier description","tier_description","tier_desc"]},
+  {key: "tier_level",         label: "Tier Level",           aliases: ["tier level","tier_level"]},
+];
+const BATCH_REQUIRED_COLS = [
+  {key: "organization",       label: "Organization",         aliases: ["organization","org","company","contract company"]},
+  {key: "contract_number",    label: "Contract Number",      aliases: ["contract number","contract_number","contract_id","contract id","contractid"]},
+  {key: "intention",          label: "Intention",            aliases: ["intention","action","intent"]},
+  {key: "vendor_id",          label: "ERP Vendor ID",        aliases: ["erp vendor id","vendor_id","vendor id","erp_vendor_id"]},
+  {key: "process_type",       label: "Contract Process Type",aliases: ["contract process type","process_type","process type"]},
+  {key: "source_type",        label: "Contract Source Type", aliases: ["contract source type","source_type","source type"]},
+  {key: "oem_name",           label: "Contract Manufacturer",aliases: ["contract manufacturer","oem_name","oem name","manufacturer"]},
+  {key: "vendor_catalog_num", label: "Vendor Catalog #",     aliases: ["vendor catalog #","vendor_catalog_num","vendor_cat_num","vendor#","vendor part number","vendor part #","vendor part num","vpn"]},
+  {key: "mfg_catalog_num",    label: "Manufacturer Catalog #",aliases: ["manufacturer catalog #","mfg_catalog_num","mfg_cat_num","mfg#","manufacturer part number","manufacturer part #","mfg part num","mfn"]},
+  {key: "description",        label: "Description",          aliases: ["description","desc","item_description","item description"]},
+  {key: "uom",                label: "UOM",                  aliases: ["uom","unit_of_measure","unit of measure"]},
+  {key: "unit_price",         label: "Unit Price",           aliases: ["unit price","unit_price","price","cost","contract price"]},
+  {key: "qoe",                label: "QOE",                  aliases: ["qoe","quantity","qty","conversion factor to ea","qoe (conversion factor to ea)"]},
+  {key: "tier_description",   label: "Tier Description",     aliases: ["tier description","tier_description","tier_desc","contract tier description"]},
+  {key: "tier_level",         label: "Tier Level",           aliases: ["tier level","tier_level"]},
+];
+
+/* ================================================================
+   State
+   ================================================================ */
+let singleFileData = null;   // {headers: [...], rowCount: N, file: File}
+let batchFileData  = null;
+let tierRequired   = false;  // set after Fetch
+
+/* ================================================================
+   Helpers
+   ================================================================ */
+function normalise(s) { return s.trim().toLowerCase().replace(/[^a-z0-9]/g, "_").replace(/_+/g, "_"); }
+
+function autoMatch(fileHeaders, colDefs) {
+  const normHeaders = fileHeaders.map(h => normalise(h));
+  const mapping = {};
+  for (const col of colDefs) {
+    let best = "";
+    for (const alias of col.aliases) {
+      const idx = normHeaders.indexOf(normalise(alias));
+      if (idx !== -1) { best = fileHeaders[idx]; break; }
+    }
+    mapping[col.key] = best;
+  }
+  return mapping;
+}
+
+function buildMappingUI(containerId, colDefs, fileHeaders, mapping, requiredKeys) {
+  const container = document.getElementById(containerId);
+  container.innerHTML = "";
+  for (const col of colDefs) {
+    const isReq = requiredKeys.includes(col.key);
+    const row = document.createElement("div");
+    row.className = "row g-1 mb-1 align-items-center";
+    row.innerHTML = `
+      <div class="col-5">
+        <small class="${isReq ? 'fw-semibold' : 'text-muted'}">${col.label}${isReq ? ' *' : ' (optional)'}</small>
+      </div>
+      <div class="col-7">
+        <select class="form-select form-select-sm col-map-select" data-key="${col.key}">
+          <option value="">— skip —</option>
+          ${fileHeaders.map(h => `<option value="${h}" ${mapping[col.key] === h ? 'selected' : ''}>${h}</option>`).join("")}
+        </select>
+      </div>`;
+    container.appendChild(row);
+  }
+}
+
+function buildPreview(previewId, label, rowCount) {
+  document.getElementById(previewId).innerHTML =
+    `<small class="text-muted">${rowCount} row${rowCount !== 1 ? 's' : ''} detected in uploaded file.</small>`;
+}
+
+async function parseXlsx(file) {
+  const SheetJS = window.XLSX;
+  const buf = await file.arrayBuffer();
+  const wb = SheetJS.read(buf, {type: "array"});
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const json = SheetJS.utils.sheet_to_json(ws, {header: 1});
+  const headers = (json[0] || []).map(h => String(h).trim());
+  return {headers, rowCount: Math.max(0, json.length - 1), file};
+}
+
+/* ================================================================
+   Mode toggle
+   ================================================================ */
+document.querySelectorAll('input[name="intakeMode"]').forEach(radio => {
+  radio.addEventListener("change", () => {
+    const isBatch = radio.value === "BATCH";
+    document.getElementById("singleModePanel").style.display = isBatch ? "none" : "";
+    document.getElementById("batchModePanel").style.display  = isBatch ? "" : "none";
+  });
+});
+
+/* ================================================================
+   Single mode — Step navigation
+   ================================================================ */
+let ccxHeaderData = null; // stored after Fetch for header validation
+
+document.getElementById("btnToStep2").addEventListener("click", async () => {
+  // Basic validation on step 1
+  const form = document.getElementById("newTaskForm");
+  if (!form.reportValidity()) return;
+
+  // Vendor must be selected via search
+  if (!document.getElementById("singleVendorId").value) {
+    alert("Please search and select a vendor before proceeding.");
+    return;
+  }
+
+  // --- Header validation against CCX ---
+  const cid = document.getElementById("contractInput").value.trim();
+  const org = form.querySelector('[name="organization"]').value;
+  if (cid) {
+    const vResp = await fetch(`${PREFIX}/api/contract-validate?contract_id=${encodeURIComponent(cid)}&organization=${encodeURIComponent(org)}`);
+    if (vResp.ok) {
+      const vData = await vResp.json();
+      if (vData.found) {
+        // Compare each field
+        const fieldMap = {
+          vendor_id:     {label: "Vendor ID",     ccx: vData.vendor_id},
+          process_type:  {label: "Process Type",  ccx: vData.process_type},
+          source_type:   {label: "Source Type",    ccx: vData.source_type},
+          organization:  {label: "Organization",  ccx: vData.organization},
+          oem_name:      {label: "OEM / Manufacturer", ccx: vData.oem_name},
+          contract_start_date: {label: "Start Date", ccx: (vData.contract_start_date || "").slice(0,10)},
+          contract_end_date:   {label: "End Date",   ccx: (vData.contract_end_date || "").slice(0,10)},
+        };
+        const diffs = [];
+        // Clear previous highlights
+        form.querySelectorAll('.border-warning').forEach(el => el.classList.remove('border-warning'));
+
+        for (const [name, info] of Object.entries(fieldMap)) {
+          const el = form.querySelector(`[name="${name}"]`);
+          if (!el) continue;
+          const userVal = el.value.trim();
+          const ccxVal = (info.ccx || "").trim();
+          if (!ccxVal) continue; // CCX has no value, skip comparison
+          // For selects, compare value; for org compare case-insensitive contains
+          let match = false;
+          if (name === "organization") {
+            match = userVal.toUpperCase().includes(ccxVal.toUpperCase()) || ccxVal.toUpperCase().includes(userVal.toUpperCase());
+          } else {
+            match = userVal.toUpperCase() === ccxVal.toUpperCase();
+          }
+          if (!match) {
+            el.classList.add('border-warning');
+            diffs.push(`${info.label}: yours = "${userVal}", CCX = "${ccxVal}"`);
+          }
+        }
+        if (diffs.length > 0) {
+          const msg = "The following fields differ from the CCX contract header:\n\n" +
+            diffs.join("\n") +
+            "\n\nAre you sure you want to proceed with your manually entered values? " +
+            "These will overwrite the header-level information in your final outputs.";
+          if (!confirm(msg)) return;
+        }
+      }
+    }
+  }
+
+  document.getElementById("singleStep1").style.display = "none";
+  document.getElementById("singleStep2").style.display = "";
+  document.getElementById("singleStep").textContent = "2";
+  document.getElementById("singleProgress").style.width = "100%";
+});
+document.getElementById("btnBackStep1").addEventListener("click", () => {
+  document.getElementById("singleStep2").style.display = "none";
+  document.getElementById("singleStep1").style.display = "";
+  document.getElementById("singleStep").textContent = "1";
+  document.getElementById("singleProgress").style.width = "50%";
+});
+
+/* ================================================================
+   Fetch contract header
+   ================================================================ */
+document.getElementById("btnFetch").addEventListener("click", async () => {
+  const cid = document.getElementById("contractInput").value.trim();
+  const statusEl = document.getElementById("fetchStatus");
+  if (!cid) { statusEl.textContent = "Enter a contract number first."; return; }
+
+  statusEl.innerHTML = '<span class="text-muted">Looking up…</span>';
+  const resp = await fetch(`${PREFIX}/api/contract-lookup?contract_id=${encodeURIComponent(cid)}`);
+  const data = await resp.json();
+
+  if (!resp.ok || !data.found) {
+    statusEl.innerHTML = '<span class="text-warning">Contract not found — fill form manually. Intention set to NEW.</span>';
+    tierRequired = false;
+    document.getElementById("tierAlert").style.display = "none";
+    // Auto-set intention to NEW when contract not found
+    const form = document.getElementById("newTaskForm");
+    form.querySelector('[name="intention"]').value = "NEW";
+    return;
+  }
+
+  statusEl.innerHTML = '<span class="text-success">Found! Form auto-filled.</span>';
+  const form = document.getElementById("newTaskForm");
+
+  function setSelect(name, val) {
+    const sel = form.querySelector(`[name="${name}"]`);
+    if (!sel || !val) return;
+    // Try exact match on value
+    for (const opt of sel.options) {
+      if (opt.value === val) { sel.value = opt.value; return; }
+    }
+    // Try case-insensitive contains
+    const upper = val.toUpperCase();
+    for (const opt of sel.options) {
+      if (opt.value.toUpperCase().includes(upper) || upper.includes(opt.value.toUpperCase())) {
+        sel.value = opt.value; return;
+      }
+    }
+  }
+
+  form.querySelector('[name="vendor_id"]').value = data.vendor_id || "";
+  form.querySelector('[name="oem_name"]').value  = data.oem_name || "";
+  // Auto-populate vendor from contract lookup
+  const vendorId = data.vendor_id || "";
+  const parts = vendorId.split("-");
+  document.getElementById("singleVendorId").value = vendorId;
+  document.getElementById("singlePurchaseFromLoc").value = parts[1] || "";
+  document.getElementById("singleVendorDisplay").textContent = vendorId || "Not set";
+  document.getElementById("singleVendorDisplay").className = vendorId ? "text-dark small" : "text-muted small";
+  form.querySelector('[name="contract_start_date"]').value = (data.contract_start_date || "").slice(0, 10);
+  form.querySelector('[name="contract_end_date"]').value   = (data.contract_end_date || "").slice(0, 10);
+  setSelect("process_type", data.process_type);
+  setSelect("source_type",  data.source_type);
+  setSelect("organization", data.organization);
+
+  // Tier requirement
+  tierRequired = !!data.tier_required;
+  document.getElementById("tierAlert").style.display = tierRequired ? "" : "none";
+});
+
+/* ================================================================
+   Single file upload — parse & build column mapping
+   ================================================================ */
+document.getElementById("singleFileInput").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  singleFileData = await parseXlsx(file);
+
+  // Determine required keys
+  const requiredKeys = SINGLE_REQUIRED_COLS.map(c => c.key);
+  if (tierRequired) {
+    requiredKeys.push("tier_description", "tier_level");
+  }
+  const allCols = [...SINGLE_REQUIRED_COLS, ...SINGLE_OPTIONAL_COLS];
+  const mapping = autoMatch(singleFileData.headers, allCols);
+
+  buildMappingUI("singleColMapFields", allCols, singleFileData.headers, mapping, requiredKeys);
+  buildPreview("singlePreview", "Item", singleFileData.rowCount);
+  document.getElementById("singleColMapPanel").style.display = "";
+  document.getElementById("btnCreateTask").disabled = false;
+});
+
+/* ================================================================
+   Batch file upload — parse & build column mapping
+   ================================================================ */
+document.getElementById("batchFileInput").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  batchFileData = await parseXlsx(file);
+
+  const requiredKeys = BATCH_REQUIRED_COLS.map(c => c.key);
+  const mapping = autoMatch(batchFileData.headers, BATCH_REQUIRED_COLS);
+
+  buildMappingUI("batchColMapFields", BATCH_REQUIRED_COLS, batchFileData.headers, mapping, requiredKeys);
+  buildPreview("batchPreview", "Row", batchFileData.rowCount);
+  document.getElementById("batchColMapPanel").style.display = "";
+  document.getElementById("btnCreateBatchTask").disabled = false;
+});
+
+/* ================================================================
+   Gather column mapping from selects
+   ================================================================ */
+function gatherMapping(containerId) {
+  const selects = document.querySelectorAll(`#${containerId} .col-map-select`);
+  const m = {};
+  selects.forEach(sel => { if (sel.value) m[sel.dataset.key] = sel.value; });
+  return m;
+}
+
+/* ================================================================
+   Create task (SINGLE)
+   ================================================================ */
+document.getElementById("btnCreateTask").addEventListener("click", async () => {
+  // --- Enforce required column mappings ---
+  const requiredKeys = SINGLE_REQUIRED_COLS.map(c => c.key);
+  if (tierRequired) { requiredKeys.push("tier_description", "tier_level"); }
+  const mapping = gatherMapping("singleColMapFields");
+  const unmapped = requiredKeys.filter(k => !mapping[k]);
+  if (unmapped.length) {
+    const labels = unmapped.map(k => {
+      const col = [...SINGLE_REQUIRED_COLS, ...SINGLE_OPTIONAL_COLS].find(c => c.key === k);
+      return col ? col.label : k;
+    });
+    alert("The following required columns are not mapped:\\n\\n" + labels.join("\\n") + "\\n\\nPlease map them before creating the task.");
+    return;
+  }
+
+  const form = document.getElementById("newTaskForm");
+  const fd = new FormData(form);
+  const body = Object.fromEntries(fd.entries());
+  body.intake_mode = "SINGLE";
+  body.wrike_id = (body.wrike_id || "").replace(/\D/g, "");
+
+  // 1) Create task
+  const resp = await fetch(`${PREFIX}/api/tasks`, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) {
+    const err = await resp.json();
+    alert(err.error || "Failed to create task");
+    return;
+  }
+  const task = await resp.json();
+
+  // 2) Upload file with column mapping
+  if (singleFileData && singleFileData.file) {
+    const mapping = gatherMapping("singleColMapFields");
+    const uploadFd = new FormData();
+    uploadFd.append("file", singleFileData.file);
+    uploadFd.append("column_mapping", JSON.stringify(mapping));
+    uploadFd.append("tier_required", tierRequired ? "1" : "0");
+
+    const upResp = await fetch(`${PREFIX}/api/intake/${task.task_id}/upload`, {method: "POST", body: uploadFd});
+    if (!upResp.ok) {
+      const upErr = await upResp.json();
+      alert("Task created but upload failed: " + (upErr.error || "Unknown error"));
+    }
+  }
+
+  bootstrap.Modal.getInstance(document.getElementById("newTaskModal")).hide();
+  location.href = `${PREFIX}/tasks/${task.task_id}`;
+});
+
+/* ================================================================
+   Create task (BATCH)
+   ================================================================ */
+document.getElementById("btnCreateBatchTask").addEventListener("click", async () => {
+  // 1) Create batch task
+  const batchWrikeVal = document.getElementById("batchWrikeId").value.replace(/\D/g, "");
+  if (batchWrikeVal.length !== 10) {
+    alert("Wrike ID must be exactly 10 digits."); return;
+  }
+  const body = {
+    intake_mode: "BATCH",
+    intention: "MIX",
+    notes: document.getElementById("batchNotes").value,
+    wrike_id: batchWrikeVal,
+  };
+  const resp = await fetch(`${PREFIX}/api/tasks`, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) {
+    const err = await resp.json();
+    alert(err.error || "Failed to create batch task");
+    return;
+  }
+  const task = await resp.json();
+
+  // 2) Upload file with column mapping
+  if (batchFileData && batchFileData.file) {
+    const mapping = gatherMapping("batchColMapFields");
+    const uploadFd = new FormData();
+    uploadFd.append("file", batchFileData.file);
+    uploadFd.append("column_mapping", JSON.stringify(mapping));
+
+    const upResp = await fetch(`${PREFIX}/api/intake/${task.task_id}/upload`, {method: "POST", body: uploadFd});
+    if (!upResp.ok) {
+      const upErr = await upResp.json();
+      alert("Task created but upload failed: " + (upErr.error || "Unknown error"));
+    }
+  }
+
+  bootstrap.Modal.getInstance(document.getElementById("newTaskModal")).hide();
+  location.href = `${PREFIX}/tasks/${task.task_id}`;
+});
+
+/* ================================================================
+   Task list
+   ================================================================ */
+async function loadTasks() {
+  const phase  = document.getElementById("filterPhase").value;
+  const status = document.getElementById("filterStatus").value;
+  const params = new URLSearchParams();
+  if (phase)  params.set("phase", phase);
+  if (status) params.set("status", status);
+
+  const resp  = await fetch(`${PREFIX}/api/tasks?${params}`);
+  const tasks = await resp.json();
+  const tbody = document.getElementById("taskTableBody");
+
+  if (!tasks.length) {
+    tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted">No tasks found</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = tasks.map(t => `
+    <tr style="cursor:pointer" onclick="location.href='${PREFIX}/tasks/${t.task_id}'">
+      <td>${t.task_id}</td>
+      <td>${t.contract_number || "—"}</td>
+      <td>${t.vendor_id || "—"}</td>
+      <td>${t.process_type || "—"}${t.source_type ? " / " + t.source_type : ""}</td>
+      <td>${t.organization || "—"}</td>
+      <td>${t.intention}</td>
+      <td><span class="badge bg-info">${t.phase}</span></td>
+      <td><span class="badge bg-secondary">${t.status}</span></td>
+      <td>${t.wrike_id || "—"}</td>
+      <td>${t.created_by}</td>
+      <td>${t.updated_at ? new Date(t.updated_at).toLocaleDateString() : "—"}</td>
+      <td onclick="event.stopPropagation()">
+        <button class="btn btn-outline-danger btn-sm py-0 px-1"
+                onclick="deleteTask('${t.task_id}')" title="Delete task">
+          <small>Delete</small>
+        </button>
+      </td>
+    </tr>
+  `).join("");
+}
+
+async function deleteTask(taskId) {
+  if (!confirm(`Delete task ${taskId}? This cannot be undone.`)) return;
+  const resp = await fetch(`${PREFIX}/api/tasks/${taskId}`, {method: "DELETE"});
+  if (resp.ok) {
+    loadTasks();
+  } else {
+    const err = await resp.json();
+    alert("Delete failed: " + (err.error || "Unknown error"));
+  }
+}
+
+document.getElementById("btnRefresh").addEventListener("click", loadTasks);
+document.getElementById("filterPhase").addEventListener("change", loadTasks);
+document.getElementById("filterStatus").addEventListener("change", loadTasks);
+
+/* ================================================================
+   Vendor Search (Single mode)
+   ================================================================ */
+document.getElementById("btnOpenVendorSearch").addEventListener("click", () => {
+  new bootstrap.Modal(document.getElementById("vendorSearchModal")).show();
+});
+
+document.getElementById("btnVendorSearch").addEventListener("click", searchVendors);
+document.getElementById("vendorSearchInput").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") searchVendors();
+});
+
+async function searchVendors() {
+  const q = document.getElementById("vendorSearchInput").value.trim();
+  if (!q) return;
+  const tbody = document.getElementById("vendorSearchResults");
+  tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">Searching...</td></tr>';
+  const resp = await fetch(`${PREFIX}/api/vendor-search?q=${encodeURIComponent(q)}`);
+  const results = await resp.json();
+  if (!results.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">No results found</td></tr>';
+    return;
+  }
+  tbody.innerHTML = results.map(r => {
+    const isActive = r.active && r.active !== 'No' && r.active !== 0;
+    const rowCls = isActive ? '' : 'class="table-secondary text-muted"';
+    const btnDisabled = isActive ? '' : 'disabled title="Inactive"';
+    const parts = (r.erp_vendor_id || '').split('-');
+    return `
+      <tr ${rowCls}>
+        <td>${r.erp_vendor_id || '—'}</td>
+        <td>${r.vendor_name || '—'}</td>
+        <td>${r.purchase_from_name || '—'}</td>
+        <td><button class="btn btn-sm btn-outline-primary btnSelectVendor" ${btnDisabled}
+              data-vendor-id="${r.erp_vendor_id || ''}"
+              data-vendor-name="${(r.vendor_name || '').replace(/"/g, '&quot;')}"
+              data-purchase-from-loc="${parts[1] || ''}"
+              data-purchase-from-name="${(r.purchase_from_name || '').replace(/"/g, '&quot;')}">Select</button></td>
+      </tr>`;
+  }).join("");
+
+  tbody.querySelectorAll(".btnSelectVendor").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.getElementById("singleVendorId").value     = btn.dataset.vendorId;
+      document.getElementById("singleVendorName").value   = btn.dataset.vendorName;
+      document.getElementById("singlePurchaseFromLoc").value    = btn.dataset.purchaseFromLoc;
+      document.getElementById("singlePurchaseFromLocName").value = btn.dataset.purchaseFromName;
+      document.getElementById("singleVendorDisplay").textContent =
+        `${btn.dataset.vendorId} — ${btn.dataset.vendorName}${btn.dataset.purchaseFromLoc ? ' (' + btn.dataset.purchaseFromLoc + ')' : ''}`;
+      document.getElementById("singleVendorDisplay").className = "text-dark small";
+      bootstrap.Modal.getInstance(document.getElementById("vendorSearchModal")).hide();
+    });
+  });
+}
+
+/* ================================================================
+   Reset modal on close
+   ================================================================ */
+document.getElementById("newTaskModal").addEventListener("hidden.bs.modal", () => {
+  document.getElementById("newTaskForm").reset();
+  document.getElementById("batchNotes").value = "";
+  document.getElementById("fetchStatus").textContent = "";
+  document.getElementById("modeSingle").checked = true;
+  document.getElementById("singleModePanel").style.display = "";
+  document.getElementById("batchModePanel").style.display = "none";
+  // Reset steps
+  document.getElementById("singleStep1").style.display = "";
+  document.getElementById("singleStep2").style.display = "none";
+  document.getElementById("singleStep").textContent = "1";
+  document.getElementById("singleProgress").style.width = "50%";
+  // Reset file state
+  document.getElementById("singleFileInput").value = "";
+  document.getElementById("batchFileInput").value = "";
+  document.getElementById("singleColMapPanel").style.display = "none";
+  document.getElementById("batchColMapPanel").style.display = "none";
+  document.getElementById("singlePreview").innerHTML = "";
+  document.getElementById("batchPreview").innerHTML = "";
+  document.getElementById("btnCreateTask").disabled = true;
+  document.getElementById("btnCreateBatchTask").disabled = true;
+  document.getElementById("tierAlert").style.display = "none";
+  document.getElementById("singleWrikeId").value = "";
+  document.getElementById("batchWrikeId").value = "";
+  // Reset vendor selection
+  document.getElementById("singleVendorId").value     = "";
+  document.getElementById("singleVendorName").value   = "";
+  document.getElementById("singlePurchaseFromLoc").value    = "";
+  document.getElementById("singlePurchaseFromLocName").value = "";
+  document.getElementById("singleVendorDisplay").textContent = "No vendor selected";
+  document.getElementById("singleVendorDisplay").className  = "text-muted small";
+  singleFileData = null;
+  batchFileData  = null;
+  tierRequired   = false;
+});
+
+loadTasks();
+</script>
+{% endblock %}

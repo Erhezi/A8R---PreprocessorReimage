@@ -1,0 +1,59 @@
+# Reference repo: do not include in the new repo
+A8---Contract-Atlas/
+
+# Python cache / build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Environment / secrets
+.env
+.env.*
+*.env
+
+# IDE / editor
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+preprocessorEC/logs/
+
+# Databases / local state
+*.sqlite
+*.sqlite3
+*.db
+
+# App-local state
+instance/
+
+# Uploaded/generated runtime files
+preprocessorEC/static/uploads/
+preprocessorEC/static/exports/
+preprocessorEC/static/tmp/
+temp_files/
+
+# Test / coverage caches
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Notebook / misc
+.ipynb_checkpoints/

@@ -1,0 +1,19 @@
+/* Contract Atlas — custom styles */
+
+body {
+  font-size: 0.9rem;
+}
+
+.table-sm td, .table-sm th {
+  padding: 0.25rem 0.5rem;
+}
+
+.badge {
+  font-weight: 500;
+}
+
+.text-truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

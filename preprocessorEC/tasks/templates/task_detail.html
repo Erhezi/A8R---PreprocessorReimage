@@ -1,0 +1,891 @@
+{% extends "base.html" %}
+{% block title %}Task #{{ task_id }} — Contract Atlas{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-3">
+  <!-- Header -->
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <div>
+      <a href="{{ url_prefix }}/tasks/" class="text-decoration-none">&larr; All Tasks</a>
+      <h4 class="mt-1 mb-0">Task #<span id="taskId">{{ task_id }}</span></h4>
+    </div>
+    <div id="phaseBar" class="d-flex gap-1"></div>
+  </div>
+
+  <!-- Task metadata -->
+  <div class="row g-3 mb-4">
+    <div class="col-md-8">
+      <div class="card">
+        <div class="card-body" id="taskMeta">
+          <p class="text-muted">Loading…</p>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-4">
+      <div class="card">
+        <div class="card-header">Actions</div>
+        <div class="card-body" id="taskActions">
+          <!-- Populated by JS based on phase/status -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Items summary -->
+  <div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+      <span>Items <span class="badge bg-secondary ms-1" id="itemCount">0</span></span>
+      <div class="d-flex align-items-center gap-2">
+        <div id="itemFilterBtns" style="display:none">
+          <div class="btn-group btn-group-sm" role="group">
+            <button id="filterAll"   class="btn btn-secondary"        onclick="setItemFilter('all')">All</button>
+            <button id="filterError" class="btn btn-outline-danger"   onclick="setItemFilter('error')">Errors</button>
+            <button id="filterWarn"  class="btn btn-outline-warning"  onclick="setItemFilter('warn')">Warnings</button>
+            <button id="filterIssue" class="btn btn-outline-dark"     onclick="setItemFilter('issue')">Issues</button>
+          </div>
+          <button id="clearFocusBtn" class="btn btn-sm btn-outline-info ms-2" style="display:none" onclick="clearFocus()"><i class="bi bi-x-circle"></i> Clear focus</button>
+        </div>
+        <div id="itemActions"></div>
+      </div>
+    </div>
+    <div class="card-body p-0">
+      <div class="table-responsive" style="max-height:500px; overflow-y:auto">
+        <table class="table table-sm table-hover mb-0">
+          <thead class="table-light sticky-top">
+            <tr>
+              <th>File Row</th>
+              <th>Mfg Cat #</th>
+              <th>Vendor Cat #</th>
+              <th>Description</th>
+              <th>UOM</th>
+              <th>QOE</th>
+              <th>Price</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="itemsBody">
+            <tr><td colspan="9" class="text-center text-muted">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Re-upload Modal -->
+  <div class="modal fade" id="reuploadModal" tabindex="-1" aria-labelledby="reuploadModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="reuploadModalLabel">Re-upload Items</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div class="alert alert-warning py-2 small mb-3">
+            This will <strong>delete all current items and errors</strong> for this task and replace them with the new file.
+          </div>
+
+          <!-- File picker -->
+          <div class="mb-3">
+            <label class="form-label fw-semibold">Select Excel file (.xlsx)</label>
+            <input type="file" class="form-control form-control-sm" id="reuploadFileInput" accept=".xlsx">
+          </div>
+
+          <!-- Column mapping (shown after file is chosen) -->
+          <div id="reuploadColMapPanel" style="display:none">
+            <p class="fw-semibold small mb-1">Map your file columns to required fields:</p>
+            <div id="reuploadColMapFields"></div>
+            <div id="reuploadPreview" class="mt-2 small text-muted"></div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-warning btn-sm" id="btnConfirmReupload" disabled>Confirm Re-upload</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Edit / Search Vendor Modal -->
+  <div class="modal fade" id="editVendorModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title">Search &amp; Select Vendor</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div class="input-group input-group-sm mb-3">
+            <input type="text" class="form-control" id="editVendorSearchInput" placeholder="Search by vendor name or purchase-from location...">
+            <button class="btn btn-outline-primary" id="btnEditVendorSearch">Search</button>
+          </div>
+          <div class="table-responsive" style="max-height:400px;overflow-y:auto">
+            <table class="table table-sm table-hover">
+              <thead class="table-light">
+                <tr><th>ERP Vendor ID</th><th>Vendor Name</th><th>Purchase From</th><th></th></tr>
+              </thead>
+              <tbody id="editVendorResults">
+                <tr><td colspan="4" class="text-center text-muted">Enter a search term above</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Edit Item Modal -->
+  <div class="modal fade" id="editItemModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title">Edit Item — Row <span id="editRowNum"></span></h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" id="editItemId">
+          <div class="mb-2">
+            <label class="form-label small fw-semibold">Mfg Cat #</label>
+            <input type="text" class="form-control form-control-sm" id="editMfg">
+          </div>
+          <div class="mb-2">
+            <label class="form-label small fw-semibold">Vendor Cat #</label>
+            <input type="text" class="form-control form-control-sm" id="editVendor">
+          </div>
+          <div class="mb-2">
+            <label class="form-label small fw-semibold">Description</label>
+            <textarea class="form-control form-control-sm" id="editDesc" rows="2"></textarea>
+          </div>
+          <div class="row g-2">
+            <div class="col-4">
+              <label class="form-label small fw-semibold">UOM</label>
+              <input type="text" class="form-control form-control-sm" id="editUom">
+            </div>
+            <div class="col-4">
+              <label class="form-label small fw-semibold">QOE</label>
+              <input type="number" class="form-control form-control-sm" id="editQoe" min="1">
+            </div>
+            <div class="col-4">
+              <label class="form-label small fw-semibold">Price</label>
+              <input type="number" class="form-control form-control-sm" id="editPrice" step="0.0001" min="0">
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-primary btn-sm" id="btnSaveEdit">Save Changes</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Pre-check results -->
+  <div class="card mb-4" id="precheckCard" style="display:none">
+    <div class="card-header" id="precheckHeader">Pre-Check Results</div>
+    <div class="card-body" id="precheckBody"></div>
+  </div>
+
+  <!-- Errors -->
+  <div class="card mb-4" id="errorsCard" style="display:none">
+    <div class="card-header text-danger d-flex justify-content-between align-items-center">
+      <span>Pre-Check Errors</span>
+      <small class="fw-normal" style="font-size:0.75rem;opacity:0.75">Click a row to filter the item table</small>
+    </div>
+    <div class="card-body p-0">
+      <table class="table table-sm mb-0">
+        <thead class="table-light">
+          <tr><th>Row</th><th>Type</th><th>Detail</th><th>Resolved</th></tr>
+        </thead>
+        <tbody id="errorsBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Warnings -->
+  <div class="card mb-4" id="warningsCard" style="display:none">
+    <div class="card-header d-flex justify-content-between align-items-center" style="color:#856404; background-color:#fff3cd; border-color:#ffc107">
+      <span>Pre-Check Warnings</span>
+      <small class="fw-normal" style="font-size:0.75rem;opacity:0.75">Click a row to filter the item table</small>
+    </div>
+    <div class="card-body p-0">
+      <table class="table table-sm mb-0">
+        <thead class="table-light">
+          <tr><th>Row</th><th>Type</th><th>Detail</th><th>Resolved</th></tr>
+        </thead>
+        <tbody id="warningsBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Status log -->
+  <div class="card mb-4">
+    <div class="card-header">Status History</div>
+    <div class="card-body p-0">
+      <table class="table table-sm mb-0">
+        <thead class="table-light">
+          <tr><th>From</th><th>To</th><th>By</th><th>When</th><th>Notes</th></tr>
+        </thead>
+        <tbody id="logBody">
+          <tr><td colspan="5" class="text-center text-muted">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const PREFIX = "{{ url_prefix }}";
+const TASK_ID = "{{ task_id }}";
+const PHASES = ["INTAKE", "IDENTITY", "PREPROCESS", "DEDUP", "EXPORT", "MONITORING"];
+
+let currentTask = null;
+let currentItems = [];
+let activeItemFilter = "all"; // "all" | "error" | "warn" | "issue"
+let focusedItemIds = new Set(); // item_ids to highlight/filter (from clicking error/warning rows)
+
+/* ================================================================
+   Status badge helper
+   ================================================================ */
+function statusBadge(status) {
+  if (status.includes("ERROR"))  return `<span class="badge bg-danger">${status}</span>`;
+  if (status === "WARN_PC1")     return `<span class="badge" style="background-color:#ffc107;color:#000">${status}</span>`;
+  if (status.includes("PASSED")) return `<span class="badge bg-success">${status}</span>`;
+  return `<span class="badge bg-secondary">${status}</span>`;
+}
+
+/* ================================================================
+   Item table rendering + filtering
+   ================================================================ */
+function renderItemsTable() {
+  const inIntake = currentTask && currentTask.phase === "INTAKE";
+  const ibody = document.getElementById("itemsBody");
+  if (!currentItems.length) {
+    ibody.innerHTML = '<tr><td colspan="9" class="text-center text-muted">No items yet</td></tr>';
+    return;
+  }
+
+  let visible;
+  if (focusedItemIds.size > 0) {
+    visible = currentItems.filter(i => focusedItemIds.has(i.item_id));
+  } else if (activeItemFilter === "error") {
+    visible = currentItems.filter(i => i.status === "ERROR_PC1");
+  } else if (activeItemFilter === "warn") {
+    visible = currentItems.filter(i => i.status === "WARN_PC1");
+  } else if (activeItemFilter === "issue") {
+    visible = currentItems.filter(i => i.status === "ERROR_PC1" || i.status === "WARN_PC1");
+  } else {
+    visible = currentItems;
+  }
+
+  if (!visible.length) {
+    ibody.innerHTML = '<tr><td colspan="9" class="text-center text-muted">No matching items</td></tr>';
+  } else {
+    ibody.innerHTML = visible.map(i => {
+      let actionBtns = "";
+      if (i.status === "ERROR_PC1" && inIntake) {
+        actionBtns = `<button class="btn btn-outline-primary btn-sm py-0 px-1" onclick="openEditModal(${i.item_id})" title="Edit"><i class="bi bi-pencil-square"></i> Edit</button>`;
+      } else if (i.status === "WARN_PC1" && inIntake) {
+        actionBtns = `<button class="btn btn-outline-primary btn-sm py-0 px-1 me-1" onclick="openEditModal(${i.item_id})" title="Edit"><i class="bi bi-pencil-square"></i> Edit</button>`
+                   + `<button class="btn btn-outline-success btn-sm py-0 px-1" onclick="manuallyPass(${i.item_id})" title="Pass">Pass</button>`;
+      }
+      const rowHighlight = focusedItemIds.has(i.item_id) ? ' class="table-info"' : '';
+      return `
+        <tr data-item-id="${i.item_id}"${rowHighlight}>
+          <td>${i.file_row || "\u2014"}</td>
+          <td>${i.mfg_catalog_num || "\u2014"}</td>
+          <td>${i.vendor_catalog_num || "\u2014"}</td>
+          <td class="text-truncate" style="max-width:250px" title="${(i.description || '').replace(/"/g, '&quot;')}">${i.description || "\u2014"}</td>
+          <td>${i.uom}</td>
+          <td>${i.qoe}</td>
+          <td>${i.unit_price != null ? i.unit_price : "\u2014"}</td>
+          <td>${statusBadge(i.status)}</td>
+          <td>${actionBtns}</td>
+        </tr>`;
+    }).join("");
+  }
+
+  // Count badge: show visible/total when filtered
+  const countEl = document.getElementById("itemCount");
+  countEl.textContent = visible.length < currentItems.length
+    ? `${visible.length} / ${currentItems.length}`
+    : currentItems.length;
+
+  // Update filter button active styles
+  const filterDefs = [
+    { id: "filterAll",   key: "all",   active: "btn-secondary",   inactive: "btn-outline-secondary" },
+    { id: "filterError", key: "error", active: "btn-danger",       inactive: "btn-outline-danger" },
+    { id: "filterWarn",  key: "warn",  active: "btn-warning",      inactive: "btn-outline-warning" },
+    { id: "filterIssue", key: "issue", active: "btn-dark",         inactive: "btn-outline-dark" },
+  ];
+  filterDefs.forEach(({ id, key, active, inactive }) => {
+    const btn = document.getElementById(id);
+    if (!btn) return;
+    const isActive = focusedItemIds.size === 0 && activeItemFilter === key;
+    btn.className = `btn btn-sm ${isActive ? active : inactive}`;
+  });
+}
+
+function setItemFilter(f) {
+  activeItemFilter = f;
+  focusedItemIds = new Set();
+  document.getElementById("clearFocusBtn").style.display = "none";
+  renderItemsTable();
+}
+
+function focusItems(ids) {
+  focusedItemIds = new Set(ids.filter(id => id !== null && id !== undefined));
+  if (focusedItemIds.size === 0) return;
+  document.getElementById("clearFocusBtn").style.display = "";
+  renderItemsTable();
+  document.getElementById("itemsBody").closest(".table-responsive").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function focusItem(itemId) {
+  focusItems([itemId]);
+}
+
+function clearFocus() {
+  focusedItemIds = new Set();
+  document.getElementById("clearFocusBtn").style.display = "none";
+  renderItemsTable();
+}
+
+/* ================================================================
+   Main loader
+   ================================================================ */
+async function loadTask() {
+  const resp = await fetch(`${PREFIX}/api/tasks/${TASK_ID}`);
+  if (!resp.ok) { document.getElementById("taskMeta").innerHTML = "<p class='text-danger'>Task not found</p>"; return; }
+  const data = await resp.json();
+  const t = data.task;
+  currentTask = t;
+  currentItems = data.items || [];
+  const inIntake = t.phase === "INTAKE";
+
+  // Phase progress bar
+  const currentIdx = PHASES.indexOf(t.phase);
+  document.getElementById("phaseBar").innerHTML = PHASES.map((p, i) => {
+    const cls = i < currentIdx ? "bg-success" : i === currentIdx ? "bg-primary" : "bg-light text-dark";
+    return `<span class="badge ${cls}">${p}</span>`;
+  }).join("");
+
+  // Metadata
+  document.getElementById("taskMeta").innerHTML = `
+    <div class="row">
+      <div class="col-sm-6">
+        <dl class="row mb-0">
+          <dt class="col-5">Contract #</dt><dd class="col-7">${t.contract_number || "—"}</dd>
+          <dt class="col-5">Vendor</dt>
+          <dd class="col-7">${t.vendor_id || "—"}${t.erp_vendor_name ? ` — ${t.erp_vendor_name}` : ""}${t.purchase_from_loc ? ` (${t.purchase_from_loc})` : ""}</dd>
+          <dt class="col-5">Type</dt><dd class="col-7">${t.process_type} / ${t.source_type}</dd>
+          <dt class="col-5">Org</dt><dd class="col-7">${t.organization}</dd>
+          <dt class="col-5">Wrike ID</dt><dd class="col-7">${t.wrike_id || "—"}</dd>
+        </dl>
+      </div>
+      <div class="col-sm-6">
+        <dl class="row mb-0">
+          <dt class="col-5">Intention</dt><dd class="col-7">${t.intention}</dd>
+          <dt class="col-5">OEM</dt><dd class="col-7">${t.oem_name || "—"}</dd>
+          <dt class="col-5">Phase</dt><dd class="col-7"><span class="badge bg-primary">${t.phase}</span></dd>
+          <dt class="col-5">Status</dt><dd class="col-7">${statusBadge(t.status)}</dd>
+        </dl>
+      </div>
+    </div>
+    <p class="mt-2 mb-0 text-muted small">Created by ${t.created_by} on ${new Date(t.created_at).toLocaleString()}</p>
+  `;
+
+  // ----- Actions panel -----
+  const actions = document.getElementById("taskActions");
+  let btns = "";
+  const intakeStatuses = ["PENDING_PRECHECK", "DRAFT", "ON_HOLD_PC1", "PENDING_NUVIA"];
+  const allUploaded = currentItems.length > 0 && currentItems.every(i => i.status === "UPLOADED");
+
+  // Only unresolved errors count for gating and display
+  const allIssues = (data.errors || []).filter(e => !e.resolved);
+  const hasHeaderErrors = allIssues.some(e => e.item_id === null || e.item_id === undefined);
+
+  if (inIntake && intakeStatuses.includes(t.status)) {
+    btns += `<button class="btn btn-sm btn-outline-warning d-block mb-1 w-100" onclick="showReupload()">Re-upload Items</button>`;
+    if (allUploaded) {
+      btns += `<button class="btn btn-sm btn-primary d-block mb-1 w-100" onclick="runPrecheck()">Run Pre-check</button>`;
+    }
+  }
+
+  // "Edit Vendor ID" — only when there are unresolved header errors
+  if (inIntake && hasHeaderErrors) {
+    btns += `<button class="btn btn-sm btn-outline-danger d-block mb-1 w-100" onclick="openEditVendorModal()"><i class="bi bi-pencil-square"></i> Edit Vendor ID</button>`;
+  }
+
+  // "Re-run Pre-check on Errors/Warnings" — when there are error or warn items
+  if (inIntake && (t.status === "ON_HOLD_PC1" || t.status === "PENDING_NUVIA")) {
+    const hasErrorWarn = currentItems.some(i => i.status === "ERROR_PC1" || i.status === "WARN_PC1");
+    if (hasErrorWarn) {
+      btns += `<button class="btn btn-sm btn-outline-info d-block mb-1 w-100" onclick="recheckAll()">Re-run Pre-check (Errors/Warnings)</button>`;
+    }
+  }
+
+  // "Proceed with Passing Items" — blocked when header errors exist
+  if (inIntake && !hasHeaderErrors && (t.status === "ON_HOLD_PC1" || t.status === "PENDING_NUVIA")) {
+    const passedCount = currentItems.filter(i => i.status === "PASSED_PC1").length;
+    if (passedCount > 0) {
+      const isPremier = (t.source_type || "").toUpperCase() === "PREMIER";
+      const failedOrWarned = currentItems.filter(i => i.status === "ERROR_PC1" || i.status === "WARN_PC1").length;
+      if (isPremier && failedOrWarned > 0) {
+        btns += `<button class="btn btn-sm btn-outline-secondary d-block mb-1 w-100" disabled title="PREMIER contracts require all items to pass">Proceed (blocked — PREMIER)</button>`;
+      } else if (failedOrWarned > 0) {
+        btns += `<button class="btn btn-sm btn-success d-block mb-1 w-100" onclick="proceedWithPassing()">Proceed with ${passedCount} Passing Items (LOCAL)</button>`;
+      } else {
+        btns += `<button class="btn btn-sm btn-success d-block mb-1 w-100" onclick="proceedWithPassing()">Advance to Identity</button>`;
+      }
+    }
+  } else if (inIntake && hasHeaderErrors && (t.status === "ON_HOLD_PC1" || t.status === "PENDING_NUVIA")) {
+    btns += `<button class="btn btn-sm btn-outline-secondary d-block mb-1 w-100" disabled title="Fix header errors (Row 0) before proceeding">Proceed (blocked — header errors)</button>`;
+  }
+
+  if (t.phase === "IDENTITY") {
+    btns += `<a href="${PREFIX}/identity/${TASK_ID}" class="btn btn-sm btn-outline-primary d-block mb-1">Identity</a>`;
+  }
+  if (t.phase === "PREPROCESS") {
+    btns += `<a href="${PREFIX}/preprocess/${TASK_ID}" class="btn btn-sm btn-outline-primary d-block mb-1">Preprocess</a>`;
+  }
+  actions.innerHTML = btns || '<p class="text-muted small mb-0">No actions available</p>';
+
+  // ----- Items table -----
+  document.getElementById("itemFilterBtns").style.display = currentItems.length ? "" : "none";
+  focusedItemId = null;
+  document.getElementById("clearFocusBtn").style.display = "none";
+  renderItemsTable();
+
+  // ----- Errors card (ERROR_PC1 items + header errors) -----
+  const errorItems = currentItems.filter(i => i.status === "ERROR_PC1").map(i => i.item_id);
+  const errorIssues = allIssues.filter(e =>
+    (e.item_id === null || e.item_id === undefined || errorItems.includes(e.item_id)) && !e.resolved
+  );
+  if (errorIssues.length) {
+    document.getElementById("errorsCard").style.display = "";
+    document.getElementById("errorsBody").innerHTML = errorIssues.map(e => {
+      const isHeader = e.item_id === null || e.item_id === undefined;
+      const item = !isHeader ? currentItems.find(it => it.item_id === e.item_id) : null;
+      const rowLabel = isHeader
+        ? `<span class="badge bg-dark">Row 0</span> <small class="text-muted">Header</small>`
+        : (item ? item.file_row : e.item_id);
+      // For dup errors, also focus the previously-seen row mentioned in the detail
+      let focusIds = [e.item_id];
+      if (!isHeader && e.error_type.startsWith("DUPLICATE_")) {
+        const m = (e.error_detail || "").match(/file row (\d+)/);
+        if (m) {
+          const prevRow = parseInt(m[1]);
+          const prevItem = currentItems.find(it => it.file_row == prevRow);
+          if (prevItem) focusIds.push(prevItem.item_id);
+        }
+      }
+      const focusAttrs = isHeader ? '' : ` style="cursor:pointer" title="Click to focus involved rows" onclick="focusItems([${focusIds.join(",")}])"`;
+      return `
+        <tr${isHeader ? ' class="table-secondary"' : ''}${focusAttrs}>
+          <td>${rowLabel}</td>
+          <td>${e.error_type}</td>
+          <td>${e.error_detail}</td>
+          <td>${e.resolved ? '<span class="text-success">Yes</span>' : '<span class="text-danger">No</span>'}</td>
+        </tr>`;
+    }).join("");
+  } else {
+    document.getElementById("errorsCard").style.display = "none";
+  }
+
+  // ----- Warnings card (WARN_PC1 only) -----
+  const warnItems = currentItems.filter(i => i.status === "WARN_PC1").map(i => i.item_id);
+  const warnIssues = allIssues.filter(e => warnItems.includes(e.item_id) && !e.resolved);
+  if (warnIssues.length) {
+    document.getElementById("warningsCard").style.display = "";
+    document.getElementById("warningsBody").innerHTML = warnIssues.map(e => {
+      const item = currentItems.find(it => it.item_id === e.item_id);
+      // For dup warnings, also focus the previously-seen row mentioned in the detail
+      let wFocusIds = [e.item_id];
+      if (e.error_type.startsWith("DUPLICATE_")) {
+        const m = (e.error_detail || "").match(/file row (\d+)/);
+        if (m) {
+          const prevRow = parseInt(m[1]);
+          const prevItem = currentItems.find(it => it.file_row == prevRow);
+          if (prevItem) wFocusIds.push(prevItem.item_id);
+        }
+      }
+      return `
+        <tr style="cursor:pointer" title="Click to focus involved rows" onclick="focusItems([${wFocusIds.join(",")}])">
+          <td>${item ? item.file_row : e.item_id}</td>
+          <td>${e.error_type}</td>
+          <td>${e.error_detail}</td>
+          <td>${e.resolved ? '<span class="text-success">Yes</span>' : '<span class="text-danger">No</span>'}</td>
+        </tr>`;
+    }).join("");
+  } else {
+    document.getElementById("warningsCard").style.display = "none";
+  }
+
+  // ----- Status log -----
+  const log = data.status_log || [];
+  const lbody = document.getElementById("logBody");
+  if (!log.length) {
+    lbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No transitions yet</td></tr>';
+  } else {
+    lbody.innerHTML = log.map(l => `
+      <tr>
+        <td>${l.old_phase}/${l.old_status}</td>
+        <td>${l.new_phase}/${l.new_status}</td>
+        <td>${l.changed_by}</td>
+        <td>${l.changed_at ? new Date(l.changed_at).toLocaleString() : "—"}</td>
+        <td>${l.notes || ""}</td>
+      </tr>
+    `).join("");
+  }
+}
+
+/* ================================================================
+   Column definitions (mirrors task_list.html)
+   ================================================================ */
+const SINGLE_REQUIRED_COLS = [
+  {key: "mfg_catalog_num",    label: "Manufacturer Part #",  aliases: ["manufacturer part number","manufacturer catalog number","mfg_catalog_num","mfg_cat_num","mfg_cat_#","mfg#","manufacturer_part_number","mfg_part_number","manufacturer catalog #","manufacturer part #","mfg part num","mfn"]},
+  {key: "vendor_catalog_num", label: "Vendor Part #",        aliases: ["vendor part number","vendor_catalog_num","vendor_cat_num","vendor_cat_#","vendor#","vendor catalog #","vendor part #","vendor part num","vpn"]},
+  {key: "description",        label: "Item Description",     aliases: ["item description","description","desc","item_description"]},
+  {key: "unit_price",         label: "Contract Price",       aliases: ["contract price","unit_price","price","cost","contract_price"]},
+  {key: "uom",                label: "UOM",                  aliases: ["uom","unit_of_measure","unit of measure"]},
+  {key: "qoe",                label: "QOE",                  aliases: ["qoe","quantity","qty","conversion_factor","conversion factor to ea","qoe (conversion factor to ea)"]},
+];
+const SINGLE_OPTIONAL_COLS = [
+  {key: "tier_description",   label: "Tier Description",     aliases: ["tier description","tier_description","tier_desc","contract tier description"]},
+  {key: "tier_level",         label: "Tier Level",           aliases: ["tier level","tier_level"]},
+];
+const BATCH_REQUIRED_COLS = [
+  {key: "organization",       label: "Organization",          aliases: ["organization","org","company","contract company"]},
+  {key: "contract_number",    label: "Contract Number",       aliases: ["contract number","contract_number","contract_id","contract id","contractid"]},
+  {key: "intention",          label: "Intention",             aliases: ["intention","action","intent"]},
+  {key: "vendor_id",          label: "ERP Vendor ID",         aliases: ["erp vendor id","vendor_id","vendor id","erp_vendor_id"]},
+  {key: "process_type",       label: "Contract Process Type", aliases: ["contract process type","process_type","process type"]},
+  {key: "source_type",        label: "Contract Source Type",  aliases: ["contract source type","source_type","source type"]},
+  {key: "oem_name",           label: "Contract Manufacturer", aliases: ["contract manufacturer","oem_name","oem name","manufacturer"]},
+  {key: "vendor_catalog_num", label: "Vendor Catalog #",      aliases: ["vendor catalog #","vendor_catalog_num","vendor_cat_num","vendor#","vendor part number","vendor part #","vendor part num","vpn"]},
+  {key: "mfg_catalog_num",    label: "Manufacturer Catalog #",aliases: ["manufacturer catalog #","mfg_catalog_num","mfg_cat_num","mfg#","manufacturer part number","manufacturer part #","mfg part num","mfn"]},
+  {key: "description",        label: "Description",           aliases: ["description","desc","item_description","item description"]},
+  {key: "uom",                label: "UOM",                   aliases: ["uom","unit_of_measure","unit of measure"]},
+  {key: "unit_price",         label: "Unit Price",            aliases: ["unit price","unit_price","price","cost","contract price"]},
+  {key: "qoe",                label: "QOE",                   aliases: ["qoe","quantity","qty","conversion factor to ea","qoe (conversion factor to ea)"]},
+  {key: "tier_description",   label: "Tier Description",      aliases: ["tier description","tier_description","tier_desc","contract tier description"]},
+  {key: "tier_level",         label: "Tier Level",            aliases: ["tier level","tier_level"]},
+];
+
+/* ================================================================
+   Column mapping helpers
+   ================================================================ */
+function normalise(s) { return s.trim().toLowerCase().replace(/[^a-z0-9]/g, "_").replace(/_+/g, "_"); }
+
+function autoMatch(fileHeaders, colDefs) {
+  const normHeaders = fileHeaders.map(h => normalise(h));
+  const mapping = {};
+  for (const col of colDefs) {
+    let best = "";
+    for (const alias of col.aliases) {
+      const idx = normHeaders.indexOf(normalise(alias));
+      if (idx !== -1) { best = fileHeaders[idx]; break; }
+    }
+    mapping[col.key] = best;
+  }
+  return mapping;
+}
+
+function buildMappingUI(containerId, colDefs, fileHeaders, mapping, requiredKeys) {
+  const container = document.getElementById(containerId);
+  container.innerHTML = "";
+  for (const col of colDefs) {
+    const isReq = requiredKeys.includes(col.key);
+    const row = document.createElement("div");
+    row.className = "row g-1 mb-1 align-items-center";
+    row.innerHTML = `
+      <div class="col-5">
+        <small class="${isReq ? 'fw-semibold' : 'text-muted'}">${col.label}${isReq ? ' *' : ' (optional)'}</small>
+      </div>
+      <div class="col-7">
+        <select class="form-select form-select-sm col-map-select" data-key="${col.key}">
+          <option value="">— skip —</option>
+          ${fileHeaders.map(h => `<option value="${h}" ${mapping[col.key] === h ? 'selected' : ''}>${h}</option>`).join("")}
+        </select>
+      </div>`;
+    container.appendChild(row);
+  }
+}
+
+function gatherMapping(containerId) {
+  const selects = document.querySelectorAll(`#${containerId} .col-map-select`);
+  const m = {};
+  selects.forEach(sel => { if (sel.value) m[sel.dataset.key] = sel.value; });
+  return m;
+}
+
+async function parseXlsx(file) {
+  const SheetJS = window.XLSX;
+  const buf = await file.arrayBuffer();
+  const wb = SheetJS.read(buf, {type: "array"});
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const json = SheetJS.utils.sheet_to_json(ws, {header: 1});
+  const headers = (json[0] || []).map(h => String(h).trim());
+  return {headers, rowCount: Math.max(0, json.length - 1), file};
+}
+
+/* ================================================================
+   Re-upload modal
+   ================================================================ */
+let reuploadFileData = null;
+
+function showReupload() {
+  reuploadFileData = null;
+  document.getElementById("reuploadFileInput").value = "";
+  document.getElementById("reuploadColMapPanel").style.display = "none";
+  document.getElementById("reuploadColMapFields").innerHTML = "";
+  document.getElementById("reuploadPreview").textContent = "";
+  document.getElementById("btnConfirmReupload").disabled = true;
+  new bootstrap.Modal(document.getElementById("reuploadModal")).show();
+}
+
+document.getElementById("reuploadFileInput").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  reuploadFileData = await parseXlsx(file);
+  const t = currentTask;
+  const isBatch = t && t.intake_mode === "BATCH";
+  const colDefs = isBatch ? BATCH_REQUIRED_COLS : [...SINGLE_REQUIRED_COLS, ...SINGLE_OPTIONAL_COLS];
+  const requiredKeys = isBatch
+    ? BATCH_REQUIRED_COLS.map(c => c.key)
+    : SINGLE_REQUIRED_COLS.map(c => c.key);
+  const mapping = autoMatch(reuploadFileData.headers, colDefs);
+  buildMappingUI("reuploadColMapFields", colDefs, reuploadFileData.headers, mapping, requiredKeys);
+  document.getElementById("reuploadPreview").textContent =
+    `${reuploadFileData.rowCount} row${reuploadFileData.rowCount !== 1 ? 's' : ''} detected in uploaded file.`;
+  document.getElementById("reuploadColMapPanel").style.display = "";
+  document.getElementById("btnConfirmReupload").disabled = false;
+});
+
+document.getElementById("btnConfirmReupload").addEventListener("click", async () => {
+  if (!reuploadFileData) return;
+  const t = currentTask;
+  const isBatch = t && t.intake_mode === "BATCH";
+  const requiredKeys = isBatch
+    ? BATCH_REQUIRED_COLS.map(c => c.key)
+    : SINGLE_REQUIRED_COLS.map(c => c.key);
+  const mapping = gatherMapping("reuploadColMapFields");
+  const unmapped = requiredKeys.filter(k => !mapping[k]);
+  if (unmapped.length) {
+    const allDefs = isBatch ? BATCH_REQUIRED_COLS : [...SINGLE_REQUIRED_COLS, ...SINGLE_OPTIONAL_COLS];
+    const labels = unmapped.map(k => (allDefs.find(c => c.key === k) || {label: k}).label);
+    alert("Required columns not mapped:\n\n" + labels.join("\n"));
+    return;
+  }
+  const btn = document.getElementById("btnConfirmReupload");
+  btn.disabled = true; btn.textContent = "Uploading…";
+  const fd = new FormData();
+  fd.append("file", reuploadFileData.file);
+  fd.append("column_mapping", JSON.stringify(mapping));
+  const resp = await fetch(`${PREFIX}/api/intake/${TASK_ID}/reupload`, {method: "POST", body: fd});
+  btn.textContent = "Confirm Re-upload"; btn.disabled = false;
+  if (resp.ok) {
+    bootstrap.Modal.getInstance(document.getElementById("reuploadModal")).hide();
+    loadTask();
+  } else {
+    const err = await resp.json();
+    alert("Re-upload failed: " + (err.error || "Unknown error"));
+  }
+});
+
+/* ================================================================
+   Pre-check
+   ================================================================ */
+async function runPrecheck() {
+  if (!confirm("Run pre-check validation on all uploaded items?")) return;
+  const resp = await fetch(`${PREFIX}/api/intake/${TASK_ID}/precheck`, {method: "POST"});
+  const data = await resp.json();
+
+  const card = document.getElementById("precheckCard");
+  card.style.display = "";
+  const allGood = data.failed === 0 && (data.warned || 0) === 0;
+  const cls = allGood ? "text-success" : data.failed > 0 ? "text-danger" : "text-warning";
+  document.getElementById("precheckHeader").className = `card-header ${cls}`;
+
+  let summary = `<strong>Total:</strong> ${data.total} &nbsp; <strong>Passed:</strong> ${data.passed}`;
+  if (data.warned) summary += ` &nbsp; <strong class="text-warning">Warned:</strong> ${data.warned}`;
+  summary += ` &nbsp; <strong>Failed:</strong> ${data.failed}`;
+  if (data.task_status === "AUTO_ADVANCED") {
+    summary += ` &nbsp; <span class="badge bg-success">Auto-advanced to IDENTITY</span>`;
+  }
+  document.getElementById("precheckBody").innerHTML = `
+    <p class="mb-1">${summary}</p>
+    ${data.uom_mappings && data.uom_mappings.length ? `<p class="small text-muted mb-0">UOM mappings: ${data.uom_mappings.map(m => m.from + " → " + m.to).join(", ")}</p>` : ""}
+  `;
+
+  loadTask();
+}
+
+/* ================================================================
+   Edit Item (in-place for ERROR_PC1 items)
+   ================================================================ */
+function openEditModal(itemId) {
+  const item = currentItems.find(i => i.item_id === itemId);
+  if (!item) return;
+  document.getElementById("editItemId").value = itemId;
+  document.getElementById("editRowNum").textContent = item.file_row || itemId;
+  document.getElementById("editMfg").value = item.mfg_catalog_num || "";
+  document.getElementById("editVendor").value = item.vendor_catalog_num || "";
+  document.getElementById("editDesc").value = item.description || "";
+  document.getElementById("editUom").value = item.uom || "";
+  document.getElementById("editQoe").value = item.qoe || "";
+  document.getElementById("editPrice").value = item.unit_price != null ? item.unit_price : "";
+  new bootstrap.Modal(document.getElementById("editItemModal")).show();
+}
+
+document.getElementById("btnSaveEdit").addEventListener("click", async () => {
+  const itemId = document.getElementById("editItemId").value;
+  const payload = {
+    mfg_catalog_num: document.getElementById("editMfg").value.trim(),
+    vendor_catalog_num: document.getElementById("editVendor").value.trim() || null,
+    description: document.getElementById("editDesc").value.trim(),
+    uom: document.getElementById("editUom").value.trim(),
+    qoe: parseInt(document.getElementById("editQoe").value) || 1,
+    unit_price: parseFloat(document.getElementById("editPrice").value) || 0,
+  };
+  const btn = document.getElementById("btnSaveEdit");
+  btn.disabled = true; btn.textContent = "Saving…";
+  const resp = await fetch(`${PREFIX}/api/intake/${TASK_ID}/items/${itemId}`, {
+    method: "PUT",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(payload),
+  });
+  btn.textContent = "Save Changes"; btn.disabled = false;
+  if (resp.ok) {
+    bootstrap.Modal.getInstance(document.getElementById("editItemModal")).hide();
+    loadTask();
+  } else {
+    const err = await resp.json();
+    alert("Save failed: " + (err.error || "Unknown error"));
+  }
+});
+
+/* ================================================================
+   Manually pass a WARN_PC1 item
+   ================================================================ */
+async function manuallyPass(itemId) {
+  if (!confirm("Manually approve this warning item? This will mark it as PASSED_PC1.")) return;
+  const resp = await fetch(`${PREFIX}/api/intake/${TASK_ID}/items/${itemId}/pass`, {method: "POST"});
+  if (resp.ok) {
+    loadTask();
+  } else {
+    const err = await resp.json();
+    alert("Manual pass failed: " + (err.error || "Unknown error"));
+  }
+}
+
+/* ================================================================
+   Re-run pre-check on all error/warn items
+   ================================================================ */
+async function recheckAll() {
+  if (!confirm("Reset all error/warning items and re-run pre-check?")) return;
+  const resp = await fetch(`${PREFIX}/api/intake/${TASK_ID}/recheck-all`, {method: "POST"});
+  const data = await resp.json();
+
+  const card = document.getElementById("precheckCard");
+  card.style.display = "";
+  const allGood = data.failed === 0 && (data.warned || 0) === 0;
+  const cls = allGood ? "text-success" : data.failed > 0 ? "text-danger" : "text-warning";
+  document.getElementById("precheckHeader").className = `card-header ${cls}`;
+  document.getElementById("precheckBody").innerHTML = `
+    <p class="mb-1"><strong>Total:</strong> ${data.total} &nbsp; <strong>Passed:</strong> ${data.passed} &nbsp; <strong>Warned:</strong> ${data.warned || 0} &nbsp; <strong>Failed:</strong> ${data.failed}</p>
+  `;
+  loadTask();
+}
+
+/* ================================================================
+   Proceed with passing items
+   ================================================================ */
+async function proceedWithPassing() {
+  const passed = currentItems.filter(i => i.status === "PASSED_PC1").length;
+  const total = currentItems.length;
+  const msg = passed < total
+    ? `Only ${passed} of ${total} items passed. Proceed with passing items to Identity phase? (LOCAL contracts only)`
+    : `All ${total} items passed. Advance to Identity phase?`;
+  if (!confirm(msg)) return;
+
+  const resp = await fetch(`${PREFIX}/api/intake/${TASK_ID}/proceed`, {method: "POST"});
+  if (resp.ok) {
+    loadTask();
+  } else {
+    const err = await resp.json();
+    alert("Proceed failed: " + (err.error || "Unknown error"));
+  }
+}
+
+/* ================================================================
+   Edit Vendor ID
+   ================================================================ */
+function openEditVendorModal() {
+  document.getElementById("editVendorSearchInput").value = "";
+  document.getElementById("editVendorResults").innerHTML =
+    '<tr><td colspan="4" class="text-center text-muted">Enter a search term above</td></tr>';
+  new bootstrap.Modal(document.getElementById("editVendorModal")).show();
+}
+
+document.getElementById("btnEditVendorSearch").addEventListener("click", searchDetailVendors);
+document.getElementById("editVendorSearchInput").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") searchDetailVendors();
+});
+
+async function searchDetailVendors() {
+  const q = document.getElementById("editVendorSearchInput").value.trim();
+  if (!q) return;
+  const tbody = document.getElementById("editVendorResults");
+  tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">Searching...</td></tr>';
+  const resp = await fetch(`${PREFIX}/api/vendor-search?q=${encodeURIComponent(q)}`);
+  const results = await resp.json();
+  if (!results.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">No results found</td></tr>';
+    return;
+  }
+  tbody.innerHTML = results.map(r => {
+    const isActive = r.active && r.active !== 'No' && r.active !== 0;
+    const rowCls = isActive ? '' : 'class="table-secondary text-muted"';
+    const btnDisabled = isActive ? '' : 'disabled title="Inactive"';
+    const parts = (r.erp_vendor_id || '').split('-');
+    return `<tr ${rowCls}>
+      <td>${r.erp_vendor_id || '—'}</td>
+      <td>${r.vendor_name || '—'}</td>
+      <td>${r.purchase_from_name || '—'}</td>
+      <td><button class="btn btn-sm btn-outline-primary btnSelectDetailVendor" ${btnDisabled}
+            data-vendor-id="${r.erp_vendor_id || ''}"
+            data-vendor-name="${(r.vendor_name || '').replace(/"/g, '&quot;')}"
+            data-purchase-from-loc="${parts[1] || ''}"
+            data-purchase-from-name="${(r.purchase_from_name || '').replace(/"/g, '&quot;')}">Select</button></td>
+    </tr>`;
+  }).join("");
+  tbody.querySelectorAll(".btnSelectDetailVendor").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const payload = {
+        vendor_id: btn.dataset.vendorId,
+        erp_vendor_name: btn.dataset.vendorName,
+        purchase_from_loc: btn.dataset.purchaseFromLoc,
+        purchase_from_loc_name: btn.dataset.purchaseFromName,
+      };
+      const saveResp = await fetch(`${PREFIX}/api/tasks/${TASK_ID}`, {
+        method: "PUT",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload),
+      });
+      if (saveResp.ok) {
+        bootstrap.Modal.getInstance(document.getElementById("editVendorModal")).hide();
+        loadTask();
+      } else {
+        const err = await saveResp.json();
+        alert("Save failed: " + (err.error || "Unknown error"));
+      }
+    });
+  });
+}
+
+loadTask();
+</script>
+{% endblock %}

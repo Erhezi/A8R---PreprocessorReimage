@@ -1,0 +1,31 @@
+{# Shared Jinja2 macros for reuse across templates #}
+
+{# Phase progress badges #}
+{% macro phase_badges(current_phase, phases=["INTAKE","IDENTITY","PREPROCESS","DEDUP","EXPORT","MONITORING"]) %}
+<div class="d-flex gap-1">
+  {% for p in phases %}
+    {% set idx = phases.index(p) %}
+    {% set cur_idx = phases.index(current_phase) if current_phase in phases else -1 %}
+    {% if idx < cur_idx %}
+      <span class="badge bg-success">{{ p }}</span>
+    {% elif idx == cur_idx %}
+      <span class="badge bg-primary">{{ p }}</span>
+    {% else %}
+      <span class="badge bg-light text-dark">{{ p }}</span>
+    {% endif %}
+  {% endfor %}
+</div>
+{% endmacro %}
+
+{# Status badge #}
+{% macro status_badge(status) %}
+{% if 'ERROR' in status %}
+  <span class="badge bg-danger">{{ status }}</span>
+{% elif 'PASSED' in status or status == 'COMPLETED' %}
+  <span class="badge bg-success">{{ status }}</span>
+{% elif 'PENDING' in status or 'REVIEW' in status %}
+  <span class="badge bg-warning text-dark">{{ status }}</span>
+{% else %}
+  <span class="badge bg-secondary">{{ status }}</span>
+{% endif %}
+{% endmacro %}
