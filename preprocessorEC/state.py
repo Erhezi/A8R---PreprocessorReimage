@@ -48,7 +48,20 @@ class Status:
     REVIEW_CONTRACTS = "REVIEW_CONTRACTS"
     REVIEW_ITEMS = "REVIEW_ITEMS"
     LLM_REVIEW = "LLM_REVIEW"
+    INFOR_MATCHING = "INFOR_MATCHING"
+    INFOR_REVIEW = "INFOR_REVIEW"
+    ITEM_LABELING = "ITEM_LABELING"
     PREPROCESSED = "PREPROCESSED"
+
+    # Phase 3 — item-level statuses
+    MATCHING = "MATCHING"
+    MATCHED = "MATCHED"
+    NO_MATCH = "NO_MATCH"
+    REVIEW_PENDING = "REVIEW_PENDING"
+    MATCH_CONFIRMED = "MATCH_CONFIRMED"
+    ITEM_LABELED = "ITEM_LABELED"
+    MULTI_ITEM_ERROR = "MULTI_ITEM_ERROR"
+    ITEM_PREPROCESSED = "ITEM_PREPROCESSED"
 
     # Phase 4 — Dedup
     SIMULATING = "SIMULATING"
@@ -90,8 +103,12 @@ class TaskState(TypedDict, total=False):
     ccx_matches: list[dict]
     infor_cl_matches: list[dict]
     infor_im_matches: list[dict]
+    infor_residue_matches: list[dict]
     contract_review: list[dict]
     item_review: list[dict]
+    ccx_decisions_done: bool
+    infor_decisions_done: bool
+    item_labeling_done: bool
     preprocessed_dataset: list[dict]
 
     # Phase 4 — Dedup
@@ -125,8 +142,12 @@ def empty_task_state(task_id: str) -> TaskState:
         ccx_matches=[],
         infor_cl_matches=[],
         infor_im_matches=[],
+        infor_residue_matches=[],
         contract_review=[],
         item_review=[],
+        ccx_decisions_done=False,
+        infor_decisions_done=False,
+        item_labeling_done=False,
         preprocessed_dataset=[],
         simulation_results=[],
         integrity_issues=[],

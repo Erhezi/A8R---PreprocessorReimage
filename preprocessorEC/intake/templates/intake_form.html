@@ -22,7 +22,7 @@
 
   <!-- Pre-check -->
   <div class="card mb-3">
-    <div class="card-header d-flex justify-content-between">
+    <div class="card-header d-flex justify-content-between align-items-center">
       <span>Pre-Check (PC1)</span>
       <button class="btn btn-sm btn-warning" id="btnPrecheck">Run Pre-Check</button>
     </div>
@@ -40,11 +40,11 @@
           <thead class="table-light">
             <tr>
               <th>ID</th><th>Mfg #</th><th>Vendor #</th><th>Description</th>
-              <th>UOM</th><th>QOE</th><th>Price</th><th>Status</th>
+              <th>UOM</th><th>QOE</th><th>Price</th><th>Status</th><th></th>
             </tr>
           </thead>
           <tbody id="itemsBody">
-            <tr><td colspan="8" class="text-center text-muted">Loading…</td></tr>
+            <tr><td colspan="9" class="text-center text-muted">Loading…</td></tr>
           </tbody>
         </table>
       </div>
@@ -55,18 +55,80 @@
   <div class="card mb-3" id="errorsCard" style="display:none">
     <div class="card-header text-danger">PC1 Errors</div>
     <div class="card-body p-0">
-      <table class="table table-sm mb-0">
+      <!-- Non-duplicate errors -->
+      <table class="table table-sm mb-0" id="errorsTable">
         <thead class="table-light">
           <tr><th>Item</th><th>Type</th><th>Detail</th><th>Resolved</th></tr>
         </thead>
         <tbody id="errorsBody"></tbody>
       </table>
+      <!-- Duplicate groups -->
+      <div id="dupGroupsSection" style="display:none" class="mt-2 px-3 pb-2">
+        <h6 class="text-danger mb-2">Duplicate Groups</h6>
+        <div id="dupGroupsList"></div>
+      </div>
     </div>
   </div>
 
   <!-- Proceed -->
   <div class="d-flex justify-content-end">
     <button class="btn btn-success" id="btnProceed" disabled>Proceed to Identity &rarr;</button>
+  </div>
+</div>
+
+<!-- Pre-check Mode Selection Modal -->
+<div class="modal fade" id="precheckModeModal" tabindex="-1" aria-labelledby="precheckModeModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="precheckModeModalLabel">Choose Duplicate Detection Mode</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="list-group">
+          <label class="list-group-item list-group-item-action mode-option-label">
+            <div class="d-flex align-items-center gap-2">
+              <input class="form-check-input flex-shrink-0" type="radio" name="modalMode" value="default">
+              <div>
+                <strong>Default</strong> <span class="badge bg-warning text-dark badge-recommended" style="display:none">Recommended</span>
+                <div class="small text-muted">Reduced MFN — ignores dashes &amp; dots (aaa-bb = aaabb)</div>
+              </div>
+            </div>
+          </label>
+          <label class="list-group-item list-group-item-action mode-option-label">
+            <div class="d-flex align-items-center gap-2">
+              <input class="form-check-input flex-shrink-0" type="radio" name="modalMode" value="strict">
+              <div>
+                <strong>Strict</strong> <span class="badge bg-warning text-dark badge-recommended" style="display:none">Recommended</span>
+                <div class="small text-muted">Exact MFN only — aaa-bb &ne; aaabb</div>
+              </div>
+            </div>
+          </label>
+          <label class="list-group-item list-group-item-action mode-option-label">
+            <div class="d-flex align-items-center gap-2">
+              <input class="form-check-input flex-shrink-0" type="radio" name="modalMode" value="explicit">
+              <div>
+                <strong>Explicit</strong> <span class="badge bg-warning text-dark badge-recommended" style="display:none">Recommended</span>
+                <div class="small text-muted">Exact MFN + UOM — aaa-bb BX &ne; aaa-bb CA</div>
+              </div>
+            </div>
+          </label>
+          <label class="list-group-item list-group-item-action mode-option-label">
+            <div class="d-flex align-items-center gap-2">
+              <input class="form-check-input flex-shrink-0" type="radio" name="modalMode" value="distributor">
+              <div>
+                <strong>Distributor</strong> <span class="badge bg-warning text-dark badge-recommended" style="display:none">Recommended</span>
+                <div class="small text-muted">Vendor ID + Vendor item number (for distributor contracts)</div>
+              </div>
+            </div>
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-warning" id="btnRunPrecheck">Run Pre-Check</button>
+      </div>
+    </div>
   </div>
 </div>
 {% endblock %}
@@ -76,18 +138,33 @@
 const PREFIX = "{{ url_prefix }}";
 const TASK_ID = "{{ task_id }}";
 
+let taskData = {};  // populated by refresh(); used by mode modal
+let activeDupFilter = null;  // item_ids set when filtering a dup group
+
 async function refresh() {
   const resp = await fetch(`${PREFIX}/api/intake/${TASK_ID}`);
   const data = await resp.json();
+  taskData = data;
 
   document.getElementById("itemCount").textContent = data.item_count;
 
+  // Build a set of all item_ids involved in ANY dup group
+  const dupItemIds = new Set();
+  (data.dup_groups || []).forEach(g => g.item_ids.forEach(id => dupItemIds.add(id)));
+
   const ibody = document.getElementById("itemsBody");
   if (!data.items.length) {
-    ibody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">No items uploaded</td></tr>';
+    ibody.innerHTML = '<tr><td colspan="9" class="text-center text-muted">No items uploaded</td></tr>';
   } else {
-    ibody.innerHTML = data.items.map(i => `
-      <tr>
+    ibody.innerHTML = data.items.map(i => {
+      const isError = i.status.includes('ERROR');
+      const isPassed = i.status.includes('PASSED');
+      const isDup = dupItemIds.has(i.item_id);
+      const badgeClass = isError ? 'danger' : isPassed ? 'success' : 'secondary';
+      // Show/hide row based on active dup filter
+      const hidden = activeDupFilter && !activeDupFilter.has(i.item_id) ? ' style="display:none"' : '';
+      return `
+      <tr data-item-id="${i.item_id}"${hidden}>
         <td>${i.item_id}</td>
         <td>${i.mfg_catalog_num || "—"}</td>
         <td>${i.vendor_catalog_num || "—"}</td>
@@ -95,22 +172,56 @@ async function refresh() {
         <td>${i.uom}</td>
         <td>${i.qoe}</td>
         <td>${i.unit_price}</td>
-        <td><span class="badge bg-${i.status.includes('ERROR') ? 'danger' : i.status.includes('PASSED') ? 'success' : 'secondary'}">${i.status}</span></td>
-      </tr>
-    `).join("");
+        <td><span class="badge bg-${badgeClass}">${i.status}</span></td>
+        <td>${isDup ? `<button class="btn btn-sm btn-outline-danger py-0 px-1 btn-delete-item" data-id="${i.item_id}" title="Delete row">&times;</button>` : ''}</td>
+      </tr>`;
+    }).join("");
   }
 
-  // Errors
-  if (data.errors.length) {
-    document.getElementById("errorsCard").style.display = "";
-    document.getElementById("errorsBody").innerHTML = data.errors.map(e => `
+  // -- Non-duplicate errors --
+  const nonDupErrors = data.errors.filter(e => !e.error_type || !e.error_type.startsWith("DUPLICATE"));
+  const hasNonDup = nonDupErrors.length > 0;
+  const errTable = document.getElementById("errorsTable");
+  errTable.style.display = hasNonDup ? "" : "none";
+  if (hasNonDup) {
+    document.getElementById("errorsBody").innerHTML = nonDupErrors.map(e => `
       <tr>
-        <td>${e.item_id}</td>
+        <td>${e.item_id ?? "—"}</td>
         <td>${e.error_type}</td>
         <td>${e.error_detail}</td>
         <td>${e.resolved ? "Yes" : "No"}</td>
       </tr>
     `).join("");
+  }
+
+  // -- Duplicate groups --
+  const dupGroups = data.dup_groups || [];
+  const dupSection = document.getElementById("dupGroupsSection");
+  const dupList = document.getElementById("dupGroupsList");
+  if (dupGroups.length) {
+    dupSection.style.display = "";
+    dupList.innerHTML = dupGroups.map((g, idx) => {
+      const ids = g.item_ids.join(", ");
+      return `
+        <div class="d-flex align-items-center gap-2 mb-1">
+          <span class="badge bg-danger">${g.error_type}</span>
+          <span class="small">Items: ${ids}</span>
+          <button class="btn btn-sm btn-outline-primary py-0 px-1 btn-dup-filter" data-idx="${idx}" title="Filter items table to this group">Filter</button>
+        </div>`;
+    }).join("");
+  } else {
+    dupSection.style.display = "none";
+  }
+
+  // Show errors card if anything present
+  const hasAnyError = hasNonDup || dupGroups.length;
+  document.getElementById("errorsCard").style.display = hasAnyError ? "" : "none";
+
+  // Update Pre-Check button label
+  const hasChecked = data.items.some(i => i.status !== "UPLOADED");
+  const btn = document.getElementById("btnPrecheck");
+  if (!btn.disabled) {
+    btn.textContent = hasChecked ? "Re-Run Pre-Check" : "Run Pre-Check";
   }
 
   // Enable proceed if any passed
@@ -130,13 +241,97 @@ document.getElementById("uploadForm").addEventListener("submit", async (e) => {
   if (resp.ok) { e.target.reset(); refresh(); }
 });
 
-// Precheck
-document.getElementById("btnPrecheck").addEventListener("click", async () => {
-  const resp = await fetch(`${PREFIX}/api/intake/${TASK_ID}/precheck`, { method: "POST" });
+// Delete single item row (only shown on duplicate rows)
+document.getElementById("itemsBody").addEventListener("click", async (e) => {
+  const btn = e.target.closest(".btn-delete-item");
+  if (!btn) return;
+  if (!confirm("Delete this row from the task?")) return;
+  const itemId = btn.dataset.id;
+  const resp = await fetch(`${PREFIX}/api/intake/${TASK_ID}/items/${itemId}`, { method: "DELETE" });
+  if (resp.ok) { activeDupFilter = null; refresh(); }
+  else alert("Failed to delete item");
+});
+
+// Dup group filter: click "Filter" to show only that group's rows
+document.getElementById("dupGroupsList").addEventListener("click", (e) => {
+  const btn = e.target.closest(".btn-dup-filter");
+  if (!btn) return;
+  const idx = parseInt(btn.dataset.idx, 10);
+  const group = taskData.dup_groups[idx];
+  if (!group) return;
+
+  if (btn.textContent.trim() === "Clear") {
+    // Clear filter — show all rows
+    activeDupFilter = null;
+    document.querySelectorAll("#itemsBody tr").forEach(tr => tr.style.display = "");
+    btn.textContent = "Filter";
+    btn.classList.replace("btn-outline-secondary", "btn-outline-primary");
+  } else {
+    // Apply filter — hide non-group rows
+    activeDupFilter = new Set(group.item_ids);
+    document.querySelectorAll("#itemsBody tr").forEach(tr => {
+      const id = parseInt(tr.dataset.itemId, 10);
+      tr.style.display = activeDupFilter.has(id) ? "" : "none";
+    });
+    // Reset all other filter buttons
+    document.querySelectorAll(".btn-dup-filter").forEach(b => {
+      b.textContent = "Filter";
+      b.classList.replace("btn-outline-secondary", "btn-outline-primary");
+    });
+    btn.textContent = "Clear";
+    btn.classList.replace("btn-outline-primary", "btn-outline-secondary");
+  }
+});
+
+// Precheck — open mode selection modal first
+document.getElementById("btnPrecheck").addEventListener("click", () => {
+  const modal = new bootstrap.Modal(document.getElementById("precheckModeModal"));
+
+  // Pre-select mode: recommend based on process_type, else use last-saved mode
+  const processType = (taskData.process_type || "").toUpperCase();
+  let recommended = taskData.precheck_mode || "default";
+  if (processType.includes("DISTRIBUTOR")) recommended = "distributor";
+
+  // Highlight recommended option and set radio
+  document.querySelectorAll(".mode-option-label").forEach(lbl => {
+    const val = lbl.querySelector("input").value;
+    lbl.classList.toggle("list-group-item-warning", val === recommended);
+    lbl.querySelector("input").checked = (val === recommended);
+    const badge = lbl.querySelector(".badge-recommended");
+    if (badge) badge.style.display = (val === recommended) ? "" : "none";
+  });
+
+  modal.show();
+});
+
+// Run precheck after mode is confirmed in modal
+document.getElementById("btnRunPrecheck").addEventListener("click", async () => {
+  const selected = document.querySelector("input[name='modalMode']:checked");
+  if (!selected) return;
+  const mode = selected.value;
+
+  bootstrap.Modal.getInstance(document.getElementById("precheckModeModal")).hide();
+
+  const btn = document.getElementById("btnPrecheck");
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Running…';
+
+  const resp = await fetch(`${PREFIX}/api/intake/${TASK_ID}/precheck`, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({precheck_mode: mode}),
+  });
   const result = await resp.json();
+
+  const modeName = mode.charAt(0).toUpperCase() + mode.slice(1);
   document.getElementById("precheckResult").innerHTML = `
-    <p>Total: ${result.total} | Passed: ${result.passed} | Failed: ${result.failed}</p>
+    <p class="mb-0">Total: <strong>${result.total}</strong> &nbsp;|&nbsp;
+    Passed: <strong class="text-success">${result.passed}</strong> &nbsp;|&nbsp;
+    Failed: <strong class="text-danger">${result.failed}</strong>
+    <span class="badge bg-secondary ms-2">Mode: ${modeName}</span></p>
   `;
+
+  btn.disabled = false;
   refresh();
 });
 

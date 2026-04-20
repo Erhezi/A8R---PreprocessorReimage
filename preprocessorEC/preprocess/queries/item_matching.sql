@@ -1,26 +1,107 @@
--- name: match_infor_contract_lines
--- Match against Infor contract lines by catalog number
+-- name: infor_cascade_by_ccx_pkids
+-- Fetch Infor contract lines that reference accepted CCX pkids.
+-- These are Infor-side records that map to CCX-matched items.
+-- The CCX_pkid link is pre-computed in InforActiveCLRefCCXSyncedCL.
 SELECT
-    cl.contract_number,
-    cl.line_number,
-    cl.item_number AS infor_item_number,
-    cl.mfg_catalog_num,
-    cl.description,
-    cl.uom,
-    cl.unit_price,
-    cl.buy_uom,
-    cl.buy_uom_multiplier
-FROM [DM_MONTYNT\dli2].InforContractLines cl
-WHERE cl.reduced_mfg_num = :reduced_mfg_num
-  AND cl.contract_number = :contract_number;
+    icl.Infor_pkid,
+    icl.OrganizationEID,
+    icl.ContractID,
+    icl.ERPVendorID_Infor        AS erp_vendor_id,
+    icl.VendorID_Infor           AS vendor_id,
+    icl.VendorItem_Infor         AS vendor_catalog_num_infor,
+    icl.ManufacturerNumber_Infor AS mfg_catalog_num_infor,
+    icl.UOM_Infor                AS uom_infor,
+    icl.QOE_Infor                AS qoe_infor,
+    icl.ContractPrice_Infor      AS unit_price_infor,
+    icl.ItemType,
+    icl.ItemNumber               AS infor_item_number,
+    icl.Item                     AS infor_item,
+    icl.reduced_mfg_num_infor,
+    icl.reduced_vendor_num_infor,
+    icl.CCXCurrentSyncFlag,
+    icl.JoinSyncType,
+    icl.CCX_pkid,
+    icl.matched_ccx_line_seq,
+    icl.ContractLineManufacturer_Infor AS contract_line_manufacturer
+FROM [Preprocessor].[InforActiveCLRefCCXSyncedCL] icl
+WHERE icl.CCX_pkid IN :ccx_pkids
+  AND (
+      :org_eid = '105188574'
+      OR icl.OrganizationEID IN (:org_eid, '105188574')
+  );
 
--- name: match_infor_item_master
--- Match against Infor item master by catalog number
+-- name: infor_residue_match
+-- Infor residue: Infor lines with NULL CCX_pkid (no CCX match).
+-- Match by reduced mfg or vendor number against INPUT items.
 SELECT
-    im.item_number AS infor_item_number,
-    im.description,
-    im.mfg_catalog_num,
-    im.uom,
-    im.status AS im_status
-FROM [DM_MONTYNT\dli2].InforItemMaster im
-WHERE im.reduced_mfg_num = :reduced_mfg_num;
+    icl.Infor_pkid,
+    icl.OrganizationEID,
+    icl.ContractID,
+    icl.ERPVendorID_Infor        AS erp_vendor_id,
+    icl.VendorID_Infor           AS vendor_id,
+    icl.VendorItem_Infor         AS vendor_catalog_num_infor,
+    icl.ManufacturerNumber_Infor AS mfg_catalog_num_infor,
+    icl.UOM_Infor                AS uom_infor,
+    icl.QOE_Infor                AS qoe_infor,
+    icl.ContractPrice_Infor      AS unit_price_infor,
+    icl.ItemType,
+    icl.ItemNumber               AS infor_item_number,
+    icl.Item                     AS infor_item,
+    icl.reduced_mfg_num_infor,
+    icl.reduced_vendor_num_infor,
+    icl.CCXCurrentSyncFlag,
+    icl.JoinSyncType,
+    icl.ContractLineManufacturer_Infor AS contract_line_manufacturer,
+    CASE
+        WHEN icl.reduced_mfg_num_infor = :reduced_mfg_num THEN 'REDUCED_MFG'
+        WHEN icl.reduced_vendor_num_infor = :reduced_vendor_num THEN 'REDUCED_VPN'
+        ELSE 'CROSS_MATCH'
+    END AS match_type
+FROM [Preprocessor].[InforActiveCLRefCCXSyncedCL] icl
+WHERE icl.CCX_pkid IS NULL
+  AND (
+        icl.reduced_mfg_num_infor = :reduced_mfg_num
+     OR icl.reduced_vendor_num_infor = :reduced_vendor_num
+  )
+  AND (
+      :org_eid = '105188574'
+      OR icl.OrganizationEID IN (:org_eid, '105188574')
+  );
+
+-- name: item_label_mdm_item
+-- Find Infor Item# via MDM_ITEM (manufacturer + mfg catalog number).
+-- Returns Item with Active status.
+SELECT
+    mi.Item,
+    mi.Active,
+    mi.DefaultBuyUOM,
+    mi.DefaultBuyUOMMultiplier,
+    mi.Description                AS mdm_description
+FROM [DM_MONTYNT\dli2].[MDM_ITEM] mi
+WHERE mi.Manufacturer = :manufacturer
+  AND mi.ManufacturerNumber = :mfg_catalog_num;
+
+-- name: item_label_mdm_vendoritem
+-- Find Infor Item# via MDM_VENDORITEM (vendor + vendor item number).
+-- Returns Item with Active status.
+SELECT
+    mvi.Item,
+    mvi.Active,
+    mvi.Manufacturer,
+    mvi.ManufacturerNumber,
+    mvi.VendorBuyUOM,
+    mvi.[VendorBuyUOM.UOMConversion] AS vendor_uom_conversion
+FROM [DM_MONTYNT\dli2].[MDM_VENDORITEM] mvi
+WHERE mvi.Vendor = :vendor_id
+  AND mvi.VendorItem = :vendor_catalog_num;
+
+-- name: item_uom_options
+-- Get valid buy UOM options for an Infor Item.
+SELECT
+    iu.UOM,
+    iu.UOMConversion,
+    iu.ValidForBuying
+FROM [DM_MONTYNT\dli2].[MDM_ITEMUOM] iu
+WHERE iu.Item = :item_number
+  AND iu.ValidForBuying = 1
+ORDER BY iu.UOMConversion;

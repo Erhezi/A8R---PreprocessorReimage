@@ -178,6 +178,48 @@ def delete_items_for_task(task_id: str) -> int:
         s.commit()
         return count
 
+def delete_item(item_id: int) -> bool:
+    """Delete a single item and its associated pre-check errors.
+
+    Deletes child errors first to avoid FK constraint violations.
+    Returns True if the item existed and was deleted.
+    """
+    with _session() as s:
+        s.query(PreCheckError).filter(PreCheckError.item_id == item_id).delete()
+        count = s.query(TaskItem).filter(TaskItem.item_id == item_id).delete()
+        s.commit()
+        return count > 0
+
+
+def soft_delete_item(item_id: int) -> bool:
+    """Mark an item as DELETED (soft-delete) and resolve its errors."""
+    with _session() as s:
+        item = s.get(TaskItem, item_id)
+        if not item:
+            return False
+        item.status = "DELETED"
+        item.updated_at = ny_now()
+        s.query(PreCheckError).filter(
+            PreCheckError.item_id == item_id,
+            PreCheckError.resolved == False,
+        ).update({"resolved": True, "resolved_by": "SOFT_DELETE", "resolved_at": ny_now()},
+                 synchronize_session="fetch")
+        s.commit()
+        return True
+
+
+def update_dup_error_details(task_id: str, item_ids: list[int], new_detail: str) -> None:
+    """Update error_detail for all unresolved DUPLICATE-type errors for given items."""
+    with _session() as s:
+        s.query(PreCheckError).filter(
+            PreCheckError.task_id == task_id,
+            PreCheckError.item_id.in_(item_ids),
+            PreCheckError.error_type.like("DUPLICATE%"),
+            PreCheckError.resolved == False,
+        ).update({"error_detail": new_detail}, synchronize_session="fetch")
+        s.commit()
+
+
 def get_items(task_id: str, status: Optional[str] = None) -> list[TaskItem]:
     with _session() as s:
         q = s.query(TaskItem).filter(TaskItem.task_id == task_id)
@@ -200,13 +242,20 @@ def update_item_status(item_id: int, status: str, error_message: Optional[str] =
             s.commit()
 
 
-def update_items_bulk(item_ids: list[int], **kwargs) -> None:
-    """Update fields on multiple items."""
+def update_items_bulk(updates: list[dict], **kwargs) -> None:
+    """Update fields on multiple items.
+
+    *updates* is a list of dicts, each containing an ``item_id`` key and
+    the column values to set.  If called with plain ``item_ids`` + keyword
+    args (legacy), the keyword values are applied uniformly.
+    """
     with _session() as s:
-        for iid in item_ids:
+        for entry in updates:
+            iid = entry.get("item_id") if isinstance(entry, dict) else entry
+            fields = {k: v for k, v in entry.items() if k != "item_id"} if isinstance(entry, dict) else kwargs
             item = s.get(TaskItem, iid)
             if item:
-                for k, v in kwargs.items():
+                for k, v in fields.items():
                     if hasattr(item, k):
                         setattr(item, k, v)
                 item.updated_at = ny_now()
@@ -264,6 +313,20 @@ def resolve_precheck_error(error_id: int, resolved_by: str) -> None:
 # ---------------------------------------------------------------------------
 # MatchResult CRUD
 # ---------------------------------------------------------------------------
+def delete_match_results(task_id: str, matched_source: Optional[str] = None) -> int:
+    """Delete match results for a task. Optionally filter by source (CCX, INFOR_CL, etc.).
+
+    Returns count of deleted rows.
+    """
+    with _session() as s:
+        q = s.query(MatchResult).filter(MatchResult.task_id == task_id)
+        if matched_source:
+            q = q.filter(MatchResult.matched_source == matched_source)
+        count = q.delete()
+        s.commit()
+        return count
+
+
 def add_match_result(
     task_id: str,
     input_item_id: int,
@@ -288,6 +351,21 @@ def add_match_result(
         return mr
 
 
+def add_match_results_bulk(task_id: str, matches: list[dict]) -> list[MatchResult]:
+    """Bulk insert match results for a task. Each dict should have MatchResult columns."""
+    with _session() as s:
+        db_matches = []
+        for m in matches:
+            mr = MatchResult(task_id=task_id, **m)
+            s.add(mr)
+            db_matches.append(mr)
+        s.commit()
+        for mr in db_matches:
+            s.refresh(mr)
+            s.expunge(mr)
+        return db_matches
+
+
 def get_match_results(task_id: str, matched_source: Optional[str] = None) -> list[MatchResult]:
     with _session() as s:
         q = s.query(MatchResult).filter(MatchResult.task_id == task_id)
@@ -297,6 +375,71 @@ def get_match_results(task_id: str, matched_source: Optional[str] = None) -> lis
         for r in results:
             s.expunge(r)
         return results
+
+
+def get_match_results_by_contract(task_id: str) -> dict[str, list[MatchResult]]:
+    """Return match results grouped by contract_number."""
+    with _session() as s:
+        results = (
+            s.query(MatchResult)
+            .filter(MatchResult.task_id == task_id)
+            .order_by(MatchResult.contract_number)
+            .all()
+        )
+        grouped: dict[str, list[MatchResult]] = {}
+        for r in results:
+            s.expunge(r)
+            key = r.contract_number or "__no_contract__"
+            grouped.setdefault(key, []).append(r)
+        return grouped
+
+
+def get_accepted_ccx_pkids(task_id: str) -> list[int]:
+    """Get ccx_pkid values for ACCEPTED CCX matches."""
+    with _session() as s:
+        rows = (
+            s.query(MatchResult.ccx_pkid)
+            .filter(
+                MatchResult.task_id == task_id,
+                MatchResult.matched_source == "CCX",
+                MatchResult.match_status == "ACCEPTED",
+                MatchResult.ccx_pkid.isnot(None),
+            )
+            .distinct()
+            .all()
+        )
+        return [r[0] for r in rows]
+
+
+def get_rejected_ccx_pkids(task_id: str) -> list[int]:
+    """Get ccx_pkid values for REJECTED CCX matches."""
+    with _session() as s:
+        rows = (
+            s.query(MatchResult.ccx_pkid)
+            .filter(
+                MatchResult.task_id == task_id,
+                MatchResult.matched_source == "CCX",
+                MatchResult.match_status == "REJECTED",
+                MatchResult.ccx_pkid.isnot(None),
+            )
+            .distinct()
+            .all()
+        )
+        return [r[0] for r in rows]
+
+
+def get_items_by_source(task_id: str, source_dataset: str) -> list[TaskItem]:
+    """Fetch items for a task filtered by source_dataset (INPUT | CCX | INFOR)."""
+    with _session() as s:
+        items = (
+            s.query(TaskItem)
+            .filter(TaskItem.task_id == task_id, TaskItem.source_dataset == source_dataset)
+            .order_by(TaskItem.file_row)
+            .all()
+        )
+        for it in items:
+            s.expunge(it)
+        return items
 
 
 def update_match_decision(match_id: int, match_status: str, reviewed_by: str) -> None:

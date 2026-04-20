@@ -55,6 +55,9 @@ class Task(Base):
     contract_manufacturer_infor = Column(String(20), nullable=True)
     contract_manufacturer_name_infor = Column(String(255), nullable=True)
 
+    # Precheck duplicate mode
+    precheck_mode = Column(String(20), nullable=True, default="default")  # default|strict|explicit|distributor
+
     # Phase / status tracking
     phase = Column(String(30), nullable=False, default="INTAKE")
     status = Column(String(50), nullable=False, default="DRAFT")
@@ -91,6 +94,7 @@ class Task(Base):
             "wrike_id": self.wrike_id,
             "contract_manufacturer_infor": self.contract_manufacturer_infor,
             "contract_manufacturer_name_infor": self.contract_manufacturer_name_infor,
+            "precheck_mode": self.precheck_mode,
             "phase": self.phase,
             "status": self.status,
             "created_by": self.created_by,
@@ -141,6 +145,29 @@ class TaskItem(Base):
     manufacturer_infor = Column(String(20), nullable=True)
     manufacturer_name_infor = Column(String(255), nullable=True)
 
+    # Phase 3 — linkage & Infor item labeling
+    input_reference = Column(Integer, nullable=True)  # FK to originating INPUT item_id
+    vendor_id_short = Column(String(10), nullable=True)  # left(7) of ERPVendorID or VendorID
+    uom_to_match_infor = Column(String(10), nullable=True)  # EDI-translated UOM
+    infor_item_1 = Column(String(20), nullable=True)  # Item# from MDM_ITEM (Mfg+MfgNum)
+    infor_item_1_active = Column(String(5), nullable=True)
+    infor_item_2 = Column(String(20), nullable=True)  # Item# from MDM_VENDORITEM (Vendor+VendorItem)
+    infor_item_2_active = Column(String(5), nullable=True)
+    infor_item_3 = Column(String(100), nullable=True)  # Item# from TP Infor CL match
+    infor_item_3_active = Column(String(30), nullable=True)
+    infor_buy_uom_options = Column(String(500), nullable=True)  # e.g. "BX*5, PK*10"
+    ccx_pkid = Column(Integer, nullable=True)
+    infor_pkid = Column(String(31), nullable=True)
+    organization_eid = Column(String(10), nullable=True)
+    organization_type = Column(String(10), nullable=True)  # MHS | ENTITY
+    contract_manufacturer = Column(String(10), nullable=True)  # 4-digit code, contract level
+    mfg_name_infor_line = Column(String(255), nullable=True)
+    mfg_name_infor_contract = Column(String(255), nullable=True)
+    vendor_name_infor = Column(String(255), nullable=True)
+    contract_id = Column(String(100), nullable=True)  # for CCX/INFOR sourced rows
+    item_price_start_date = Column(Date, nullable=True)
+    item_price_end_date = Column(Date, nullable=True)
+
     # Row tracking
     file_row = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=ny_now)
@@ -170,6 +197,27 @@ class TaskItem(Base):
             "manufacturer_infor": self.manufacturer_infor,
             "manufacturer_name_infor": self.manufacturer_name_infor,
             "file_row": self.file_row,
+            "input_reference": self.input_reference,
+            "vendor_id_short": self.vendor_id_short,
+            "uom_to_match_infor": self.uom_to_match_infor,
+            "infor_item_1": self.infor_item_1,
+            "infor_item_1_active": self.infor_item_1_active,
+            "infor_item_2": self.infor_item_2,
+            "infor_item_2_active": self.infor_item_2_active,
+            "infor_item_3": self.infor_item_3,
+            "infor_item_3_active": self.infor_item_3_active,
+            "infor_buy_uom_options": self.infor_buy_uom_options,
+            "ccx_pkid": self.ccx_pkid,
+            "infor_pkid": self.infor_pkid,
+            "organization_eid": self.organization_eid,
+            "organization_type": self.organization_type,
+            "contract_manufacturer": self.contract_manufacturer,
+            "mfg_name_infor_line": self.mfg_name_infor_line,
+            "mfg_name_infor_contract": self.mfg_name_infor_contract,
+            "vendor_name_infor": self.vendor_name_infor,
+            "contract_id": self.contract_id,
+            "item_price_start_date": str(self.item_price_start_date) if self.item_price_start_date else None,
+            "item_price_end_date": str(self.item_price_end_date) if self.item_price_end_date else None,
         }
 
 
@@ -236,9 +284,60 @@ class MatchResult(Base):
     reviewed_by = Column(String(120), nullable=True)
     reviewed_at = Column(DateTime, nullable=True)
 
+    # Phase 3 — contract grouping and match details
+    contract_number = Column(String(100), nullable=True)
+    match_type = Column(String(20), nullable=True)  # EXACT_MFG | REDUCED_MFG | REDUCED_VPN | CROSS_MATCH
+    ccx_pkid = Column(Integer, nullable=True)
+    infor_pkid = Column(String(31), nullable=True)
+
+    # Scoring detail columns
+    mfn_score = Column(Float, nullable=True)
+    mfn_complexity = Column(Float, nullable=True)
+    uom_score = Column(Float, nullable=True)
+    qoe_score = Column(Float, nullable=True)
+    price_score = Column(Float, nullable=True)
+    price_diff_pct = Column(Float, nullable=True)
+    desc_score = Column(Float, nullable=True)
+    weighted_score = Column(Float, nullable=True)
+    match_ea_price = Column(Float, nullable=True)
+    input_ea_price = Column(Float, nullable=True)
+    pair_type = Column(String(1), nullable=True)  # A | B | C | D
+    vendor_item_score = Column(Float, nullable=True)
+
     created_at = Column(DateTime, default=ny_now)
 
     task = relationship("Task", back_populates="matches")
+
+    def to_dict(self) -> dict:
+        return {
+            "match_id": self.match_id,
+            "task_id": self.task_id,
+            "input_item_id": self.input_item_id,
+            "matched_source": self.matched_source,
+            "matched_item_ref": self.matched_item_ref,
+            "similarity_score": self.similarity_score,
+            "similarity_bucket": self.similarity_bucket,
+            "match_status": self.match_status,
+            "reviewed_by": self.reviewed_by,
+            "reviewed_at": self.reviewed_at.isoformat() if self.reviewed_at else None,
+            "contract_number": self.contract_number,
+            "match_type": self.match_type,
+            "ccx_pkid": self.ccx_pkid,
+            "infor_pkid": self.infor_pkid,
+            "mfn_score": self.mfn_score,
+            "mfn_complexity": self.mfn_complexity,
+            "uom_score": self.uom_score,
+            "qoe_score": self.qoe_score,
+            "price_score": self.price_score,
+            "price_diff_pct": self.price_diff_pct,
+            "desc_score": self.desc_score,
+            "weighted_score": self.weighted_score,
+            "match_ea_price": self.match_ea_price,
+            "input_ea_price": self.input_ea_price,
+            "pair_type": self.pair_type,
+            "vendor_item_score": self.vendor_item_score,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
 
 
 # ---------------------------------------------------------------------------

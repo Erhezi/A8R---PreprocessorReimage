@@ -11,8 +11,7 @@ WHERE active = 'Yes'
   AND Vendor <> '';
 
 -- name: get_valid_erp_vendor_ids
--- Active ERP vendor-location IDs (excludes Remit To locations)
-SELECT CONCAT(Vendor, '-', VendorLocation) AS ERPVendorID
-FROM [Preprocessor].[InforVendorLocation]
-WHERE [Status] = 'Active'
-  AND LocationType <> 'Remit To';
+-- Active ERP vendor-location IDs (includes both 0000000 and 0000000-B000 forms)
+SELECT ERPVendorID
+FROM [Preprocessor].[PurchaseVendorLocation]
+WHERE [Active] = 'Yes';

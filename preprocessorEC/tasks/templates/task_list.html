@@ -295,7 +295,7 @@ const SINGLE_REQUIRED_COLS = [
   {key: "qoe",                label: "QOE",                  aliases: ["qoe","quantity","qty","conversion_factor","conversion factor to ea","qoe (conversion factor to ea)"]},
 ];
 const SINGLE_OPTIONAL_COLS = [
-  {key: "tier_description",   label: "Tier Description",     aliases: ["tier description","tier_description","tier_desc"]},
+  {key: "tier_description",   label: "Tier Description",     aliases: ["tier description","tier_description","tier_desc", "contract tier description", "tier desc"]},
   {key: "tier_level",         label: "Tier Level",           aliases: ["tier level","tier_level"]},
 ];
 const BATCH_REQUIRED_COLS = [
@@ -312,7 +312,7 @@ const BATCH_REQUIRED_COLS = [
   {key: "uom",                label: "UOM",                  aliases: ["uom","unit_of_measure","unit of measure"]},
   {key: "unit_price",         label: "Unit Price",           aliases: ["unit price","unit_price","price","cost","contract price"]},
   {key: "qoe",                label: "QOE",                  aliases: ["qoe","quantity","qty","conversion factor to ea","qoe (conversion factor to ea)"]},
-  {key: "tier_description",   label: "Tier Description",     aliases: ["tier description","tier_description","tier_desc","contract tier description"]},
+  {key: "tier_description",   label: "Tier Description",     aliases: ["tier description","tier_description","tier_desc","contract tier description", "tier desc"]},
   {key: "tier_level",         label: "Tier Level",           aliases: ["tier level","tier_level"]},
 ];
 
@@ -493,6 +493,11 @@ document.getElementById("btnFetch").addEventListener("click", async () => {
   statusEl.innerHTML = '<span class="text-success">Found! Form auto-filled.</span>';
   const form = document.getElementById("newTaskForm");
 
+  // Replace user-typed contract # with exact match from CCX
+  if (data.contract_number) {
+    document.getElementById("contractInput").value = data.contract_number;
+  }
+
   function setSelect(name, val) {
     const sel = form.querySelector(`[name="${name}"]`);
     if (!sel || !val) return;
@@ -516,8 +521,31 @@ document.getElementById("btnFetch").addEventListener("click", async () => {
   const parts = vendorId.split("-");
   document.getElementById("singleVendorId").value = vendorId;
   document.getElementById("singlePurchaseFromLoc").value = parts[1] || "";
-  document.getElementById("singleVendorDisplay").textContent = vendorId || "Not set";
-  document.getElementById("singleVendorDisplay").className = vendorId ? "text-dark small" : "text-muted small";
+  // After contract lookup, also try to fetch vendor display name
+  if (vendorId) {
+    fetch(`${PREFIX}/api/vendor-search?q=${encodeURIComponent(vendorId)}`)
+      .then(r => r.json())
+      .then(results => {
+        const match = results.find(r => r.erp_vendor_id === vendorId);
+        if (match) {
+          document.getElementById("singleVendorName").value = match.vendor_name || "";
+          document.getElementById("singlePurchaseFromLocName").value = match.purchase_from_name || "";
+          document.getElementById("singleVendorDisplay").textContent =
+            `${vendorId} - ${match.vendor_name || ''}${match.purchase_from_name ? ' (' + match.purchase_from_name + ')' : ''}`;
+          document.getElementById("singleVendorDisplay").className = "text-dark small";
+        } else {
+          document.getElementById("singleVendorDisplay").textContent = vendorId;
+          document.getElementById("singleVendorDisplay").className = "text-dark small";
+        }
+      })
+      .catch(() => {
+        document.getElementById("singleVendorDisplay").textContent = vendorId;
+        document.getElementById("singleVendorDisplay").className = "text-dark small";
+      });
+  } else {
+    document.getElementById("singleVendorDisplay").textContent = "Not set";
+    document.getElementById("singleVendorDisplay").className = "text-muted small";
+  }
   form.querySelector('[name="contract_start_date"]').value = (data.contract_start_date || "").slice(0, 10);
   form.querySelector('[name="contract_end_date"]').value   = (data.contract_end_date || "").slice(0, 10);
   setSelect("process_type", data.process_type);
@@ -702,7 +730,7 @@ async function loadTasks() {
     <tr style="cursor:pointer" onclick="location.href='${PREFIX}/tasks/${t.task_id}'">
       <td>${t.task_id}</td>
       <td>${t.contract_number || "—"}</td>
-      <td>${t.vendor_id || "—"}</td>
+      <td>${t.vendor_id ? t.vendor_id + (t.erp_vendor_name ? ' - ' + t.erp_vendor_name : '') + (t.purchase_from_loc_name ? ' (' + t.purchase_from_loc_name + ')' : '') : "—"}</td>
       <td>${t.process_type || "—"}${t.source_type ? " / " + t.source_type : ""}</td>
       <td>${t.organization || "—"}</td>
       <td>${t.intention}</td>
@@ -784,7 +812,7 @@ async function searchVendors() {
       document.getElementById("singlePurchaseFromLoc").value    = btn.dataset.purchaseFromLoc;
       document.getElementById("singlePurchaseFromLocName").value = btn.dataset.purchaseFromName;
       document.getElementById("singleVendorDisplay").textContent =
-        `${btn.dataset.vendorId} — ${btn.dataset.vendorName}${btn.dataset.purchaseFromLoc ? ' (' + btn.dataset.purchaseFromLoc + ')' : ''}`;
+        `${btn.dataset.vendorId} - ${btn.dataset.vendorName}${btn.dataset.purchaseFromName ? ' (' + btn.dataset.purchaseFromName + ')' : ''}`;
       document.getElementById("singleVendorDisplay").className = "text-dark small";
       bootstrap.Modal.getInstance(document.getElementById("vendorSearchModal")).hide();
     });

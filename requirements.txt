@@ -15,6 +15,11 @@ openpyxl>=3.1
 
 # ML / similarity
 sentence-transformers>=2.2
+rapidfuzz>=3.0
+
+# LLM
+openai>=1.0
+python-dotenv>=1.0
 
 # Security
 werkzeug>=3.0

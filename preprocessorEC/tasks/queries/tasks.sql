@@ -49,7 +49,8 @@ WHERE ContractID = :cid;
 -- name: vendor_search
 SELECT ERPVendorID, VendorName, PurchaseFromName, Active
 FROM [Preprocessor].[PurchaseVendorLocation]
-WHERE UPPER(VendorName) LIKE :q
+WHERE UPPER(ERPVendorID) LIKE :q
+   OR UPPER(VendorName) LIKE :q
    OR (PurchaseFromName IS NOT NULL AND UPPER(PurchaseFromName) LIKE :q)
 ORDER BY VendorName, PurchaseFromName;
 

@@ -242,17 +242,56 @@ const PHASES = ["INTAKE", "IDENTITY", "PREPROCESS", "DEDUP", "EXPORT", "MONITORI
 
 let currentTask = null;
 let currentItems = [];
+let currentDupGroups = []; // dup groups from intake API
 let activeItemFilter = "all"; // "all" | "error" | "warn" | "issue"
 let focusedItemIds = new Set(); // item_ids to highlight/filter (from clicking error/warning rows)
+
+function getAvailablePrecheckModes(task) {
+  const processType = ((task && task.process_type) || "").toUpperCase();
+  const modes = [
+    { value: "default", label: "Default: Reduced manufacturer" },
+    { value: "strict", label: "Strict: Manufacturer part number" },
+    { value: "explicit", label: "Explicit: Manufacturer part number + UOM" },
+  ];
+  if (processType.includes("DISTRIBUTOR")) {
+    modes.push({ value: "distributor", label: "Distributor: Vendor part number" });
+  }
+  return modes;
+}
+
+function renderRecheckModeControl(task) {
+  const modes = getAvailablePrecheckModes(task);
+  const selected = (task && task.precheck_mode) || "default";
+  return `
+    <select class="form-select form-select-sm d-block mb-1 w-100" id="recheckModeSelect"
+            style="border-color: #0dcaf0; color: #0dcaf0;"
+            aria-label="Select pre-check mode">
+      ${modes.map(mode => `<option value="${mode.value}"${mode.value === selected ? " selected" : ""}>${mode.label}</option>`).join("")}
+    </select>
+  `;
+}
 
 /* ================================================================
    Status badge helper
    ================================================================ */
 function statusBadge(status) {
+  if (status === "DELETED")      return `<span class="badge" style="background-color:#111;color:#f8f9fa">${status}</span>`;
   if (status.includes("ERROR"))  return `<span class="badge bg-danger">${status}</span>`;
   if (status === "WARN_PC1")     return `<span class="badge" style="background-color:#ffc107;color:#000">${status}</span>`;
   if (status.includes("PASSED")) return `<span class="badge bg-success">${status}</span>`;
   return `<span class="badge bg-secondary">${status}</span>`;
+}
+
+function getIssueSortRow(issue) {
+  if (issue.item_id === null || issue.item_id === undefined) {
+    return 0;
+  }
+  const item = currentItems.find(it => it.item_id === issue.item_id);
+  if (!item) {
+    return Number.MAX_SAFE_INTEGER;
+  }
+  const row = Number(item.file_row);
+  return Number.isFinite(row) ? row : Number.MAX_SAFE_INTEGER;
 }
 
 /* ================================================================
@@ -282,10 +321,17 @@ function renderItemsTable() {
   if (!visible.length) {
     ibody.innerHTML = '<tr><td colspan="9" class="text-center text-muted">No matching items</td></tr>';
   } else {
+    // Build set of item_ids that belong to a dup group
+    const dupItemIds = new Set();
+    currentDupGroups.forEach(g => (g.item_ids || []).forEach(id => dupItemIds.add(id)));
+
     ibody.innerHTML = visible.map(i => {
       let actionBtns = "";
       if (i.status === "ERROR_PC1" && inIntake) {
         actionBtns = `<button class="btn btn-outline-primary btn-sm py-0 px-1" onclick="openEditModal(${i.item_id})" title="Edit"><i class="bi bi-pencil-square"></i> Edit</button>`;
+        if (dupItemIds.has(i.item_id)) {
+          actionBtns += ` <button class="btn btn-outline-danger btn-sm py-0 px-1" onclick="softDeleteItem(${i.item_id})" title="Delete"><i class="bi bi-trash"></i> Delete</button>`;
+        }
       } else if (i.status === "WARN_PC1" && inIntake) {
         actionBtns = `<button class="btn btn-outline-primary btn-sm py-0 px-1 me-1" onclick="openEditModal(${i.item_id})" title="Edit"><i class="bi bi-pencil-square"></i> Edit</button>`
                    + `<button class="btn btn-outline-success btn-sm py-0 px-1" onclick="manuallyPass(${i.item_id})" title="Pass">Pass</button>`;
@@ -364,6 +410,18 @@ async function loadTask() {
   currentItems = data.items || [];
   const inIntake = t.phase === "INTAKE";
 
+  // For INTAKE phase, load items/errors/dup_groups from intake API
+  currentDupGroups = [];
+  if (inIntake) {
+    const intakeResp = await fetch(`${PREFIX}/api/intake/${TASK_ID}`);
+    if (intakeResp.ok) {
+      const intakeData = await intakeResp.json();
+      currentItems = intakeData.items || currentItems;
+      data.errors = intakeData.errors || data.errors;
+      currentDupGroups = intakeData.dup_groups || [];
+    }
+  }
+
   // Phase progress bar
   const currentIdx = PHASES.indexOf(t.phase);
   document.getElementById("phaseBar").innerHTML = PHASES.map((p, i) => {
@@ -378,7 +436,7 @@ async function loadTask() {
         <dl class="row mb-0">
           <dt class="col-5">Contract #</dt><dd class="col-7">${t.contract_number || "—"}</dd>
           <dt class="col-5">Vendor</dt>
-          <dd class="col-7">${t.vendor_id || "—"}${t.erp_vendor_name ? ` — ${t.erp_vendor_name}` : ""}${t.purchase_from_loc ? ` (${t.purchase_from_loc})` : ""}</dd>
+          <dd class="col-7">${t.vendor_id ? t.vendor_id + (t.erp_vendor_name ? ' - ' + t.erp_vendor_name : '') + (t.purchase_from_loc_name ? ' (' + t.purchase_from_loc_name + ')' : '') : "—"}</dd>
           <dt class="col-5">Type</dt><dd class="col-7">${t.process_type} / ${t.source_type}</dd>
           <dt class="col-5">Org</dt><dd class="col-7">${t.organization}</dd>
           <dt class="col-5">Wrike ID</dt><dd class="col-7">${t.wrike_id || "—"}</dd>
@@ -390,6 +448,7 @@ async function loadTask() {
           <dt class="col-5">OEM</dt><dd class="col-7">${t.oem_name || "—"}</dd>
           <dt class="col-5">Phase</dt><dd class="col-7"><span class="badge bg-primary">${t.phase}</span></dd>
           <dt class="col-5">Status</dt><dd class="col-7">${statusBadge(t.status)}</dd>
+          <dt class="col-5">Precheck Mode</dt><dd class="col-7"><span class="badge bg-secondary">${(t.precheck_mode || "default").charAt(0).toUpperCase() + (t.precheck_mode || "default").slice(1)}</span></dd>
         </dl>
       </div>
     </div>
@@ -422,7 +481,8 @@ async function loadTask() {
   if (inIntake && (t.status === "ON_HOLD_PC1" || t.status === "PENDING_NUVIA")) {
     const hasErrorWarn = currentItems.some(i => i.status === "ERROR_PC1" || i.status === "WARN_PC1");
     if (hasErrorWarn) {
-      btns += `<button class="btn btn-sm btn-outline-info d-block mb-1 w-100" onclick="recheckAll()">Re-run Pre-check (Errors/Warnings)</button>`;
+      btns += `<button class="btn btn-sm btn-outline-info d-block mb-1 w-100" onclick="recheckAll()">Re-run Pre-check</button>`;
+      btns += renderRecheckModeControl(t);
     }
   }
 
@@ -462,7 +522,7 @@ async function loadTask() {
   const errorItems = currentItems.filter(i => i.status === "ERROR_PC1").map(i => i.item_id);
   const errorIssues = allIssues.filter(e =>
     (e.item_id === null || e.item_id === undefined || errorItems.includes(e.item_id)) && !e.resolved
-  );
+  ).sort((left, right) => getIssueSortRow(left) - getIssueSortRow(right));
   if (errorIssues.length) {
     document.getElementById("errorsCard").style.display = "";
     document.getElementById("errorsBody").innerHTML = errorIssues.map(e => {
@@ -471,15 +531,11 @@ async function loadTask() {
       const rowLabel = isHeader
         ? `<span class="badge bg-dark">Row 0</span> <small class="text-muted">Header</small>`
         : (item ? item.file_row : e.item_id);
-      // For dup errors, also focus the previously-seen row mentioned in the detail
+      // For dup errors, focus all items in the same dup group
       let focusIds = [e.item_id];
       if (!isHeader && e.error_type.startsWith("DUPLICATE_")) {
-        const m = (e.error_detail || "").match(/file row (\d+)/);
-        if (m) {
-          const prevRow = parseInt(m[1]);
-          const prevItem = currentItems.find(it => it.file_row == prevRow);
-          if (prevItem) focusIds.push(prevItem.item_id);
-        }
+        const group = currentDupGroups.find(g => g.item_ids.includes(e.item_id));
+        if (group) focusIds = [...group.item_ids];
       }
       const focusAttrs = isHeader ? '' : ` style="cursor:pointer" title="Click to focus involved rows" onclick="focusItems([${focusIds.join(",")}])"`;
       return `
@@ -496,20 +552,18 @@ async function loadTask() {
 
   // ----- Warnings card (WARN_PC1 only) -----
   const warnItems = currentItems.filter(i => i.status === "WARN_PC1").map(i => i.item_id);
-  const warnIssues = allIssues.filter(e => warnItems.includes(e.item_id) && !e.resolved);
+  const warnIssues = allIssues
+    .filter(e => warnItems.includes(e.item_id) && !e.resolved)
+    .sort((left, right) => getIssueSortRow(left) - getIssueSortRow(right));
   if (warnIssues.length) {
     document.getElementById("warningsCard").style.display = "";
     document.getElementById("warningsBody").innerHTML = warnIssues.map(e => {
       const item = currentItems.find(it => it.item_id === e.item_id);
-      // For dup warnings, also focus the previously-seen row mentioned in the detail
+      // For dup warnings, focus all items in the same dup group
       let wFocusIds = [e.item_id];
       if (e.error_type.startsWith("DUPLICATE_")) {
-        const m = (e.error_detail || "").match(/file row (\d+)/);
-        if (m) {
-          const prevRow = parseInt(m[1]);
-          const prevItem = currentItems.find(it => it.file_row == prevRow);
-          if (prevItem) wFocusIds.push(prevItem.item_id);
-        }
+        const group = currentDupGroups.find(g => g.item_ids.includes(e.item_id));
+        if (group) wFocusIds = [...group.item_ids];
       }
       return `
         <tr style="cursor:pointer" title="Click to focus involved rows" onclick="focusItems([${wFocusIds.join(",")}])">
@@ -699,8 +753,12 @@ document.getElementById("btnConfirmReupload").addEventListener("click", async ()
    Pre-check
    ================================================================ */
 async function runPrecheck() {
-  if (!confirm("Run pre-check validation on all uploaded items?")) return;
-  const resp = await fetch(`${PREFIX}/api/intake/${TASK_ID}/precheck`, {method: "POST"});
+  if (!confirm("Run pre-check validation on all uploaded items using Default mode?")) return;
+  const resp = await fetch(`${PREFIX}/api/intake/${TASK_ID}/precheck`, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({precheck_mode: "default"}),
+  });
   const data = await resp.json();
 
   const card = document.getElementById("precheckCard");
@@ -782,12 +840,36 @@ async function manuallyPass(itemId) {
 }
 
 /* ================================================================
+   Soft-delete a duplicate item (mark as DELETED)
+   ================================================================ */
+async function softDeleteItem(itemId) {
+  if (!confirm("Mark this duplicate item as DELETED? It will be excluded from future pre-checks.")) return;
+  const resp = await fetch(`${PREFIX}/api/intake/${TASK_ID}/items/${itemId}`, {method: "DELETE"});
+  if (resp.ok) {
+    loadTask();
+  } else {
+    const err = await resp.json();
+    alert("Delete failed: " + (err.error || "Unknown error"));
+  }
+}
+
+/* ================================================================
    Re-run pre-check on all error/warn items
    ================================================================ */
 async function recheckAll() {
-  if (!confirm("Reset all error/warning items and re-run pre-check?")) return;
-  const resp = await fetch(`${PREFIX}/api/intake/${TASK_ID}/recheck-all`, {method: "POST"});
+  const select = document.getElementById("recheckModeSelect");
+  const mode = select ? select.value : "default";
+  const resp = await fetch(`${PREFIX}/api/intake/${TASK_ID}/recheck-all`, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({precheck_mode: mode}),
+  });
   const data = await resp.json();
+
+  if (!resp.ok) {
+    alert(data.error || "Re-run pre-check failed");
+    return;
+  }
 
   const card = document.getElementById("precheckCard");
   card.style.display = "";
@@ -795,7 +877,7 @@ async function recheckAll() {
   const cls = allGood ? "text-success" : data.failed > 0 ? "text-danger" : "text-warning";
   document.getElementById("precheckHeader").className = `card-header ${cls}`;
   document.getElementById("precheckBody").innerHTML = `
-    <p class="mb-1"><strong>Total:</strong> ${data.total} &nbsp; <strong>Passed:</strong> ${data.passed} &nbsp; <strong>Warned:</strong> ${data.warned || 0} &nbsp; <strong>Failed:</strong> ${data.failed}</p>
+    <p class="mb-1"><strong>Total:</strong> ${data.total} &nbsp; <strong>Passed:</strong> ${data.passed} &nbsp; <strong>Warned:</strong> ${data.warned || 0} &nbsp; <strong>Failed:</strong> ${data.failed} &nbsp; <strong>Mode:</strong> ${(mode || "default").charAt(0).toUpperCase() + (mode || "default").slice(1)}</p>
   `;
   loadTask();
 }

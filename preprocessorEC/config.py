@@ -1,5 +1,8 @@
 import os
 from datetime import timedelta
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 class Config:
@@ -35,6 +38,12 @@ class Config:
 
     # ── Sentence Transformer ────────────────────────────────────────
     MODEL_NAME = "all-MiniLM-L6-v2"
+
+    # ── LLM / OpenAI ───────────────────────────────────────────────
+    OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+    OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
+    LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "1024"))
+    LLM_TEMPERATURE = float(os.environ.get("LLM_TEMPERATURE", "0.0"))
 
     # ── URL Prefix ─────────────────────────────────────────────────
     URL_PREFIX = os.environ.get("URL_PREFIX", "")

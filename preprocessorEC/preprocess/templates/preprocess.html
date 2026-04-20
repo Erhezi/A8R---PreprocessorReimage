@@ -11,25 +11,126 @@
       <span>Run Pipeline</span>
       <button class="btn btn-sm btn-primary" id="btnRun">Run Full Preprocess</button>
     </div>
-    <div class="card-body" id="runResult">
-      <p class="text-muted">Click "Run Full Preprocess" to start SKU matching, similarity scoring, and item matching.</p>
+    <div class="card-body">
+      <div id="progressArea">
+        <p class="text-muted mb-2">Click "Run Full Preprocess" to start the pipeline.</p>
+      </div>
+      <div id="stepsList" class="d-none">
+        <div class="step-row mb-1" data-step="sku-matching">
+          <span class="badge bg-secondary me-2 step-badge">1</span>
+          <span class="step-label">CCX SKU Matching + Similarity</span>
+          <span class="step-status ms-2 text-muted"></span>
+        </div>
+        <div class="step-row mb-1" data-step="contract-check">
+          <span class="badge bg-secondary me-2 step-badge">2</span>
+          <span class="step-label">Contract-Level Grouping</span>
+          <span class="step-status ms-2 text-muted"></span>
+        </div>
+        <div class="step-row mb-1" data-step="llm-review-ccx">
+          <span class="badge bg-secondary me-2 step-badge">3</span>
+          <span class="step-label">LLM Review (CCX MED/LOW)</span>
+          <span class="step-status ms-2 text-muted"></span>
+        </div>
+        <div class="step-row mb-1" data-step="infor-cascade">
+          <span class="badge bg-secondary me-2 step-badge">4</span>
+          <span class="step-label">Infor Cascade (via CCX matches)</span>
+          <span class="step-status ms-2 text-muted"></span>
+        </div>
+        <div class="step-row mb-1" data-step="infor-residue">
+          <span class="badge bg-secondary me-2 step-badge">5</span>
+          <span class="step-label">Infor Residue Matching</span>
+          <span class="step-status ms-2 text-muted"></span>
+        </div>
+        <div class="step-row mb-1" data-step="llm-review-infor">
+          <span class="badge bg-secondary me-2 step-badge">6</span>
+          <span class="step-label">LLM Review (Infor MED/LOW)</span>
+          <span class="step-status ms-2 text-muted"></span>
+        </div>
+        <div class="step-row mb-1" data-step="item-labeling">
+          <span class="badge bg-secondary me-2 step-badge">7</span>
+          <span class="step-label">3-Source Item# Labeling + UOM</span>
+          <span class="step-status ms-2 text-muted"></span>
+        </div>
+      </div>
+      <div id="runSummary" class="mt-2 d-none"></div>
     </div>
   </div>
 
-  <div class="card mb-3">
-    <div class="card-header">Match Results</div>
+  <!-- Contract-level summary -->
+  <div class="card mb-3" id="contractCard" style="display:none">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span>Contract Summary</span>
+      <div class="d-flex align-items-center gap-2">
+        <button class="btn btn-sm btn-outline-secondary" id="btnRefreshContracts">Refresh</button>
+      </div>
+    </div>
     <div class="card-body p-0">
-      <table class="table table-sm mb-0" id="matchTable">
+      <table class="table table-sm table-hover mb-0">
         <thead class="table-light">
           <tr>
-            <th>Input Item</th><th>Matched Ref</th><th>Source</th>
-            <th>Score</th><th>Bucket</th><th>Decision</th>
+            <th>Contract</th><th>Total</th>
+            <th class="text-success">HIGH</th><th class="text-warning">MED</th><th class="text-secondary">LOW</th>
+            <th>Accepted</th><th>Rejected</th><th>Pending</th>
+            <th>Actions</th>
           </tr>
         </thead>
-        <tbody id="matchBody">
-          <tr><td colspan="6" class="text-center text-muted">No results yet</td></tr>
+        <tbody id="contractBody">
+          <tr><td colspan="9" class="text-center text-muted">Run pipeline first</td></tr>
         </tbody>
       </table>
+    </div>
+  </div>
+
+  <!-- Match results with filters -->
+  <div class="card mb-3" id="matchCard" style="display:none">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span>Match Results</span>
+      <div class="d-flex align-items-center gap-2">
+        <select class="form-select form-select-sm" id="filterBucket" style="width:auto">
+          <option value="">All Buckets</option>
+          <option value="HIGH">HIGH</option>
+          <option value="MED">MED</option>
+          <option value="LOW">LOW</option>
+        </select>
+        <select class="form-select form-select-sm" id="filterSource" style="width:auto">
+          <option value="">All Sources</option>
+          <option value="CCX">CCX</option>
+          <option value="INFOR_CL">INFOR_CL</option>
+        </select>
+        <select class="form-select form-select-sm" id="filterStatus" style="width:auto">
+          <option value="">All Status</option>
+          <option value="ACCEPTED">Accepted</option>
+          <option value="REJECTED">Rejected</option>
+          <option value="PENDING">Pending</option>
+        </select>
+        <select class="form-select form-select-sm" id="filterContract" style="width:auto">
+          <option value="">All Contracts</option>
+        </select>
+        <button class="btn btn-sm btn-outline-primary" id="btnFilterMatches">Filter</button>
+      </div>
+    </div>
+    <div class="card-body p-0">
+      <div class="d-flex justify-content-between align-items-center px-3 py-2 border-bottom bg-light">
+        <span id="matchCount" class="small text-muted">0 matches</span>
+        <button class="btn btn-sm btn-outline-danger" id="btnRejectSelected" disabled>Mark Selected as False Positive</button>
+      </div>
+      <div class="table-responsive" style="max-height:600px; overflow-y:auto">
+        <table class="table table-sm table-hover mb-0">
+          <thead class="table-light" style="position:sticky;top:0;z-index:1">
+            <tr>
+              <th><input type="checkbox" id="selectAll"></th>
+              <th>Input ID</th><th>Input MFN</th><th>Input Desc</th>
+              <th>Match Ref</th><th>Contract</th><th>Source</th>
+              <th>Pair</th><th>Score</th>
+              <th>MFN</th><th>UOM</th><th>Desc</th><th>Price</th>
+              <th>Bucket</th><th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="matchBody">
+            <tr><td colspan="15" class="text-center text-muted">No results yet</td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
   </div>
 
@@ -44,16 +145,258 @@
 const PREFIX = "{{ url_prefix }}";
 const TASK_ID = "{{ task_id }}";
 
+// ---- Step-by-step pipeline -----------
+const STEPS = [
+  { key: "sku-matching",    endpoint: `${PREFIX}/api/preprocess/${TASK_ID}/sku-matching` },
+  { key: "contract-check",  endpoint: `${PREFIX}/api/preprocess/${TASK_ID}/contract-check` },
+  { key: "llm-review-ccx",  endpoint: `${PREFIX}/api/preprocess/${TASK_ID}/llm-review?source=CCX` },
+  { key: "infor-cascade",   endpoint: `${PREFIX}/api/preprocess/${TASK_ID}/infor-cascade` },
+  { key: "infor-residue",   endpoint: `${PREFIX}/api/preprocess/${TASK_ID}/infor-residue` },
+  { key: "llm-review-infor",endpoint: `${PREFIX}/api/preprocess/${TASK_ID}/llm-review?source=INFOR` },
+  { key: "item-labeling",   endpoint: `${PREFIX}/api/preprocess/${TASK_ID}/item-labeling` },
+];
+
+function setStepStatus(key, status, detail) {
+  const row = document.querySelector(`.step-row[data-step="${key}"]`);
+  if (!row) return;
+  const badge = row.querySelector(".step-badge");
+  const statusEl = row.querySelector(".step-status");
+  if (status === "running") {
+    badge.className = "badge bg-warning me-2 step-badge";
+    statusEl.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Running…';
+    statusEl.className = "step-status ms-2 text-warning";
+  } else if (status === "done") {
+    badge.className = "badge bg-success me-2 step-badge";
+    statusEl.textContent = detail || "Done";
+    statusEl.className = "step-status ms-2 text-success";
+  } else if (status === "error") {
+    badge.className = "badge bg-danger me-2 step-badge";
+    statusEl.textContent = detail || "Error";
+    statusEl.className = "step-status ms-2 text-danger";
+  } else {
+    badge.className = "badge bg-secondary me-2 step-badge";
+    statusEl.textContent = "";
+    statusEl.className = "step-status ms-2 text-muted";
+  }
+}
+
+function summariseResult(key, data) {
+  if (data.error) return `Error: ${data.error}`;
+  switch (key) {
+    case "sku-matching":
+      return `${data.matched_count || 0} matches across ${data.contracts_found || 0} contracts`;
+    case "contract-check":
+      return `${(data.contracts || []).length} contracts grouped`;
+    case "llm-review-ccx":
+    case "llm-review-infor":
+      return `${data.reviewed || 0} items reviewed`;
+    case "infor-cascade":
+      return `${data.infor_lines || 0} lines cascaded`;
+    case "infor-residue":
+      return `${data.residue_matches || 0} residue matches`;
+    case "item-labeling":
+      return `${data.labeled || 0} items labeled`;
+    default: return "Done";
+  }
+}
+
 document.getElementById("btnRun").addEventListener("click", async () => {
-  document.getElementById("runResult").innerHTML = '<p>Running…</p>';
-  const resp = await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/run`, { method: "POST" });
-  const data = await resp.json();
-  document.getElementById("runResult").innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+  const btn = document.getElementById("btnRun");
+  btn.disabled = true; btn.textContent = "Running…";
+  document.getElementById("progressArea").classList.add("d-none");
+  document.getElementById("stepsList").classList.remove("d-none");
+  document.getElementById("runSummary").classList.add("d-none");
+  STEPS.forEach(s => setStepStatus(s.key, "pending"));
+
+  let hadError = false;
+  for (const step of STEPS) {
+    setStepStatus(step.key, "running");
+    try {
+      const resp = await fetch(step.endpoint, { method: "POST" });
+      const data = await resp.json();
+      if (resp.ok) {
+        setStepStatus(step.key, "done", summariseResult(step.key, data));
+      } else {
+        setStepStatus(step.key, "error", data.error || `HTTP ${resp.status}`);
+        hadError = true; break;
+      }
+    } catch (err) {
+      setStepStatus(step.key, "error", err.message);
+      hadError = true; break;
+    }
+  }
+
+  const summaryEl = document.getElementById("runSummary");
+  summaryEl.classList.remove("d-none");
+  if (hadError) {
+    summaryEl.innerHTML = '<div class="alert alert-danger mb-0">Pipeline stopped. Check steps above.</div>';
+  } else {
+    summaryEl.innerHTML = '<div class="alert alert-success mb-0">Pipeline complete. Review matches below.</div>';
+    document.getElementById("btnFinalize").disabled = false;
+    loadContracts();
+    loadMatches();
+  }
+  btn.disabled = false; btn.textContent = "Rerun Full Preprocess";
 });
 
+// ---- Contract summary ----------------
+async function loadContracts() {
+  document.getElementById("contractCard").style.display = "";
+  const resp = await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/contract-summary`);
+  const contracts = await resp.json();
+  const tbody = document.getElementById("contractBody");
+  const filterSelect = document.getElementById("filterContract");
+
+  // Rebuild contract filter options
+  filterSelect.innerHTML = '<option value="">All Contracts</option>';
+  contracts.forEach(c => {
+    const opt = document.createElement("option");
+    opt.value = c.contract_id;
+    opt.textContent = c.contract_id;
+    filterSelect.appendChild(opt);
+  });
+
+  if (!contracts.length) {
+    tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted">No contracts found</td></tr>';
+    return;
+  }
+  tbody.innerHTML = contracts.map(c => `
+    <tr>
+      <td><a href="#" class="contract-link" data-contract="${c.contract_id}">${c.contract_id}</a></td>
+      <td>${c.total}</td>
+      <td class="text-success">${c.high}</td>
+      <td class="text-warning">${c.med}</td>
+      <td class="text-secondary">${c.low}</td>
+      <td>${c.accepted}</td><td>${c.rejected}</td><td>${c.pending}</td>
+      <td>
+        <button class="btn btn-xs btn-outline-success toggle-contract" data-contract="${c.contract_id}" data-action="include" title="Accept all">&#10003;</button>
+        <button class="btn btn-xs btn-outline-danger toggle-contract" data-contract="${c.contract_id}" data-action="exclude" title="Reject all">&times;</button>
+      </td>
+    </tr>
+  `).join("");
+
+  // Wire contract click to filter matches
+  tbody.querySelectorAll(".contract-link").forEach(a => {
+    a.addEventListener("click", (e) => {
+      e.preventDefault();
+      document.getElementById("filterContract").value = a.dataset.contract;
+      loadMatches();
+    });
+  });
+
+  // Wire include/exclude buttons
+  tbody.querySelectorAll(".toggle-contract").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const include = btn.dataset.action === "include";
+      await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/toggle-contract`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({contract_number: btn.dataset.contract, include})
+      });
+      loadContracts();
+      loadMatches();
+    });
+  });
+}
+
+document.getElementById("btnRefreshContracts").addEventListener("click", loadContracts);
+
+// ---- Match results -------------------
+async function loadMatches() {
+  document.getElementById("matchCard").style.display = "";
+  const bucket   = document.getElementById("filterBucket").value;
+  const source   = document.getElementById("filterSource").value;
+  const status   = document.getElementById("filterStatus").value;
+  const contract = document.getElementById("filterContract").value;
+
+  const params = new URLSearchParams();
+  if (bucket)   params.set("bucket", bucket);
+  if (source)   params.set("source", source);
+  if (status)   params.set("status", status);
+  if (contract) params.set("contract", contract);
+
+  const resp = await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/matches?${params}`);
+  const matches = await resp.json();
+  document.getElementById("matchCount").textContent = `${matches.length} matches`;
+
+  const tbody = document.getElementById("matchBody");
+  if (!matches.length) {
+    tbody.innerHTML = '<tr><td colspan="15" class="text-center text-muted">No matches</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = matches.map(m => `
+    <tr>
+      <td><input type="checkbox" class="match-cb" value="${m.match_id}"></td>
+      <td>${m.input_item_id}</td>
+      <td class="text-truncate" style="max-width:120px" title="${esc(m.input_mfg_catalog_num)}">${esc(m.input_mfg_catalog_num || '-')}</td>
+      <td class="text-truncate" style="max-width:180px" title="${esc(m.input_description)}">${esc(m.input_description || '-')}</td>
+      <td class="text-truncate" style="max-width:140px" title="${esc(m.matched_item_ref)}">${esc(m.matched_item_ref || '-')}</td>
+      <td>${esc(m.contract_number || '-')}</td>
+      <td><span class="badge bg-info">${m.matched_source}</span></td>
+      <td>${m.pair_type || '-'}</td>
+      <td>${n(m.similarity_score, 1)}</td>
+      <td>${n(m.mfn_score, 2)}</td>
+      <td>${n(m.uom_score, 2)}</td>
+      <td>${n(m.desc_score, 2)}</td>
+      <td>${n(m.price_score, 2)}</td>
+      <td><span class="badge bg-${bucketColor(m.similarity_bucket)}">${m.similarity_bucket || '-'}</span></td>
+      <td><span class="badge bg-${statusColor(m.match_status)}">${m.match_status}</span></td>
+    </tr>
+  `).join("");
+
+  updateRejectButton();
+}
+
+function esc(s) { if (!s) return ''; const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function n(v, dp) { return v != null ? Number(v).toFixed(dp) : '-'; }
+function bucketColor(b) { return b === 'HIGH' ? 'success' : b === 'MED' ? 'warning' : 'secondary'; }
+function statusColor(s) { return s === 'ACCEPTED' ? 'success' : s === 'REJECTED' ? 'danger' : 'warning'; }
+
+function updateRejectButton() {
+  const checked = document.querySelectorAll(".match-cb:checked").length;
+  const btn = document.getElementById("btnRejectSelected");
+  btn.disabled = checked === 0;
+  btn.textContent = checked > 0 ? `Mark ${checked} as False Positive` : "Mark Selected as False Positive";
+}
+
+document.getElementById("matchBody").addEventListener("change", updateRejectButton);
+document.getElementById("selectAll").addEventListener("change", (e) => {
+  document.querySelectorAll(".match-cb").forEach(cb => cb.checked = e.target.checked);
+  updateRejectButton();
+});
+
+document.getElementById("btnFilterMatches").addEventListener("click", loadMatches);
+
+document.getElementById("btnRejectSelected").addEventListener("click", async () => {
+  const ids = [...document.querySelectorAll(".match-cb:checked")].map(cb => parseInt(cb.value));
+  if (!ids.length) return;
+  if (!confirm(`Mark ${ids.length} match(es) as false positive?`)) return;
+  await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/update-false-positives`, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({match_ids: ids})
+  });
+  loadContracts();
+  loadMatches();
+});
+
+// ---- Finalize ------------------------
 document.getElementById("btnFinalize").addEventListener("click", async () => {
   const resp = await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/finalize`, { method: "POST" });
   if (resp.ok) location.href = `${PREFIX}/tasks/${TASK_ID}`;
 });
+
+// Load existing data on page load
+(async function init() {
+  const resp = await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/contract-summary`);
+  const contracts = await resp.json();
+  if (contracts.length) {
+    loadContracts();
+    loadMatches();
+    document.getElementById("btnRun").textContent = "Rerun Full Preprocess";
+    document.getElementById("btnFinalize").disabled = false;
+  }
+})();
 </script>
 {% endblock %}

@@ -23,7 +23,7 @@ from ..state import TaskStateMachine, Phase, Status
 # ---------------------------------------------------------------------------
 UOM_MAP = {
     "BOX": "BX",
-    "CASE": "CS",
+    "CASE": "CA",
     "EACH": "EA",
     "DOZEN": "DZ",
     "PACK": "PK",
@@ -89,10 +89,14 @@ def _parse_price(value) -> tuple[Optional[Decimal], Optional[str]]:
 
 
 def reduce_catalog_number(part_num: str) -> str:
-    """Reduce a catalog number by stripping non-alphanumeric characters and upper-casing."""
+    """Reduce a catalog number by stripping non-alphanumeric characters and upper-casing.
+    If the result is purely numeric, leading zeros are removed (but "0" is kept if that's all there is)."""
     if not part_num:
         return ""
-    return re.sub(r"[^A-Z0-9]", "", str(part_num).upper())
+    reduced = re.sub(r"[^A-Z0-9]", "", str(part_num).upper())
+    if reduced.isdigit():
+        reduced = reduced.lstrip('0') or '0'
+    return reduced
 
 
 # ---------------------------------------------------------------------------
@@ -106,12 +110,9 @@ def _load_valid_uoms() -> set[str]:
     return {r[0] for r in rows if r[0]}
 
 
-def _load_valid_vendors() -> set[str]:
-    """Load active vendor codes from MDM_SUPPLIER_NAME_INFOR."""
-    engine = get_sqlserver_engine()
-    with engine.connect() as conn:
-        rows = conn.execute(load_query("intake", "intake", query="get_valid_vendors")).fetchall()
-    return {r[0] for r in rows if r[0]}
+# def _load_valid_vendors() -> set[str]:
+#     """Load active vendor IDs from PurchaseVendorLocation (both 0000000 and 0000000-B000 forms)."""
+#     return _load_valid_erp_vendor_ids()
 
 
 def _load_valid_erp_vendor_ids() -> set[str]:
@@ -155,63 +156,136 @@ def _check_qoe_uom_compat(uom: str, qoe: int) -> list[tuple[str, str, str]]:
 
 
 # ---------------------------------------------------------------------------
-# Duplicate-detection helpers
+# Duplicate-detection helpers (mode-aware)
 # ---------------------------------------------------------------------------
-def _check_mfg_uom_dup(
+# Precheck modes:
+#   default   — reduced_mfg only (catches aaa-bb = aaabb)
+#   strict    — exact Mfg Part Num only (aaa-bb ≠ aaabb)
+#   explicit  — exact Mfg Part Num + UOM (aaa-bb BX ≠ aaa-bb CA)
+#   distributor — vendor_id_short + reduced_vendor_catalog_num
+
+def _check_mfg_dup(
     reduced_mfg: str,
     std_uom: str,
     clean_mfg: str,
     row_ref,
+    item_id: int,
     seen: dict,
+    dup_groups: dict,
+    precheck_mode: str = "default",
 ) -> tuple[str, Optional[tuple[str, str]]]:
-    """Check Mfg Cat # + UOM for duplicates against items already seen.
+    """Check Mfg Cat # for duplicates using mode-specific keys.
+
+    When a duplicate ERROR is found the current item is added to the same
+    ``dup_groups[key]`` list as the original so every member shares one group.
 
     Returns ('pass'|'warn'|'error', (error_type, detail) | None).
-    Registers this item in `seen` when it is the first occurrence.
     """
-    if not reduced_mfg or not std_uom:
+    if not reduced_mfg and not clean_mfg:
         return "pass", None
-    key = f"{reduced_mfg}|{std_uom}"
-    if key in seen:
-        prev_row, prev_clean = seen[key]
-        if prev_clean == clean_mfg:
+
+    if precheck_mode == "strict":
+        key = clean_mfg.upper() if clean_mfg else ""
+        if not key:
+            return "pass", None
+        if key in seen:
+            prev_row, _, prev_id = seen[key]
+            dup_groups.setdefault(key, [prev_id])
+            dup_groups[key].append(item_id)
             return "error", (
-                "DUPLICATE_MFG_UOM",
-                f"Duplicate Mfg Cat + UOM — same as file row {prev_row}",
+                "DUPLICATE_MFG_STRICT",
+                f"Exact Mfg Cat # duplicate — rows {', '.join(str(r) for _, _, r in [(prev_row, None, prev_id)] if False) or ', '.join(str(mid) for mid in dup_groups[key])}",
             )
-        return "warn", (
-            "DUPLICATE_MFG_UOM_REDUCED",
-            f"Reduced Mfg Cat + UOM matches file row {prev_row} but full Mfg Cat differs — verify these are not duplicates",
-        )
-    seen[key] = (row_ref, clean_mfg)
-    return "pass", None
+        seen[key] = (row_ref, clean_mfg, item_id)
+        if reduced_mfg and reduced_mfg != key:
+            reduced_key = f"_reduced_{reduced_mfg}"
+            if reduced_key in seen:
+                prev_row, prev_clean, _ = seen[reduced_key]
+                if prev_clean != clean_mfg:
+                    return "warn", (
+                        "DUPLICATE_MFG_REDUCED_HINT",
+                        f"Reduced Mfg Cat matches file row {prev_row} ('{prev_clean}') but exact Mfg Cat differs — strict mode allows this",
+                    )
+            seen[reduced_key] = (row_ref, clean_mfg, item_id)
+        return "pass", None
+
+    elif precheck_mode == "explicit":
+        if not clean_mfg:
+            return "pass", None
+        key = f"{clean_mfg.upper()}|{std_uom or ''}"
+        if key in seen:
+            prev_row, _, prev_id = seen[key]
+            dup_groups.setdefault(key, [prev_id])
+            dup_groups[key].append(item_id)
+            return "error", (
+                "DUPLICATE_MFG_UOM_EXPLICIT",
+                f"Exact Mfg Cat + UOM duplicate — dup group {dup_groups[key]}",
+            )
+        seen[key] = (row_ref, clean_mfg, item_id)
+        if reduced_mfg:
+            reduced_key = f"{reduced_mfg}|{std_uom or ''}"
+            if reduced_key != key and reduced_key in seen:
+                prev_row, prev_clean, _ = seen[reduced_key]
+                if prev_clean != clean_mfg:
+                    return "warn", (
+                        "DUPLICATE_MFG_UOM_REDUCED_HINT",
+                        f"Reduced Mfg Cat + UOM matches file row {prev_row} ('{prev_clean}') but exact Mfg Cat differs — explicit mode allows this",
+                    )
+            if reduced_key != key:
+                seen[reduced_key] = (row_ref, clean_mfg, item_id)
+        return "pass", None
+
+    else:
+        if not reduced_mfg:
+            return "pass", None
+        key = reduced_mfg
+        if key in seen:
+            prev_row, prev_clean, prev_id = seen[key]
+            if prev_clean == clean_mfg:
+                dup_groups.setdefault(key, [prev_id])
+                dup_groups[key].append(item_id)
+                return "error", (
+                    "DUPLICATE_MFG_DEFAULT",
+                    f"Duplicate Mfg Cat (reduced) — dup group {dup_groups[key]}",
+                )
+            return "warn", (
+                "DUPLICATE_MFG_REDUCED",
+                f"Reduced Mfg Cat matches file row {prev_row} but full Mfg Cat differs — verify these are not duplicates",
+            )
+        seen[key] = (row_ref, clean_mfg, item_id)
+        return "pass", None
 
 
 def _check_vendor_dup(
     reduced_vendor: str,
     clean_vendor: str,
     row_ref,
+    item_id: int,
     seen: dict,
+    dup_groups: dict,
 ) -> tuple[str, Optional[tuple[str, str]]]:
     """Check Vendor Cat # for duplicates against items already seen.
 
     Returns ('pass'|'warn'|'error', (error_type, detail) | None).
-    Registers this item in `seen` when it is the first occurrence.
+    Registers this item in ``seen`` when it is the first occurrence.
     """
     if not reduced_vendor:
         return "pass", None
     if reduced_vendor in seen:
-        prev_row, prev_clean = seen[reduced_vendor]
+        prev_row, prev_clean, prev_id = seen[reduced_vendor]
         if prev_clean == clean_vendor:
+            vkey = f"_vendor_{reduced_vendor}"
+            dup_groups.setdefault(vkey, [prev_id])
+            dup_groups[vkey].append(item_id)
             return "error", (
                 "DUPLICATE_VENDOR",
-                f"Duplicate Vendor Cat # — same as file row {prev_row}",
+                f"Duplicate Vendor Cat # — dup group {dup_groups[vkey]}",
             )
         return "warn", (
             "DUPLICATE_VENDOR_REDUCED",
             f"Reduced Vendor Cat # matches file row {prev_row} but full Vendor Cat differs — verify these are not duplicates",
         )
-    seen[reduced_vendor] = (row_ref, clean_vendor)
+    seen[reduced_vendor] = (row_ref, clean_vendor, item_id)
     return "pass", None
 
 
@@ -219,7 +293,11 @@ def _check_vendor_dup(
 # Pre-check PC1 — main entry point
 # ---------------------------------------------------------------------------
 def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
-    """Run Phase 1 pre-check on all UPLOADED items for a task.
+    """Run Phase 1 pre-check on ALL items for a task.
+
+    Every run resets all items to UPLOADED first so duplicate detection always
+    operates across the full set — partial runs would silently dissolve duplicate
+    flags as items get retried one at a time.
 
     Checks:
       1. Text cleaning + standardization
@@ -227,8 +305,8 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
       3. QOE parsing + QOE/UOM compatibility
       4. Price parsing
       5. Null field checks (mfg cat, description, UOM)
-      6. Duplicate detection (mfg+UOM for manufacturer source; mfg+UOM or vendor for distributor)
-      7. Vendor ID validation against MDM_SUPPLIER_NAME_INFOR + InforVendorLocation
+      6. Duplicate detection (mode-aware; always full-set)
+      7. Vendor ID validation against PurchaseVendorLocation
 
     Returns:
         {
@@ -239,16 +317,28 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
             "uom_mappings": [...],
         }
     """
-    items = task_repo.get_items(task_id, status="UPLOADED")
+    # Load ALL items for the task regardless of current status
+    all_items = task_repo.get_items(task_id)
+    # Exclude DELETED items — soft-deleted by user, should not participate
+    items = [i for i in all_items if i.status != "DELETED"]
     if not items:
         return {"total": 0, "passed": 0, "failed": 0, "errors": [], "uom_mappings": []}
+
+    # Reset active items to UPLOADED and clear unresolved PC1 errors so we start
+    # from a clean slate every time (prevents dissolving duplicate detection).
+    all_ids = [i.item_id for i in items]
+    for iid in all_ids:
+        task_repo.update_item_status(iid, "UPLOADED", error_message=None)
+
+    existing_errors = task_repo.get_precheck_errors(task_id, phase="PC1", resolved=False)
+    for e in existing_errors:
+        task_repo.resolve_precheck_error(e.error_id, resolved_by="RECHECK")
 
     task = task_repo.get_task(task_id)
     state = state_machine.get_state(task_id)
 
     # Load reference data once
     valid_uoms = _load_valid_uoms()
-    valid_vendors = _load_valid_vendors()
     valid_erp_ids = _load_valid_erp_vendor_ids()
 
     source_type = (task.source_type or "").upper()
@@ -262,13 +352,7 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
     failed_ids = []
     header_error_count = 0
 
-    # --- Header-level validation (task fields, not item fields) ---
-    # Resolve any stale header errors from a previous run before re-checking.
-    existing_errors = task_repo.get_precheck_errors(task_id, phase="PC1", resolved=False)
-    for _e in existing_errors:
-        if _e.item_id is None:
-            task_repo.resolve_precheck_error(_e.error_id, resolved_by="RECHECK")
-
+    # --- Header-level validation (task fields) ---
     if task.vendor_id:
         base_vendor, full_vendor = _parse_vendor_id(task.vendor_id)
         if not base_vendor:
@@ -281,29 +365,29 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
                            "error_detail": f"Task vendor ID '{task.vendor_id}' does not match format NNNNNNN or NNNNNNN-BNNN"})
             header_error_count += 1
         else:
-            if base_vendor not in valid_vendors:
+            # Check the full vendor ID (or base if no location suffix) against PurchaseVendorLocation
+            check_id = full_vendor if full_vendor and "-" in full_vendor else base_vendor
+            if check_id not in valid_erp_ids:
                 task_repo.add_precheck_error(
                     task_id, None, "PC1",
-                    "VENDOR_NOT_IN_MDM",
-                    f"Vendor base '{base_vendor}' not found in MDM_SUPPLIER_NAME_INFOR",
+                    "VENDOR_NOT_FOUND",
+                    f"ERP Vendor ID '{check_id}' not found in active PurchaseVendorLocation",
                 )
-                errors.append({"item_id": None, "error_type": "VENDOR_NOT_IN_MDM",
-                               "error_detail": f"Vendor base '{base_vendor}' not found in MDM_SUPPLIER_NAME_INFOR"})
-                header_error_count += 1
-            if full_vendor and "-" in full_vendor and full_vendor not in valid_erp_ids:
-                task_repo.add_precheck_error(
-                    task_id, None, "PC1",
-                    "VENDOR_LOCATION_INVALID",
-                    f"ERP Vendor ID '{full_vendor}' not found in active InforVendorLocation",
-                )
-                errors.append({"item_id": None, "error_type": "VENDOR_LOCATION_INVALID",
-                               "error_detail": f"ERP Vendor ID '{full_vendor}' not found in active InforVendorLocation"})
+                errors.append({"item_id": None, "error_type": "VENDOR_NOT_FOUND",
+                               "error_detail": f"ERP Vendor ID '{check_id}' not found in active PurchaseVendorLocation"})
                 header_error_count += 1
 
     # For duplicate detection: build indexes as we go
-    # Values store (file_row, clean_value) so we can distinguish exact vs reduced-only matches
-    seen_mfg_uom: dict[str, tuple[int, str]] = {}   # "reduced_mfg|uom" -> (file_row, clean_mfg)
-    seen_vendor: dict[str, tuple[int, str]] = {}     # reduced_vendor    -> (file_row, clean_vendor)
+    # Values store (file_row, clean_value, item_id) so we can back-patch the original on a hit
+    seen_mfg: dict[str, tuple[int, str, int]] = {}        # key depends on precheck_mode
+    seen_vendor: dict[str, tuple[int, str, int]] = {}     # reduced_vendor -> (file_row, clean_vendor, item_id)
+    # dup_groups maps a dup-key to the list of ALL item_ids that share that key.
+    # After the per-item loop we do a single pass to mark every member ERROR_PC1.
+    dup_groups: dict[str, list[int]] = {}
+
+    precheck_mode = (task.precheck_mode or "default").lower()
+    if precheck_mode == "distributor" and not is_distributor:
+        precheck_mode = "default"
 
     for item in items:
         item_errors: list[tuple[str, str]] = []       # (type, detail)
@@ -355,19 +439,21 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
 
         # --- Duplicate detection ---
         row_ref = item.file_row or item.item_id
-        mfg_result, mfg_issue = _check_mfg_uom_dup(
-            reduced_mfg, std_uom, clean_mfg, row_ref, seen_mfg_uom
-        )
-
-        if is_distributor:
-            vendor_result, vendor_issue = _check_vendor_dup(
-                reduced_vendor, clean_vendor, row_ref, seen_vendor
+        mfg_result, mfg_issue = "pass", None
+        if precheck_mode != "distributor":
+            mfg_result, mfg_issue = _check_mfg_dup(
+                reduced_mfg, std_uom, clean_mfg, row_ref, item.item_id, seen_mfg,
+                dup_groups, precheck_mode=precheck_mode,
             )
-            # Gather issues by severity level
-            dup_errors = [i for r, i in [(mfg_result, mfg_issue), (vendor_result, vendor_issue)] if r == "error" and i]
-            dup_warns  = [i for r, i in [(mfg_result, mfg_issue), (vendor_result, vendor_issue)] if r == "warn"  and i]
+
+        if precheck_mode == "distributor":
+            vendor_result, vendor_issue = _check_vendor_dup(
+                reduced_vendor, clean_vendor, row_ref, item.item_id, seen_vendor,
+                dup_groups,
+            )
+            dup_errors = [i for r, i in [(vendor_result, vendor_issue)] if r == "error" and i]
+            dup_warns  = [i for r, i in [(vendor_result, vendor_issue)] if r == "warn" and i]
             if dup_errors:
-                # Any error → whole dup block is ERROR; escalate any concurrent warns too
                 item_errors.extend(dup_errors)
                 item_errors.extend(dup_warns)
             elif dup_warns:
@@ -419,6 +505,66 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
                 reduced_vendor_num=reduced_vendor,
             )
 
+    # --- Post-loop: mark ALL members of each dup group as ERROR_PC1 ---
+    # The second+ occurrence already got ERROR_PC1 in the per-item loop above.
+    # This pass catches the **first** occurrence (originally PASSED/WARN)
+    # and then unifies the error_detail for every member so they all show
+    # the same "row X, Y, Z" listing.
+    item_by_id = {i.item_id: i for i in items}
+
+    for _gkey, group_ids in dup_groups.items():
+        # Find the error_type used for items already in this group
+        dup_type = None
+        for eid in group_ids:
+            for e in errors:
+                if e["item_id"] == eid and e["error_type"].startswith("DUPLICATE"):
+                    dup_type = e["error_type"]
+                    break
+            if dup_type:
+                break
+        dup_type = dup_type or "DUPLICATE"
+
+        # Build the unified detail with file rows
+        sorted_ids = sorted(group_ids)
+        file_rows = []
+        for mid in sorted_ids:
+            obj = item_by_id.get(mid)
+            file_rows.append(str(obj.file_row if obj and obj.file_row else mid))
+        unified_detail = f"Duplicate {dup_type.replace('DUPLICATE_', '').replace('_', ' ').title()} - row {', '.join(file_rows)}"
+
+        # Ensure every member has at least one dup error record
+        for mid in group_ids:
+            if any(e["item_id"] == mid and e["error_type"].startswith("DUPLICATE") for e in errors):
+                continue
+            task_repo.add_precheck_error(task_id, mid, "PC1", dup_type, unified_detail)
+            errors.append({"item_id": mid, "error_type": dup_type, "error_detail": unified_detail})
+            task_repo.update_item_status(mid, "ERROR_PC1", unified_detail)
+            if mid in passed_ids:
+                passed_ids.remove(mid)
+            elif mid in warned_ids:
+                warned_ids.remove(mid)
+            if mid not in failed_ids:
+                failed_ids.append(mid)
+
+        # Unify ALL dup error details (in-memory + DB) to the same string
+        for e in errors:
+            if e["item_id"] in group_ids and e["error_type"].startswith("DUPLICATE"):
+                e["error_detail"] = unified_detail
+        task_repo.update_dup_error_details(task_id, list(group_ids), unified_detail)
+
+    # Build dup_groups summary for the response (UI uses it for click-to-filter)
+    dup_groups_out = []
+    for _gkey, group_ids in dup_groups.items():
+        dup_type = None
+        for eid in group_ids:
+            for e in errors:
+                if e["item_id"] == eid and e["error_type"].startswith("DUPLICATE"):
+                    dup_type = e["error_type"]
+                    break
+            if dup_type:
+                break
+        dup_groups_out.append({"error_type": dup_type or "DUPLICATE", "item_ids": sorted(group_ids)})
+
     # Tallies
     total = len(items)
     passed = len(passed_ids)
@@ -466,6 +612,7 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
         "task_status": task_status,
         "errors": errors,
         "uom_mappings": uom_mappings,
+        "dup_groups": dup_groups_out,
     }
 
 
@@ -503,21 +650,11 @@ def proceed_with_passing(task_id: str, state_machine: TaskStateMachine, user: st
 
 
 def recheck_items(task_id: str, item_ids: list[int], state_machine: TaskStateMachine) -> dict:
-    """Re-run PC1 on specific items (after user fixes in error queue).
+    """Re-run PC1 on the full item set.
 
-    Resets specified items to UPLOADED, clears old errors, then re-runs
-    precheck on ALL items that are currently UPLOADED (includes the reset ones).
+    ``item_ids`` is accepted for backward-compatibility but ignored — run_precheck
+    always resets and processes all items so duplicate detection is never partial.
     """
-    from ..db import task_repo as tr
-
-    for iid in item_ids:
-        tr.update_item_status(iid, "UPLOADED", error_message=None)
-        # Clear unresolved errors for this item
-        errors = tr.get_precheck_errors(task_id, phase="PC1", resolved=False)
-        for e in errors:
-            if e.item_id == iid:
-                tr.resolve_precheck_error(e.error_id, resolved_by="RECHECK")
-
     return run_precheck(task_id, state_machine)
 
 

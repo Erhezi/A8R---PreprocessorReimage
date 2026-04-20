@@ -131,7 +131,7 @@ Phase 3 -- Preprocess Core (Find Dups, Find Item Number, Remove False Positive M
         - compute the average similarity score on matched items for each contract
         - compute the highest similiarity score on matched items for each contract
       - compute the number of contracts vs. number of items matched
-        - if numbers of items matched / number of contracts > 3 and numbers of contracts < 30: review by contract then by item
+        - if numbers of items matched / number of contracts > 3 and numbers of contracts < 20: review by contract then by item
         - else: directly review by item
       - review by contract:
         - if contract manufacturer is the same or if the highest similarity score is 100%, auto-include
@@ -144,49 +144,72 @@ Phase 3 -- Preprocess Core (Find Dups, Find Item Number, Remove False Positive M
       - finally we will pruning out any false-postive matches and get the set of duplicated items (regardless of the UOM and packaging at this stage) from CCX
   
   - Item Master matching, Preprocessor/DA, label any items that are linked to item master item on Infor (this is different from previous design, we will start with the uploaded item + all true postivie items here)
-    - Match to Infor Contract Line
-       - similar to SKU matching logic, but now all contract items becomes infor all contract items
-       - using (contract number, manufacturer number) as identification key, inherit the false-positive, true-postive flag from ccx items, if we have items that we couldn't find the true/false positive label, send the items to do similarity calculation
-         - for some items it is possible that the (contract number, manufacturer number) combination yield more than one matches, we count the final matched results, and if that happens, we will add in UOM and QOE to further pin down the match
-       - repeat similarity calculation if there are obsolete items that only matches input(TP) and Infor contract line, ask user to select the true duplicates
-       - we get the set of duplicated items (regardless of the UOM and packaging at this stage) from Infor with infor's contract line ID and Item # if Item Type == 'itemmast' attached to each matched item
-    - Match to Item Master (Vendor Item)
-    - for items that attached with Infor Item Number, bring the Item's default buyUOM and corresponding buyUOMMultiplier
+    - 1. Match on Manufacturer + Manufacturer Number
+    - 2. Match on VendorID + Vendor Item
+    - 3. Match by 'true-positive' dup line
+      - e.g, let's say we identified a few rows belong to the same 'input reference' group after duplication detection and we have Infor records labeled with a 'Item' value not equals to '', we will list the value (occationally it is multiple, list all, sep by ', ')
+
+  - valid buyUOM pre-computation
+    - take all possible UOM valid for buying from MDM_ITEMUOM
+    - transform the data as per Item, per possible list of all valid buy UOM*UOMConversion (note that the origianl table's conversion is float, in this app we will take or conversion factor/uom multiplier/uom conversion as int)
+      - e.g. 123456 - BX*5, PK*10
+
 
   - By far we should have:
     - a. input (TP) set of items cleansed
     - b. CCX set of items labeled with input (TP) item reference
     - c. Infor set of items labeled with input (TP) item reference and CCX item reference
-    - d. input (TP) set of items with Item Number linked given that same Infor item should take the same Infor Item Number
-
-  - CCX - Infor Sync mark
-    - for CCX and Infor set of items with the same (vendor id, contract number, manufacturer catalog number, UOM (EDI translated)) - if they also have same vendor catalog number, same QOE, same price, mark as 'infor synced' on CCX set, else 'infor unsynced' (this include joinable but information different, ones only in ccx, ones only in Infor)
   
   - Preprocessed data set per task should inlcuding those fields:
     - taskID
-    - contract number (ccx)
-    - vendor (ID + purchase from loc if applicable)
-    - manufacturer (4-digits code)
+    - contractID
+    - ERP vendor ID
+    - Vendor ID (the left(ERPVendorID, 7) on CCX and INPUT or VendorID on Infor)
+    - manufacturer (4-digit code, item level, for input and CCX, normally it will be the same as contract level code)
+    - contractmanufacturer (4-digit code, contract level)
     - input reference (will just be the PK number from the 'PENDING PREPROCESSOR' table)
     - source data set (INPUT, CCX, INFOR)
     - contract source type (PREMIER, LOCAL)
     - contract process type (DISTRIBUTOR, MANUFACTURER)
-    - organization group (ALL, WHITE PLAINS, ST. LUKE'S, NYACK, BURKE, NEW ROCHELLE, MOUNT VERNON, SCHAFFER)
+    - Organization
+    - OrganizationEID 
+    - Organization type (MHS or ENTITY, only the ones under OrganizationEID '105188574' will be MHS, others will be ENTITY)
     - manufacturer part number
     - vendor part number
-    - UOM
+    - UOM (original)
+    - UOMtoMatchInfor (the ones translated by MDM_EDI_SUB_UOM)
     - QOE
     - Price
     - Description
     - Intention
-    - Infor Item # (by input ref)
-    - Contract Line Infor Item # (by contract item reference)
+    - Infor Item 1 (by manufacturer + manufacturer number)
+    - Infor Item 1 active
+    - Infor Item 2 (by vendor + vendor item)
+    - Infor Item 2 active
+    - Infor Item 3 (by infor contract line item reference)
+    - Infor Item 3 active
+    - Infor allowed buyUOM and Multiplier (take the form of BuyUOM*CF, if multiple allowed, put in one string join by ', ')
     - Contract Start Date
     - Contract End Date
     - Item Price Start Date
     - Item Price End Date
-    - Infor Sync
-    - timestamp
+    - infor standard manufacturer name (line)
+    - infor standard manufacturer name (contract)
+    - infor standard vendor name
+    - create timestamp (the time the dataset being created)
+  
+  the idea here is we create a unified datasets that stack the INPUT data, CCX data, and INFOR data togather.
+  it should include: 
+    - all the input rows that are good for 'preprocess'
+    - all the 'true-positive' matched rows (to INPUT) that from CCX
+    - all the 'true-positive' matched rows (to INPUT) that from Infor
+      - note that a subset of the 'true-postive' match here can be directly inferred from match link between CCX and Infor
+  
+  about the Infor Item 1 - 3 labeling:
+    - Infor Item 1 - take the given manufactuer (line level) + manufactuer part number, search on MDM_ITEM 
+    - Infor Item 2 - take the given vendorID + vendor item, search on MDM_VENDORITEM
+    - Infor Item 3 - take the 'true-positive' match between INPUT and Infor, if under the same matched item group (same input record reference), populate the item group with the Item Number get from Infor Contract Line
+
 
 
 Phase 4 -- Dedup & Data Integrity Resolution

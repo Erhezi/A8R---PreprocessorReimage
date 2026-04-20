@@ -43,14 +43,43 @@ def api_intake_state(task_id: str):
 
     items = task_repo.get_items(task_id)
     errors = task_repo.get_precheck_errors(task_id, phase="PC1")
+
+    # Build dup_groups from persisted errors so the UI can group duplicates.
+    # Group by (error_type, error_detail) for unresolved DUPLICATE_* errors.
+    _dup_map: dict[tuple[str, str], list[int]] = {}
+    for e in errors:
+        if e.error_type and e.error_type.startswith("DUPLICATE") and e.item_id is not None and not e.resolved:
+            key = (e.error_type, e.error_detail)
+            _dup_map.setdefault(key, []).append(e.item_id)
+    dup_groups = [
+        {"error_type": k[0], "item_ids": sorted(set(ids))}
+        for k, ids in _dup_map.items() if len(set(ids)) > 1
+    ]
+
     return jsonify({
         "task_id": task_id,
         "phase": task.phase,
         "status": task.status,
+        "precheck_mode": task.precheck_mode or "default",
+        "process_type": task.process_type or "",
         "item_count": len(items),
         "items": [i.to_dict() for i in items],
         "errors": [e.to_dict() for e in errors],
+        "dup_groups": dup_groups,
     })
+
+
+@intake_bp.route("/api/intake/<task_id>/items/<int:item_id>", methods=["DELETE"])
+@login_required
+def api_delete_item(task_id: str, item_id: int):
+    """Soft-delete a single item row (mark as DELETED)."""
+    task = task_repo.get_task(task_id)
+    if not task:
+        return jsonify({"error": "Task not found"}), 404
+    ok = task_repo.soft_delete_item(item_id)
+    if not ok:
+        return jsonify({"error": "Item not found"}), 404
+    return jsonify({"deleted": item_id, "status": "DELETED"})
 
 
 @intake_bp.route("/api/intake/<task_id>/upload", methods=["POST"])
@@ -83,7 +112,7 @@ def api_upload_items(task_id: str):
     try:
         import pandas as pd
 
-        df = pd.read_excel(io.BytesIO(f.read()))
+        df = pd.read_excel(io.BytesIO(f.read()), dtype=str)
 
         # Build reverse map: original_header → internal key
         reverse = {v: k for k, v in user_mapping.items() if v}
@@ -149,13 +178,23 @@ def api_upload_items(task_id: str):
                 s = str(val).strip()
                 return fallback if s.lower() == "nan" else s
 
+            def _num(val, fallback=0):
+                """Convert cell value to a number, treating NaN/blank as fallback."""
+                s = _str(val, "")
+                if not s:
+                    return fallback
+                try:
+                    return float(s)
+                except (ValueError, TypeError):
+                    return fallback
+
             item = {
                 "mfg_catalog_num": _str(row.get(resolved.get("mfg_catalog_num", ""), "")),
                 "vendor_catalog_num": _str(row.get(resolved.get("vendor_catalog_num", ""), "")) or None,
                 "description": _str(row.get(resolved.get("description", ""), "")),
                 "uom": _str(row.get(resolved.get("uom", ""), "")),
-                "unit_price": row.get(resolved.get("unit_price", ""), 0),
-                "qoe": row.get(resolved.get("qoe", ""), 1),
+                "unit_price": _num(row.get(resolved.get("unit_price", ""), "0"), 0),
+                "qoe": _num(row.get(resolved.get("qoe", ""), "1"), 1),
                 "intention": _str(row.get(resolved.get("intention", ""), task.intention)) or task.intention,
                 "file_row": idx + 2,  # 1-indexed header + data row
             }
@@ -213,6 +252,12 @@ def api_reupload_items(task_id: str):
 @login_required
 def api_run_precheck(task_id: str):
     """Run PC1 pre-check on uploaded items."""
+    # Accept optional precheck_mode from request body
+    data = request.get_json(silent=True) or {}
+    precheck_mode = data.get("precheck_mode")
+    if precheck_mode and precheck_mode in ("default", "strict", "explicit", "distributor"):
+        task_repo.update_task_fields(task_id, precheck_mode=precheck_mode)
+
     sm = _sm()
     result = intake_service.run_precheck(task_id, sm)
     return jsonify(result)
@@ -285,6 +330,11 @@ def api_manual_pass(task_id: str, item_id: int):
 @login_required
 def api_recheck_all(task_id: str):
     """Reset ALL error/warn items to UPLOADED and re-run PC1."""
+    data = request.get_json(silent=True) or {}
+    precheck_mode = data.get("precheck_mode")
+    if precheck_mode and precheck_mode in ("default", "strict", "explicit", "distributor"):
+        task_repo.update_task_fields(task_id, precheck_mode=precheck_mode)
+
     sm = _sm()
     items = task_repo.get_items(task_id)
     error_warn_ids = [i.item_id for i in items if i.status in ("ERROR_PC1", "WARN_PC1")]

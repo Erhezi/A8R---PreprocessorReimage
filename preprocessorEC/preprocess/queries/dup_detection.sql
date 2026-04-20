@@ -1,44 +1,136 @@
--- name: dup_detection_manufacturer
--- SKU matching for MANUFACTURER contracts: reduced mfg # → reduced mfg # on all CCX items
+-- name: ccx_match_manufacturer
+-- CCX duplicate detection for MANUFACTURER contracts.
+-- Match reduced mfg # on INPUT row → reduced_mfg_num_ccx on CCXSyncedContractLine.
+-- Org-aware: MHS (105188574) sees all orgs; ENTITY sees same org + MHS.
 SELECT
-    ci.contract_number,
-    ci.mfg_catalog_num,
-    ci.reduced_mfg_num,
-    ci.description,
-    ci.uom,
-    ci.unit_price,
-    ci.vendor_id,
-    ci.status AS ccx_status
-FROM [DM_MONTYNT\dli2].CCXContractItems ci
-WHERE ci.reduced_mfg_num = :reduced_mfg_num
-  AND ci.status = 'ACTIVE';
+    ccx.CCX_pkid,
+    ccx.OrganizationEID,
+    ccx.ContractID,
+    ccx.ERPVendorID,
+    ccx.ManufacturerNumber_CCX       AS mfg_catalog_num_ccx,
+    ccx.VendorItem_CCX               AS vendor_catalog_num_ccx,
+    ccx.ItemDescription_CCX          AS description_ccx,
+    ccx.UOM_CCX                      AS uom_ccx,
+    ccx.QOE_CCX                      AS qoe_ccx,
+    ccx.ContractPrice_CCX            AS unit_price_ccx,
+    ccx.UOMtoMatchInfor_CCX          AS uom_to_match_infor_ccx,
+    ccx.reduced_mfg_num_ccx,
+    ccx.reduced_vendor_num_ccx,
+    ccx.ContractManufacturer_Infor   AS contract_manufacturer,
+    ccx.ManufacturerName_Infor       AS mfg_name_infor,
+    cnt.VendorID,
+    cnt.Manufacturer,
+    cnt.Vendor                       AS vendor_name,
+    cnt.ContractDescription
+FROM [Preprocessor].[CCXSyncedContractLine] ccx
+JOIN [Preprocessor].[CCXSyncedContractLineCnt] cnt
+    ON ccx.OrganizationEID = cnt.OrganizationEID
+   AND ccx.ContractID      = cnt.ContractID
+   AND ccx.ERPVendorID     = cnt.ERPVendorID
+WHERE ccx.reduced_mfg_num_ccx = :reduced_mfg_num
+  AND (
+      :org_eid = '105188574'
+      OR ccx.OrganizationEID IN (:org_eid, '105188574')
+  );
 
--- name: dup_detection_distributor_premier
--- SKU matching for DISTRIBUTOR PREMIER: union of reduced mfg # and reduced vendor # → all CCX
+-- name: ccx_match_distributor_premier
+-- CCX duplicate detection for DISTRIBUTOR PREMIER contracts.
+-- Match on reduced mfg OR reduced vendor number.
 SELECT
-    ci.contract_number,
-    ci.mfg_catalog_num,
-    ci.vendor_catalog_num,
-    ci.reduced_mfg_num,
-    ci.description,
-    ci.uom,
-    ci.unit_price,
-    ci.vendor_id
-FROM [DM_MONTYNT\dli2].CCXContractItems ci
-WHERE (ci.reduced_mfg_num = :reduced_mfg_num OR ci.reduced_vendor_num = :reduced_vendor_num)
-  AND ci.status = 'ACTIVE';
+    ccx.CCX_pkid,
+    ccx.OrganizationEID,
+    ccx.ContractID,
+    ccx.ERPVendorID,
+    ccx.ManufacturerNumber_CCX       AS mfg_catalog_num_ccx,
+    ccx.VendorItem_CCX               AS vendor_catalog_num_ccx,
+    ccx.ItemDescription_CCX          AS description_ccx,
+    ccx.UOM_CCX                      AS uom_ccx,
+    ccx.QOE_CCX                      AS qoe_ccx,
+    ccx.ContractPrice_CCX            AS unit_price_ccx,
+    ccx.UOMtoMatchInfor_CCX          AS uom_to_match_infor_ccx,
+    ccx.reduced_mfg_num_ccx,
+    ccx.reduced_vendor_num_ccx,
+    ccx.ContractManufacturer_Infor   AS contract_manufacturer,
+    ccx.ManufacturerName_Infor       AS mfg_name_infor,
+    cnt.VendorID,
+    cnt.Manufacturer,
+    cnt.Vendor                       AS vendor_name,
+    cnt.ContractDescription,
+    CASE
+        WHEN ccx.reduced_mfg_num_ccx = :reduced_mfg_num THEN 'REDUCED_MFG'
+        WHEN ccx.reduced_vendor_num_ccx = :reduced_vendor_num THEN 'REDUCED_VPN'
+        ELSE 'CROSS_MATCH'
+    END AS match_type
+FROM [Preprocessor].[CCXSyncedContractLine] ccx
+JOIN [Preprocessor].[CCXSyncedContractLineCnt] cnt
+    ON ccx.OrganizationEID = cnt.OrganizationEID
+   AND ccx.ContractID      = cnt.ContractID
+   AND ccx.ERPVendorID     = cnt.ERPVendorID
+WHERE (
+        ccx.reduced_mfg_num_ccx = :reduced_mfg_num
+     OR ccx.reduced_vendor_num_ccx = :reduced_vendor_num
+  )
+  AND (
+      :org_eid = '105188574'
+      OR ccx.OrganizationEID IN (:org_eid, '105188574')
+  );
 
--- name: dup_detection_distributor_local
--- SKU matching for DISTRIBUTOR LOCAL: mfg # + vendor # cross-match
+-- name: ccx_match_distributor_local
+-- CCX duplicate detection for DISTRIBUTOR LOCAL contracts.
+-- Cross-match reduced mfg # against both mfg and vendor columns.
 SELECT
-    ci.contract_number,
-    ci.mfg_catalog_num,
-    ci.vendor_catalog_num,
-    ci.reduced_mfg_num,
-    ci.description,
-    ci.uom,
-    ci.unit_price,
-    ci.vendor_id
-FROM [DM_MONTYNT\dli2].CCXContractItems ci
-WHERE (ci.reduced_mfg_num = :reduced_mfg_num OR ci.reduced_mfg_num = :reduced_vendor_num)
-  AND ci.status = 'ACTIVE';
+    ccx.CCX_pkid,
+    ccx.OrganizationEID,
+    ccx.ContractID,
+    ccx.ERPVendorID,
+    ccx.ManufacturerNumber_CCX       AS mfg_catalog_num_ccx,
+    ccx.VendorItem_CCX               AS vendor_catalog_num_ccx,
+    ccx.ItemDescription_CCX          AS description_ccx,
+    ccx.UOM_CCX                      AS uom_ccx,
+    ccx.QOE_CCX                      AS qoe_ccx,
+    ccx.ContractPrice_CCX            AS unit_price_ccx,
+    ccx.UOMtoMatchInfor_CCX          AS uom_to_match_infor_ccx,
+    ccx.reduced_mfg_num_ccx,
+    ccx.reduced_vendor_num_ccx,
+    ccx.ContractManufacturer_Infor   AS contract_manufacturer,
+    ccx.ManufacturerName_Infor       AS mfg_name_infor,
+    cnt.VendorID,
+    cnt.Manufacturer,
+    cnt.Vendor                       AS vendor_name,
+    cnt.ContractDescription,
+    CASE
+        WHEN ccx.reduced_mfg_num_ccx = :reduced_mfg_num THEN 'REDUCED_MFG'
+        WHEN ccx.reduced_vendor_num_ccx = :reduced_mfg_num THEN 'CROSS_MATCH'
+        ELSE 'CROSS_MATCH'
+    END AS match_type
+FROM [Preprocessor].[CCXSyncedContractLine] ccx
+JOIN [Preprocessor].[CCXSyncedContractLineCnt] cnt
+    ON ccx.OrganizationEID = cnt.OrganizationEID
+   AND ccx.ContractID      = cnt.ContractID
+   AND ccx.ERPVendorID     = cnt.ERPVendorID
+WHERE (
+        ccx.reduced_mfg_num_ccx = :reduced_mfg_num
+     OR ccx.reduced_vendor_num_ccx = :reduced_mfg_num
+  )
+  AND (
+      :org_eid = '105188574'
+      OR ccx.OrganizationEID IN (:org_eid, '105188574')
+  );
+
+-- name: ccx_contract_summary
+-- Summary of matched CCX contracts with line counts.
+-- Used for the contract-level review grouping.
+SELECT
+    cnt.ContractID,
+    cnt.OrganizationEID,
+    cnt.ERPVendorID,
+    cnt.VendorID,
+    cnt.Manufacturer,
+    cnt.Vendor,
+    cnt.LineCnt_Infor,
+    cnt.ContractDescription,
+    cnt.ContractManufacturer_Infor
+FROM [Preprocessor].[CCXSyncedContractLineCnt] cnt
+WHERE cnt.ContractID = :contract_id
+  AND cnt.OrganizationEID = :org_eid
+  AND cnt.ERPVendorID = :erp_vendor_id;
