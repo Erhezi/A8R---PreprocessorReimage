@@ -1,0 +1,183 @@
+  <!-- Items summary -->
+  <div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+      <span>Items <span class="badge bg-secondary ms-1" id="itemCount">0</span></span>
+      <div class="d-flex align-items-center gap-2">
+        <div id="itemFilterBtns" style="display:none">
+          <div class="btn-group btn-group-sm" role="group">
+            <button id="filterAll" class="btn btn-secondary" onclick="setItemFilter('all')">All</button>
+            <button id="filterError" class="btn btn-outline-danger" onclick="setItemFilter('error')">Errors</button>
+            <button id="filterWarn" class="btn btn-outline-warning" onclick="setItemFilter('warn')">Warnings</button>
+            <button id="filterIssue" class="btn btn-outline-dark" onclick="setItemFilter('issue')">Issues</button>
+          </div>
+          <button id="clearFocusBtn" class="btn btn-sm btn-outline-info ms-2" style="display:none" onclick="clearFocus()"><i class="bi bi-x-circle"></i> Clear focus</button>
+        </div>
+        <div id="itemActions"></div>
+      </div>
+    </div>
+    <div class="card-body p-0">
+      <div class="table-responsive" style="max-height:500px; overflow-y:auto">
+        <table class="table table-sm table-hover mb-0">
+          <thead class="table-light sticky-top">
+            <tr>
+              <th>File Row</th>
+              <th>Mfg Cat #</th>
+              <th>Vendor Cat #</th>
+              <th>Description</th>
+              <th>UOM</th>
+              <th>QOE</th>
+              <th>Price</th>
+              <th>Status</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="itemsBody">
+            <tr><td colspan="9" class="text-center text-muted">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Re-upload Modal -->
+  <div class="modal fade" id="reuploadModal" tabindex="-1" aria-labelledby="reuploadModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="reuploadModalLabel">Re-upload Items</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div class="alert alert-warning py-2 small mb-3">
+            This will <strong>delete all current items and errors</strong> for this task and replace them with the new file.
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label fw-semibold">Select Excel file (.xlsx)</label>
+            <input type="file" class="form-control form-control-sm" id="reuploadFileInput" accept=".xlsx">
+          </div>
+
+          <div id="reuploadColMapPanel" style="display:none">
+            <p class="fw-semibold small mb-1">Map your file columns to required fields:</p>
+            <div id="reuploadColMapFields"></div>
+            <div id="reuploadPreview" class="mt-2 small text-muted"></div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-warning btn-sm" id="btnConfirmReupload" disabled>Confirm Re-upload</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Edit / Search Vendor Modal -->
+  <div class="modal fade" id="editVendorModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title">Search &amp; Select Vendor</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <div class="input-group input-group-sm mb-3">
+            <input type="text" class="form-control" id="editVendorSearchInput" placeholder="Search by vendor name or purchase-from location...">
+            <button class="btn btn-outline-primary" id="btnEditVendorSearch">Search</button>
+          </div>
+          <div class="table-responsive" style="max-height:400px;overflow-y:auto">
+            <table class="table table-sm table-hover">
+              <thead class="table-light">
+                <tr><th>ERP Vendor ID</th><th>Vendor Name</th><th>Purchase From</th><th></th></tr>
+              </thead>
+              <tbody id="editVendorResults">
+                <tr><td colspan="4" class="text-center text-muted">Enter a search term above</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Edit Item Modal -->
+  <div class="modal fade" id="editItemModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title">Edit Item — Row <span id="editRowNum"></span></h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" id="editItemId">
+          <div class="mb-2">
+            <label class="form-label small fw-semibold">Mfg Cat #</label>
+            <input type="text" class="form-control form-control-sm" id="editMfg">
+          </div>
+          <div class="mb-2">
+            <label class="form-label small fw-semibold">Vendor Cat #</label>
+            <input type="text" class="form-control form-control-sm" id="editVendor">
+          </div>
+          <div class="mb-2">
+            <label class="form-label small fw-semibold">Description</label>
+            <textarea class="form-control form-control-sm" id="editDesc" rows="2"></textarea>
+          </div>
+          <div class="row g-2">
+            <div class="col-4">
+              <label class="form-label small fw-semibold">UOM</label>
+              <input type="text" class="form-control form-control-sm" id="editUom">
+            </div>
+            <div class="col-4">
+              <label class="form-label small fw-semibold">QOE</label>
+              <input type="number" class="form-control form-control-sm" id="editQoe" min="1">
+            </div>
+            <div class="col-4">
+              <label class="form-label small fw-semibold">Price</label>
+              <input type="number" class="form-control form-control-sm" id="editPrice" step="0.0001" min="0">
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-primary btn-sm" id="btnSaveEdit">Save Changes</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Pre-check results -->
+  <div class="card mb-4" id="precheckCard" style="display:none">
+    <div class="card-header" id="precheckHeader">Pre-Check Results</div>
+    <div class="card-body" id="precheckBody"></div>
+  </div>
+
+  <!-- Errors -->
+  <div class="card mb-4" id="errorsCard" style="display:none">
+    <div class="card-header text-danger d-flex justify-content-between align-items-center">
+      <span>Pre-Check Errors</span>
+      <small class="fw-normal" style="font-size:0.75rem;opacity:0.75">Click a row to filter the item table</small>
+    </div>
+    <div class="card-body p-0">
+      <table class="table table-sm mb-0">
+        <thead class="table-light">
+          <tr><th>Row</th><th>Type</th><th>Detail</th><th>Resolved</th></tr>
+        </thead>
+        <tbody id="errorsBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Warnings -->
+  <div class="card mb-4" id="warningsCard" style="display:none">
+    <div class="card-header d-flex justify-content-between align-items-center" style="color:#856404; background-color:#fff3cd; border-color:#ffc107">
+      <span>Pre-Check Warnings</span>
+      <small class="fw-normal" style="font-size:0.75rem;opacity:0.75">Click a row to filter the item table</small>
+    </div>
+    <div class="card-body p-0">
+      <table class="table table-sm mb-0">
+        <thead class="table-light">
+          <tr><th>Row</th><th>Type</th><th>Detail</th><th>Resolved</th></tr>
+        </thead>
+        <tbody id="warningsBody"></tbody>
+      </table>
+    </div>
+  </div>

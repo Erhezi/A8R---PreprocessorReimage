@@ -1,0 +1,574 @@
+<script>
+function getAvailablePrecheckModes(task) {
+  const processType = ((task && task.process_type) || "").toUpperCase();
+  const modes = [
+    { value: "default", label: "Default: Reduced manufacturer" },
+    { value: "strict", label: "Strict: Manufacturer part number" },
+    { value: "explicit", label: "Explicit: Manufacturer part number + UOM" },
+  ];
+  if (processType.includes("DISTRIBUTOR")) {
+    modes.push({ value: "distributor", label: "Distributor: Vendor part number" });
+  }
+  return modes;
+}
+
+function renderRecheckModeControl(task) {
+  const modes = getAvailablePrecheckModes(task);
+  const selected = (task && task.precheck_mode) || "default";
+  return `
+    <select class="form-select form-select-sm d-block mb-1 w-100" id="recheckModeSelect"
+            style="border-color: #0dcaf0; color: #0dcaf0;"
+            aria-label="Select pre-check mode">
+      ${modes.map(mode => `<option value="${mode.value}"${mode.value === selected ? " selected" : ""}>${mode.label}</option>`).join("")}
+    </select>
+  `;
+}
+
+function renderIntakeActionButtons(task, issues) {
+  const inIntake = task.phase === "INTAKE";
+  if (!inIntake) {
+    return "";
+  }
+
+  let buttons = "";
+  const intakeStatuses = ["PENDING_PRECHECK", "DRAFT", "ON_HOLD_PC1", "PENDING_NUVIA"];
+  const allUploaded = currentItems.length > 0 && currentItems.every(item => item.status === "UPLOADED");
+  const hasHeaderErrors = issues.some(issue => issue.item_id === null || issue.item_id === undefined);
+
+  if (intakeStatuses.includes(task.status)) {
+    buttons += `<button class="btn btn-sm btn-outline-warning d-block mb-1 w-100" onclick="showReupload()">Re-upload Items</button>`;
+    if (allUploaded) {
+      buttons += `<button class="btn btn-sm btn-primary d-block mb-1 w-100" onclick="runPrecheck()">Run Pre-check</button>`;
+    }
+  }
+
+  if (hasHeaderErrors) {
+    buttons += `<button class="btn btn-sm btn-outline-danger d-block mb-1 w-100" onclick="openEditVendorModal()"><i class="bi bi-pencil-square"></i> Edit Vendor ID</button>`;
+  }
+
+  if (task.status === "ON_HOLD_PC1" || task.status === "PENDING_NUVIA") {
+    const hasErrorWarn = currentItems.some(item => item.status === "ERROR_PC1" || item.status === "WARN_PC1");
+    if (hasErrorWarn) {
+      buttons += `<button class="btn btn-sm btn-outline-info d-block mb-1 w-100" onclick="recheckAll()">Re-run Pre-check</button>`;
+      buttons += renderRecheckModeControl(task);
+    }
+  }
+
+  if (!hasHeaderErrors && (task.status === "ON_HOLD_PC1" || task.status === "PENDING_NUVIA")) {
+    const passedCount = currentItems.filter(item => item.status === "PASSED_PC1").length;
+    if (passedCount > 0) {
+      const isPremier = (task.source_type || "").toUpperCase() === "PREMIER";
+      const failedOrWarned = currentItems.filter(item => item.status === "ERROR_PC1" || item.status === "WARN_PC1").length;
+      if (isPremier && failedOrWarned > 0) {
+        buttons += `<button class="btn btn-sm btn-outline-secondary d-block mb-1 w-100" disabled title="PREMIER contracts require all items to pass">Proceed (blocked — PREMIER)</button>`;
+      } else if (failedOrWarned > 0) {
+        buttons += `<button class="btn btn-sm btn-success d-block mb-1 w-100" onclick="proceedWithPassing()">Proceed with ${passedCount} Passing Items (LOCAL)</button>`;
+      } else {
+        buttons += `<button class="btn btn-sm btn-success d-block mb-1 w-100" onclick="proceedWithPassing()">Advance to Identity</button>`;
+      }
+    }
+  } else if (hasHeaderErrors && (task.status === "ON_HOLD_PC1" || task.status === "PENDING_NUVIA")) {
+    buttons += `<button class="btn btn-sm btn-outline-secondary d-block mb-1 w-100" disabled title="Fix header errors (Row 0) before proceeding">Proceed (blocked — header errors)</button>`;
+  }
+
+  return buttons;
+}
+
+function renderItemsTable() {
+  const inIntake = currentTask && currentTask.phase === "INTAKE";
+  const body = document.getElementById("itemsBody");
+  if (!currentItems.length) {
+    body.innerHTML = '<tr><td colspan="9" class="text-center text-muted">No items yet</td></tr>';
+    return;
+  }
+
+  let visible;
+  if (focusedItemIds.size > 0) {
+    visible = currentItems.filter(item => focusedItemIds.has(item.item_id));
+  } else if (activeItemFilter === "error") {
+    visible = currentItems.filter(item => item.status === "ERROR_PC1");
+  } else if (activeItemFilter === "warn") {
+    visible = currentItems.filter(item => item.status === "WARN_PC1");
+  } else if (activeItemFilter === "issue") {
+    visible = currentItems.filter(item => item.status === "ERROR_PC1" || item.status === "WARN_PC1");
+  } else {
+    visible = currentItems;
+  }
+
+  if (!visible.length) {
+    body.innerHTML = '<tr><td colspan="9" class="text-center text-muted">No matching items</td></tr>';
+  } else {
+    const dupItemIds = new Set();
+    currentDupGroups.forEach(group => (group.item_ids || []).forEach(id => dupItemIds.add(id)));
+
+    body.innerHTML = visible.map(item => {
+      let actionButtons = "";
+      if (item.status === "ERROR_PC1" && inIntake) {
+        actionButtons = `<button class="btn btn-outline-primary btn-sm py-0 px-1" onclick="openEditModal(${item.item_id})" title="Edit"><i class="bi bi-pencil-square"></i> Edit</button>`;
+        if (dupItemIds.has(item.item_id)) {
+          actionButtons += ` <button class="btn btn-outline-danger btn-sm py-0 px-1" onclick="softDeleteItem(${item.item_id})" title="Delete"><i class="bi bi-trash"></i> Delete</button>`;
+        }
+      } else if (item.status === "WARN_PC1" && inIntake) {
+        actionButtons = `<button class="btn btn-outline-primary btn-sm py-0 px-1 me-1" onclick="openEditModal(${item.item_id})" title="Edit"><i class="bi bi-pencil-square"></i> Edit</button>` +
+          `<button class="btn btn-outline-success btn-sm py-0 px-1" onclick="manuallyPass(${item.item_id})" title="Pass">Pass</button>`;
+      }
+      const rowHighlight = focusedItemIds.has(item.item_id) ? ' class="table-info"' : '';
+      return `
+        <tr data-item-id="${item.item_id}"${rowHighlight}>
+          <td>${item.file_row || "—"}</td>
+          <td>${item.mfg_catalog_num || "—"}</td>
+          <td>${item.vendor_catalog_num || "—"}</td>
+          <td class="text-truncate" style="max-width:250px" title="${(item.description || '').replace(/"/g, '&quot;')}">${item.description || "—"}</td>
+          <td>${item.uom}</td>
+          <td>${item.qoe}</td>
+          <td>${item.unit_price != null ? item.unit_price : "—"}</td>
+          <td>${statusBadge(item.status)}</td>
+          <td>${actionButtons}</td>
+        </tr>`;
+    }).join("");
+  }
+
+  const countEl = document.getElementById("itemCount");
+  countEl.textContent = visible.length < currentItems.length
+    ? `${visible.length} / ${currentItems.length}`
+    : currentItems.length;
+
+  const filterDefs = [
+    { id: "filterAll", key: "all", active: "btn-secondary", inactive: "btn-outline-secondary" },
+    { id: "filterError", key: "error", active: "btn-danger", inactive: "btn-outline-danger" },
+    { id: "filterWarn", key: "warn", active: "btn-warning", inactive: "btn-outline-warning" },
+    { id: "filterIssue", key: "issue", active: "btn-dark", inactive: "btn-outline-dark" },
+  ];
+  filterDefs.forEach(({ id, key, active, inactive }) => {
+    const btn = document.getElementById(id);
+    if (!btn) return;
+    const isActive = focusedItemIds.size === 0 && activeItemFilter === key;
+    btn.className = `btn btn-sm ${isActive ? active : inactive}`;
+  });
+}
+
+function renderIntakeIssues(issues) {
+  const errorItems = currentItems.filter(item => item.status === "ERROR_PC1").map(item => item.item_id);
+  const errorIssues = issues.filter(issue =>
+    issue.item_id === null || issue.item_id === undefined || errorItems.includes(issue.item_id)
+  ).sort((left, right) => getIssueSortRow(left) - getIssueSortRow(right));
+
+  if (errorIssues.length) {
+    document.getElementById("errorsCard").style.display = "";
+    document.getElementById("errorsBody").innerHTML = errorIssues.map(issue => {
+      const isHeader = issue.item_id === null || issue.item_id === undefined;
+      const item = !isHeader ? currentItems.find(entry => entry.item_id === issue.item_id) : null;
+      const rowLabel = isHeader
+        ? `<span class="badge bg-dark">Row 0</span> <small class="text-muted">Header</small>`
+        : (item ? item.file_row : issue.item_id);
+      let focusIds = [issue.item_id];
+      if (!isHeader && (issue.error_type || "").startsWith("DUPLICATE_")) {
+        const group = currentDupGroups.find(entry => entry.item_ids.includes(issue.item_id));
+        if (group) focusIds = [...group.item_ids];
+      }
+      const focusAttrs = isHeader ? "" : ` style="cursor:pointer" title="Click to focus involved rows" onclick="focusItems([${focusIds.join(",")}])"`;
+      return `
+        <tr${isHeader ? ' class="table-secondary"' : ''}${focusAttrs}>
+          <td>${rowLabel}</td>
+          <td>${issue.error_type}</td>
+          <td>${issue.error_detail}</td>
+          <td>${issue.resolved ? '<span class="text-success">Yes</span>' : '<span class="text-danger">No</span>'}</td>
+        </tr>`;
+    }).join("");
+  } else {
+    document.getElementById("errorsCard").style.display = "none";
+  }
+
+  const warnItems = currentItems.filter(item => item.status === "WARN_PC1").map(item => item.item_id);
+  const warnIssues = issues
+    .filter(issue => warnItems.includes(issue.item_id))
+    .sort((left, right) => getIssueSortRow(left) - getIssueSortRow(right));
+
+  if (warnIssues.length) {
+    document.getElementById("warningsCard").style.display = "";
+    document.getElementById("warningsBody").innerHTML = warnIssues.map(issue => {
+      const item = currentItems.find(entry => entry.item_id === issue.item_id);
+      let focusIds = [issue.item_id];
+      if ((issue.error_type || "").startsWith("DUPLICATE_")) {
+        const group = currentDupGroups.find(entry => entry.item_ids.includes(issue.item_id));
+        if (group) focusIds = [...group.item_ids];
+      }
+      return `
+        <tr style="cursor:pointer" title="Click to focus involved rows" onclick="focusItems([${focusIds.join(",")}])">
+          <td>${item ? item.file_row : issue.item_id}</td>
+          <td>${issue.error_type}</td>
+          <td>${issue.error_detail}</td>
+          <td>${issue.resolved ? '<span class="text-success">Yes</span>' : '<span class="text-danger">No</span>'}</td>
+        </tr>`;
+    }).join("");
+  } else {
+    document.getElementById("warningsCard").style.display = "none";
+  }
+}
+
+function setItemFilter(filterKey) {
+  activeItemFilter = filterKey;
+  focusedItemIds = new Set();
+  document.getElementById("clearFocusBtn").style.display = "none";
+  renderItemsTable();
+}
+
+function focusItems(ids) {
+  focusedItemIds = new Set(ids.filter(id => id !== null && id !== undefined));
+  if (focusedItemIds.size === 0) return;
+  document.getElementById("clearFocusBtn").style.display = "";
+  renderItemsTable();
+  document.getElementById("itemsBody").closest(".table-responsive").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function clearFocus() {
+  focusedItemIds = new Set();
+  document.getElementById("clearFocusBtn").style.display = "none";
+  renderItemsTable();
+}
+
+const SINGLE_REQUIRED_COLS = [
+  {key: "mfg_catalog_num", label: "Manufacturer Part #", aliases: ["manufacturer part number","manufacturer catalog number","mfg_catalog_num","mfg_cat_num","mfg_cat_#","mfg#","manufacturer_part_number","mfg_part_number","manufacturer catalog #","manufacturer part #","mfg part num","mfn"]},
+  {key: "vendor_catalog_num", label: "Vendor Part #", aliases: ["vendor part number","vendor_catalog_num","vendor_cat_num","vendor_cat_#","vendor#","vendor catalog #","vendor part #","vendor part num","vpn"]},
+  {key: "description", label: "Item Description", aliases: ["item description","description","desc","item_description"]},
+  {key: "unit_price", label: "Contract Price", aliases: ["contract price","unit_price","price","cost","contract_price"]},
+  {key: "uom", label: "UOM", aliases: ["uom","unit_of_measure","unit of measure"]},
+  {key: "qoe", label: "QOE", aliases: ["qoe","quantity","qty","conversion_factor","conversion factor to ea","qoe (conversion factor to ea)"]},
+];
+const SINGLE_OPTIONAL_COLS = [
+  {key: "tier_description", label: "Tier Description", aliases: ["tier description","tier_description","tier_desc","contract tier description"]},
+  {key: "tier_level", label: "Tier Level", aliases: ["tier level","tier_level"]},
+];
+const BATCH_REQUIRED_COLS = [
+  {key: "organization", label: "Organization", aliases: ["organization","org","company","contract company"]},
+  {key: "contract_number", label: "Contract Number", aliases: ["contract number","contract_number","contract_id","contract id","contractid"]},
+  {key: "intention", label: "Intention", aliases: ["intention","action","intent"]},
+  {key: "vendor_id", label: "ERP Vendor ID", aliases: ["erp vendor id","vendor_id","vendor id","erp_vendor_id"]},
+  {key: "process_type", label: "Contract Process Type", aliases: ["contract process type","process_type","process type"]},
+  {key: "source_type", label: "Contract Source Type", aliases: ["contract source type","source_type","source type"]},
+  {key: "oem_name", label: "Contract Manufacturer", aliases: ["contract manufacturer","oem_name","oem name","manufacturer"]},
+  {key: "vendor_catalog_num", label: "Vendor Catalog #", aliases: ["vendor catalog #","vendor_catalog_num","vendor_cat_num","vendor#","vendor part number","vendor part #","vendor part num","vpn"]},
+  {key: "mfg_catalog_num", label: "Manufacturer Catalog #", aliases: ["manufacturer catalog #","mfg_catalog_num","mfg_cat_num","mfg#","manufacturer part number","manufacturer part #","mfg part num","mfn"]},
+  {key: "description", label: "Description", aliases: ["description","desc","item_description","item description"]},
+  {key: "uom", label: "UOM", aliases: ["uom","unit_of_measure","unit of measure"]},
+  {key: "unit_price", label: "Unit Price", aliases: ["unit price","unit_price","price","cost","contract price"]},
+  {key: "qoe", label: "QOE", aliases: ["qoe","quantity","qty","conversion factor to ea","qoe (conversion factor to ea)"]},
+  {key: "tier_description", label: "Tier Description", aliases: ["tier description","tier_description","tier_desc","contract tier description"]},
+  {key: "tier_level", label: "Tier Level", aliases: ["tier level","tier_level"]},
+];
+
+function normalise(value) {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]/g, "_").replace(/_+/g, "_");
+}
+
+function autoMatch(fileHeaders, colDefs) {
+  const normHeaders = fileHeaders.map(header => normalise(header));
+  const mapping = {};
+  for (const col of colDefs) {
+    let best = "";
+    for (const alias of col.aliases) {
+      const idx = normHeaders.indexOf(normalise(alias));
+      if (idx !== -1) {
+        best = fileHeaders[idx];
+        break;
+      }
+    }
+    mapping[col.key] = best;
+  }
+  return mapping;
+}
+
+function buildMappingUI(containerId, colDefs, fileHeaders, mapping, requiredKeys) {
+  const container = document.getElementById(containerId);
+  container.innerHTML = "";
+  for (const col of colDefs) {
+    const isReq = requiredKeys.includes(col.key);
+    const row = document.createElement("div");
+    row.className = "row g-1 mb-1 align-items-center";
+    row.innerHTML = `
+      <div class="col-5">
+        <small class="${isReq ? 'fw-semibold' : 'text-muted'}">${col.label}${isReq ? ' *' : ' (optional)'}</small>
+      </div>
+      <div class="col-7">
+        <select class="form-select form-select-sm col-map-select" data-key="${col.key}">
+          <option value="">— skip —</option>
+          ${fileHeaders.map(header => `<option value="${header}" ${mapping[col.key] === header ? 'selected' : ''}>${header}</option>`).join("")}
+        </select>
+      </div>`;
+    container.appendChild(row);
+  }
+}
+
+function gatherMapping(containerId) {
+  const selects = document.querySelectorAll(`#${containerId} .col-map-select`);
+  const mapping = {};
+  selects.forEach(select => {
+    if (select.value) {
+      mapping[select.dataset.key] = select.value;
+    }
+  });
+  return mapping;
+}
+
+async function parseXlsx(file) {
+  const wb = window.XLSX.read(await file.arrayBuffer(), {type: "array"});
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const json = window.XLSX.utils.sheet_to_json(ws, {header: 1});
+  const headers = (json[0] || []).map(header => String(header).trim());
+  return {headers, rowCount: Math.max(0, json.length - 1), file};
+}
+
+let reuploadFileData = null;
+
+function showReupload() {
+  reuploadFileData = null;
+  document.getElementById("reuploadFileInput").value = "";
+  document.getElementById("reuploadColMapPanel").style.display = "none";
+  document.getElementById("reuploadColMapFields").innerHTML = "";
+  document.getElementById("reuploadPreview").textContent = "";
+  document.getElementById("btnConfirmReupload").disabled = true;
+  new bootstrap.Modal(document.getElementById("reuploadModal")).show();
+}
+
+document.getElementById("reuploadFileInput").addEventListener("change", async event => {
+  const file = event.target.files[0];
+  if (!file) return;
+  reuploadFileData = await parseXlsx(file);
+  const isBatch = currentTask && currentTask.intake_mode === "BATCH";
+  const colDefs = isBatch ? BATCH_REQUIRED_COLS : [...SINGLE_REQUIRED_COLS, ...SINGLE_OPTIONAL_COLS];
+  const requiredKeys = isBatch ? BATCH_REQUIRED_COLS.map(col => col.key) : SINGLE_REQUIRED_COLS.map(col => col.key);
+  const mapping = autoMatch(reuploadFileData.headers, colDefs);
+  buildMappingUI("reuploadColMapFields", colDefs, reuploadFileData.headers, mapping, requiredKeys);
+  document.getElementById("reuploadPreview").textContent = `${reuploadFileData.rowCount} row${reuploadFileData.rowCount !== 1 ? 's' : ''} detected in uploaded file.`;
+  document.getElementById("reuploadColMapPanel").style.display = "";
+  document.getElementById("btnConfirmReupload").disabled = false;
+});
+
+document.getElementById("btnConfirmReupload").addEventListener("click", async () => {
+  if (!reuploadFileData) return;
+  const isBatch = currentTask && currentTask.intake_mode === "BATCH";
+  const requiredKeys = isBatch ? BATCH_REQUIRED_COLS.map(col => col.key) : SINGLE_REQUIRED_COLS.map(col => col.key);
+  const mapping = gatherMapping("reuploadColMapFields");
+  const unmapped = requiredKeys.filter(key => !mapping[key]);
+  if (unmapped.length) {
+    const allDefs = isBatch ? BATCH_REQUIRED_COLS : [...SINGLE_REQUIRED_COLS, ...SINGLE_OPTIONAL_COLS];
+    const labels = unmapped.map(key => (allDefs.find(col => col.key === key) || {label: key}).label);
+    alert("Required columns not mapped:\n\n" + labels.join("\n"));
+    return;
+  }
+
+  const btn = document.getElementById("btnConfirmReupload");
+  btn.disabled = true;
+  btn.textContent = "Uploading…";
+  const formData = new FormData();
+  formData.append("file", reuploadFileData.file);
+  formData.append("column_mapping", JSON.stringify(mapping));
+  const resp = await fetch(`${PREFIX}/api/intake/${TASK_ID}/reupload`, {method: "POST", body: formData});
+  btn.textContent = "Confirm Re-upload";
+  btn.disabled = false;
+  if (resp.ok) {
+    bootstrap.Modal.getInstance(document.getElementById("reuploadModal")).hide();
+    loadTask();
+  } else {
+    const err = await resp.json();
+    alert("Re-upload failed: " + (err.error || "Unknown error"));
+  }
+});
+
+async function runPrecheck() {
+  if (!confirm("Run pre-check validation on all uploaded items using Default mode?")) return;
+  const resp = await fetch(`${PREFIX}/api/intake/${TASK_ID}/precheck`, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({precheck_mode: "default"}),
+  });
+  const data = await resp.json();
+  const card = document.getElementById("precheckCard");
+  card.style.display = "";
+  const allGood = data.failed === 0 && (data.warned || 0) === 0;
+  const cls = allGood ? "text-success" : data.failed > 0 ? "text-danger" : "text-warning";
+  document.getElementById("precheckHeader").className = `card-header ${cls}`;
+
+  let summary = `<strong>Total:</strong> ${data.total} &nbsp; <strong>Passed:</strong> ${data.passed}`;
+  if (data.warned) summary += ` &nbsp; <strong class="text-warning">Warned:</strong> ${data.warned}`;
+  summary += ` &nbsp; <strong>Failed:</strong> ${data.failed}`;
+  if (data.task_status === "AUTO_ADVANCED") {
+    summary += ` &nbsp; <span class="badge bg-success">Auto-advanced to IDENTITY</span>`;
+  }
+  document.getElementById("precheckBody").innerHTML = `
+    <p class="mb-1">${summary}</p>
+    ${data.uom_mappings && data.uom_mappings.length ? `<p class="small text-muted mb-0">UOM mappings: ${data.uom_mappings.map(mapping => mapping.from + " → " + mapping.to).join(", ")}</p>` : ""}
+  `;
+  loadTask();
+}
+
+function openEditModal(itemId) {
+  const item = currentItems.find(entry => entry.item_id === itemId);
+  if (!item) return;
+  document.getElementById("editItemId").value = itemId;
+  document.getElementById("editRowNum").textContent = item.file_row || itemId;
+  document.getElementById("editMfg").value = item.mfg_catalog_num || "";
+  document.getElementById("editVendor").value = item.vendor_catalog_num || "";
+  document.getElementById("editDesc").value = item.description || "";
+  document.getElementById("editUom").value = item.uom || "";
+  document.getElementById("editQoe").value = item.qoe || "";
+  document.getElementById("editPrice").value = item.unit_price != null ? item.unit_price : "";
+  new bootstrap.Modal(document.getElementById("editItemModal")).show();
+}
+
+document.getElementById("btnSaveEdit").addEventListener("click", async () => {
+  const itemId = document.getElementById("editItemId").value;
+  const payload = {
+    mfg_catalog_num: document.getElementById("editMfg").value.trim(),
+    vendor_catalog_num: document.getElementById("editVendor").value.trim() || null,
+    description: document.getElementById("editDesc").value.trim(),
+    uom: document.getElementById("editUom").value.trim(),
+    qoe: parseInt(document.getElementById("editQoe").value, 10) || 1,
+    unit_price: parseFloat(document.getElementById("editPrice").value) || 0,
+  };
+  const btn = document.getElementById("btnSaveEdit");
+  btn.disabled = true;
+  btn.textContent = "Saving…";
+  const resp = await fetch(`${PREFIX}/api/intake/${TASK_ID}/items/${itemId}`, {
+    method: "PUT",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(payload),
+  });
+  btn.textContent = "Save Changes";
+  btn.disabled = false;
+  if (resp.ok) {
+    bootstrap.Modal.getInstance(document.getElementById("editItemModal")).hide();
+    loadTask();
+  } else {
+    const err = await resp.json();
+    alert("Save failed: " + (err.error || "Unknown error"));
+  }
+});
+
+async function manuallyPass(itemId) {
+  if (!confirm("Manually approve this warning item? This will mark it as PASSED_PC1.")) return;
+  const resp = await fetch(`${PREFIX}/api/intake/${TASK_ID}/items/${itemId}/pass`, {method: "POST"});
+  if (resp.ok) {
+    loadTask();
+  } else {
+    const err = await resp.json();
+    alert("Manual pass failed: " + (err.error || "Unknown error"));
+  }
+}
+
+async function softDeleteItem(itemId) {
+  if (!confirm("Mark this duplicate item as DELETED? It will be excluded from future pre-checks.")) return;
+  const resp = await fetch(`${PREFIX}/api/intake/${TASK_ID}/items/${itemId}`, {method: "DELETE"});
+  if (resp.ok) {
+    loadTask();
+  } else {
+    const err = await resp.json();
+    alert("Delete failed: " + (err.error || "Unknown error"));
+  }
+}
+
+async function recheckAll() {
+  const select = document.getElementById("recheckModeSelect");
+  const mode = select ? select.value : "default";
+  const resp = await fetch(`${PREFIX}/api/intake/${TASK_ID}/recheck-all`, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({precheck_mode: mode}),
+  });
+  const data = await resp.json();
+
+  if (!resp.ok) {
+    alert(data.error || "Re-run pre-check failed");
+    return;
+  }
+
+  const card = document.getElementById("precheckCard");
+  card.style.display = "";
+  const allGood = data.failed === 0 && (data.warned || 0) === 0;
+  const cls = allGood ? "text-success" : data.failed > 0 ? "text-danger" : "text-warning";
+  document.getElementById("precheckHeader").className = `card-header ${cls}`;
+  document.getElementById("precheckBody").innerHTML = `
+    <p class="mb-1"><strong>Total:</strong> ${data.total} &nbsp; <strong>Passed:</strong> ${data.passed} &nbsp; <strong>Warned:</strong> ${data.warned || 0} &nbsp; <strong>Failed:</strong> ${data.failed} &nbsp; <strong>Mode:</strong> ${mode.charAt(0).toUpperCase() + mode.slice(1)}</p>
+  `;
+  loadTask();
+}
+
+async function proceedWithPassing() {
+  const passed = currentItems.filter(item => item.status === "PASSED_PC1").length;
+  const total = currentItems.length;
+  const msg = passed < total
+    ? `Only ${passed} of ${total} items passed. Proceed with passing items to Identity phase? (LOCAL contracts only)`
+    : `All ${total} items passed. Advance to Identity phase?`;
+  if (!confirm(msg)) return;
+
+  const resp = await fetch(`${PREFIX}/api/intake/${TASK_ID}/proceed`, {method: "POST"});
+  if (resp.ok) {
+    loadTask();
+  } else {
+    const err = await resp.json();
+    alert("Proceed failed: " + (err.error || "Unknown error"));
+  }
+}
+
+function openEditVendorModal() {
+  document.getElementById("editVendorSearchInput").value = "";
+  document.getElementById("editVendorResults").innerHTML = '<tr><td colspan="4" class="text-center text-muted">Enter a search term above</td></tr>';
+  new bootstrap.Modal(document.getElementById("editVendorModal")).show();
+}
+
+document.getElementById("btnEditVendorSearch").addEventListener("click", searchDetailVendors);
+document.getElementById("editVendorSearchInput").addEventListener("keydown", event => {
+  if (event.key === "Enter") searchDetailVendors();
+});
+
+async function searchDetailVendors() {
+  const q = document.getElementById("editVendorSearchInput").value.trim();
+  if (!q) return;
+  const tbody = document.getElementById("editVendorResults");
+  tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">Searching...</td></tr>';
+  const resp = await fetch(`${PREFIX}/api/vendor-search?q=${encodeURIComponent(q)}`);
+  const results = await resp.json();
+  if (!results.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">No results found</td></tr>';
+    return;
+  }
+  tbody.innerHTML = results.map(result => {
+    const isActive = result.active && result.active !== "No" && result.active !== 0;
+    const rowCls = isActive ? "" : 'class="table-secondary text-muted"';
+    const btnDisabled = isActive ? "" : 'disabled title="Inactive"';
+    const parts = (result.erp_vendor_id || "").split("-");
+    return `<tr ${rowCls}>
+      <td>${result.erp_vendor_id || '—'}</td>
+      <td>${result.vendor_name || '—'}</td>
+      <td>${result.purchase_from_name || '—'}</td>
+      <td><button class="btn btn-sm btn-outline-primary btnSelectDetailVendor" ${btnDisabled}
+            data-vendor-id="${result.erp_vendor_id || ''}"
+            data-vendor-name="${(result.vendor_name || '').replace(/"/g, '&quot;')}"
+            data-purchase-from-loc="${parts[1] || ''}"
+            data-purchase-from-name="${(result.purchase_from_name || '').replace(/"/g, '&quot;')}">Select</button></td>
+    </tr>`;
+  }).join("");
+  tbody.querySelectorAll(".btnSelectDetailVendor").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const payload = {
+        vendor_id: btn.dataset.vendorId,
+        erp_vendor_name: btn.dataset.vendorName,
+        purchase_from_loc: btn.dataset.purchaseFromLoc,
+        purchase_from_loc_name: btn.dataset.purchaseFromName,
+      };
+      const saveResp = await fetch(`${PREFIX}/api/tasks/${TASK_ID}`, {
+        method: "PUT",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload),
+      });
+      if (saveResp.ok) {
+        bootstrap.Modal.getInstance(document.getElementById("editVendorModal")).hide();
+        loadTask();
+      } else {
+        const err = await saveResp.json();
+        alert("Save failed: " + (err.error || "Unknown error"));
+      }
+    });
+  });
+}
+</script>
