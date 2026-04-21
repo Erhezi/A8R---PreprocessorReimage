@@ -604,7 +604,15 @@ def run_item_labeling(task_id: str, state_machine: TaskStateMachine) -> dict:
 # ---------------------------------------------------------------------------
 # Full Pipeline Orchestration
 # ---------------------------------------------------------------------------
-def run_full_preprocess(task_id: str, state_machine: TaskStateMachine) -> dict:
+def _llm_step_skipped(reason: str = "LLM review disabled") -> dict:
+    return {"reviewed": 0, "skipped": True, "reason": reason}
+
+
+def run_full_preprocess(
+    task_id: str,
+    state_machine: TaskStateMachine,
+    enable_llm: bool = True,
+) -> dict:
     """Run the complete preprocess pipeline.
 
     1. CCX SKU matching + similarity
@@ -619,10 +627,16 @@ def run_full_preprocess(task_id: str, state_machine: TaskStateMachine) -> dict:
     results = {}
     results["sku_matching"] = run_sku_matching(task_id, state_machine)
     results["contract_check"] = run_contract_check(task_id, state_machine)
-    results["llm_review_ccx"] = run_llm_review(task_id, state_machine)
+    if enable_llm:
+        results["llm_review_ccx"] = run_llm_review(task_id, state_machine)
+    else:
+        results["llm_review_ccx"] = _llm_step_skipped()
     results["infor_cascade"] = run_infor_cascade(task_id, state_machine)
     results["infor_residue"] = run_infor_residue(task_id, state_machine)
-    results["llm_review_infor"] = run_infor_residue_llm_review(task_id, state_machine)
+    if enable_llm:
+        results["llm_review_infor"] = run_infor_residue_llm_review(task_id, state_machine)
+    else:
+        results["llm_review_infor"] = _llm_step_skipped()
     results["item_labeling"] = run_item_labeling(task_id, state_machine)
     return results
 

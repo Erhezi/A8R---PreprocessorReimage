@@ -31,7 +31,9 @@ def _sm() -> TaskStateMachine:
 @preprocess_bp.route("/api/preprocess/<task_id>/run", methods=["POST"])
 @login_required
 def api_run_preprocess(task_id: str):
-    result = preprocess_service.run_full_preprocess(task_id, _sm())
+    data = request.get_json(silent=True) or {}
+    enable_llm = data.get("enable_llm", True)
+    result = preprocess_service.run_full_preprocess(task_id, _sm(), enable_llm=bool(enable_llm))
     return jsonify(result)
 
 

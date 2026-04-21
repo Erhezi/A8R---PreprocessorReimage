@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Optional
 
 from flask import current_app
 
@@ -75,13 +74,57 @@ def _build_messages(
 
 
 def _get_client():
-    """Lazy-load the OpenAI client using app config."""
+    """Lazy-load the OpenAI-compatible client using app config."""
     api_key = current_app.config.get("OPENAI_API_KEY", "")
     if not api_key:
         return None
+
+    timeout = current_app.config.get("OPENAI_TIMEOUT_SECONDS", 30.0)
+    max_retries = current_app.config.get("OPENAI_MAX_RETRIES", 2)
+    disable_ssl_verify = bool(current_app.config.get("OPENAI_DISABLE_SSL_VERIFY", False))
+    base_url = current_app.config.get("OPENAI_BASE_URL", "")
+    organization = current_app.config.get("OPENAI_ORGANIZATION", "")
+    project = current_app.config.get("OPENAI_PROJECT", "")
+    azure_endpoint = current_app.config.get("AZURE_OPENAI_ENDPOINT", "")
+    azure_api_version = current_app.config.get("AZURE_OPENAI_API_VERSION", "")
+
     try:
-        from openai import OpenAI
-        return OpenAI(api_key=api_key)
+        import httpx
+        from openai import AzureOpenAI, OpenAI
+
+        http_client = httpx.Client(
+            timeout=timeout,
+            verify=not disable_ssl_verify,
+        )
+
+        if azure_endpoint:
+            if not azure_api_version:
+                logger.error("AZURE_OPENAI_ENDPOINT is set but AZURE_OPENAI_API_VERSION is missing.")
+                return None
+
+            return AzureOpenAI(
+                api_key=api_key,
+                azure_endpoint=azure_endpoint,
+                api_version=azure_api_version,
+                timeout=timeout,
+                max_retries=max_retries,
+                http_client=http_client,
+            )
+
+        client_kwargs = {
+            "api_key": api_key,
+            "timeout": timeout,
+            "max_retries": max_retries,
+            "http_client": http_client,
+        }
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        if organization:
+            client_kwargs["organization"] = organization
+        if project:
+            client_kwargs["project"] = project
+
+        return OpenAI(**client_kwargs)
     except ImportError:
         logger.warning("openai package not installed; LLM review unavailable.")
         return None
@@ -124,15 +167,31 @@ def review_match_pair(
     messages = _build_messages(input_item, match_item)
 
     try:
+        from openai import APIConnectionError, APITimeoutError
+
         response = client.chat.completions.create(
             model=model,
             messages=messages,
-            max_tokens=max_tokens,
+            max_completion_tokens=max_tokens,
             temperature=temperature,
             response_format={"type": "json_object"},
         )
         content = response.choices[0].message.content
         return _parse_response(content)
+    except APIConnectionError as exc:
+        logger.error("LLM review connection failed for model %s: %s", model, exc)
+        return {
+            "decision": "REJECT",
+            "confidence": 0,
+            "reason": "LLM connection error. Check OPENAI_BASE_URL/AZURE_OPENAI_ENDPOINT and SSL settings.",
+        }
+    except APITimeoutError as exc:
+        logger.error("LLM review timed out for model %s: %s", model, exc)
+        return {
+            "decision": "REJECT",
+            "confidence": 0,
+            "reason": "LLM request timed out.",
+        }
     except Exception as exc:
         logger.error("LLM review failed: %s", exc)
         return {"decision": "REJECT", "confidence": 0, "reason": f"LLM error: {exc}"}

@@ -1,10 +1,11 @@
 import json
 
-from flask import render_template, session
+from flask import jsonify, render_template, session
 from flask_login import current_user, login_required
 
 from . import debug_bp
 from ..common.utils import role_required
+from ..services.llm_connection_test import test_openai_connection
 
 
 def _serialize_for_debug(value):
@@ -36,3 +37,12 @@ def debug_home():
         user_data=user_data,
         user_json=json.dumps(user_data, indent=2, sort_keys=True),
     )
+
+
+@debug_bp.route("/debug/api/openai-connection", methods=["POST"])
+@login_required
+@role_required("preprocessor")
+def debug_openai_connection():
+    result = test_openai_connection()
+    status_code = 200 if result.get("ok") else 502
+    return jsonify(result), status_code

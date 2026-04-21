@@ -12,6 +12,11 @@
       <button class="btn btn-sm btn-primary" id="btnRun">Run Full Preprocess</button>
     </div>
     <div class="card-body">
+      <div class="form-check form-switch mb-3">
+        <input class="form-check-input" type="checkbox" role="switch" id="toggleLlm" checked>
+        <label class="form-check-label" for="toggleLlm">Enable LLM review steps</label>
+        <div class="form-text">When off, both LLM review phases are skipped and no LLM API calls are made.</div>
+      </div>
       <div id="progressArea">
         <p class="text-muted mb-2">Click "Run Full Preprocess" to start the pipeline.</p>
       </div>
@@ -169,6 +174,10 @@ function setStepStatus(key, status, detail) {
     badge.className = "badge bg-success me-2 step-badge";
     statusEl.textContent = detail || "Done";
     statusEl.className = "step-status ms-2 text-success";
+  } else if (status === "skipped") {
+    badge.className = "badge bg-secondary me-2 step-badge";
+    statusEl.textContent = detail || "Skipped";
+    statusEl.className = "step-status ms-2 text-muted";
   } else if (status === "error") {
     badge.className = "badge bg-danger me-2 step-badge";
     statusEl.textContent = detail || "Error";
@@ -180,7 +189,16 @@ function setStepStatus(key, status, detail) {
   }
 }
 
+function isLlmEnabled() {
+  return document.getElementById("toggleLlm").checked;
+}
+
+function shouldSkipStep(step) {
+  return step.key.startsWith("llm-review") && !isLlmEnabled();
+}
+
 function summariseResult(key, data) {
+  if (data.skipped) return data.reason || "Skipped";
   if (data.error) return `Error: ${data.error}`;
   switch (key) {
     case "sku-matching":
@@ -202,7 +220,9 @@ function summariseResult(key, data) {
 
 document.getElementById("btnRun").addEventListener("click", async () => {
   const btn = document.getElementById("btnRun");
+  const llmToggle = document.getElementById("toggleLlm");
   btn.disabled = true; btn.textContent = "Running…";
+  llmToggle.disabled = true;
   document.getElementById("progressArea").classList.add("d-none");
   document.getElementById("stepsList").classList.remove("d-none");
   document.getElementById("runSummary").classList.add("d-none");
@@ -210,6 +230,10 @@ document.getElementById("btnRun").addEventListener("click", async () => {
 
   let hadError = false;
   for (const step of STEPS) {
+    if (shouldSkipStep(step)) {
+      setStepStatus(step.key, "skipped", "Skipped: LLM disabled");
+      continue;
+    }
     setStepStatus(step.key, "running");
     try {
       const resp = await fetch(step.endpoint, { method: "POST" });
@@ -237,6 +261,7 @@ document.getElementById("btnRun").addEventListener("click", async () => {
     loadMatches();
   }
   btn.disabled = false; btn.textContent = "Rerun Full Preprocess";
+  llmToggle.disabled = false;
 });
 
 // ---- Contract summary ----------------

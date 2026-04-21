@@ -5,6 +5,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _env_flag(name: str, default: str = "false") -> bool:
+    return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
 class Config:
     """Base configuration."""
 
@@ -42,6 +46,14 @@ class Config:
     # ── LLM / OpenAI ───────────────────────────────────────────────
     OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
     OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
+    OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "").strip().rstrip("/")
+    OPENAI_TIMEOUT_SECONDS = float(os.environ.get("OPENAI_TIMEOUT_SECONDS", "30"))
+    OPENAI_MAX_RETRIES = int(os.environ.get("OPENAI_MAX_RETRIES", "2"))
+    OPENAI_DISABLE_SSL_VERIFY = _env_flag("OPENAI_DISABLE_SSL_VERIFY")
+    OPENAI_ORGANIZATION = os.environ.get("OPENAI_ORGANIZATION", "").strip()
+    OPENAI_PROJECT = os.environ.get("OPENAI_PROJECT", "").strip()
+    AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip().rstrip("/")
+    AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION", "").strip()
     LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "1024"))
     LLM_TEMPERATURE = float(os.environ.get("LLM_TEMPERATURE", "0.0"))
 

@@ -195,6 +195,8 @@ CREATE TABLE [Preprocessor].[InforActiveContractLineCnt](
 
 `[Preprocessor].[CCXInforMatchedLink]` -- just a quick reference table extracted from the above InforActiveCLRefCCXSyncedCL table with CCX_pkid is not null to show the direct link between Infor line and CCX line, we can clearly see that Infor_pkid to CCX_pkid is a many to many relationship. ~600K records.
 Typically if the same CCX_pkid appears in multiple records, that usually means the CCX side UOM has been changed and there might be a timing issue for the UOM change to be reflected on Infor side. Normally if for a given contract we see a 1-1 relations then those are usually 'good records' that all synced between CCX and Infor.
+Since the CCX_pkid is just a surrogate key and it actually changes every time when we archive the CCX table and reload the data, so it is a fungible key and we can not rely on it to 'back-locate' anything. The true unique CCX identifier is:
+OrganizationEID + ContractID + ERPVendorID + ManufacturerNumber_CCX + UOM_CCX combination, which is also the combination we use for duplication detection on CCX side. To make things easier to track, UOMtoMatchInfor_CCX should also be included.
 
 CREATE TABLE [Preprocessor].[CCXInforMatchedLink](
 	[Infor_pkid] [varchar](31) NOT NULL,

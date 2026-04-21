@@ -32,6 +32,19 @@
 
     <div class="col-12 col-lg-8">
       <div class="card shadow-sm">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <span>OpenAI Connection Test</span>
+          <button id="testOpenAiBtn" type="button" class="btn btn-sm btn-outline-primary">Run Test</button>
+        </div>
+        <div class="card-body">
+          <p class="text-muted">Runs a minimal chat completion using the same OpenAI config as LLM Review.</p>
+          <pre id="openAiTestOutput" class="mb-0 small" style="white-space: pre-wrap; word-break: break-word; min-height: 5rem;">Not run yet.</pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-12 col-lg-8">
+      <div class="card shadow-sm">
         <div class="card-header">Session Data</div>
         <div class="card-body">
           {% if session_data %}
@@ -44,4 +57,26 @@
     </div>
   </div>
 </div>
+
+<script>
+document.getElementById('testOpenAiBtn')?.addEventListener('click', async () => {
+  const output = document.getElementById('openAiTestOutput');
+  output.textContent = 'Running...';
+
+  try {
+    const response = await fetch('{{ url_for("debug.debug_openai_connection") }}', {
+      method: 'POST',
+      headers: { 'X-Requested-With': 'XMLHttpRequest' }
+    });
+    const payload = await response.json();
+    output.textContent = JSON.stringify(payload, null, 2);
+  } catch (error) {
+    output.textContent = JSON.stringify({
+      ok: false,
+      error_type: 'BrowserFetchError',
+      message: String(error)
+    }, null, 2);
+  }
+});
+</script>
 {% endblock %}
