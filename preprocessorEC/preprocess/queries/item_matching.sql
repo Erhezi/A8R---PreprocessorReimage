@@ -5,6 +5,7 @@
 SELECT
     icl.Infor_pkid,
     icl.OrganizationEID,
+  icl.Organization,
     icl.ContractID,
     icl.ERPVendorID_Infor        AS erp_vendor_id,
     icl.VendorID_Infor           AS vendor_id,
@@ -22,6 +23,7 @@ SELECT
     icl.JoinSyncType,
     icl.CCX_pkid,
     icl.matched_ccx_line_seq,
+    icl.ItemDescription_Infor,
     icl.ContractLineManufacturer_Infor AS contract_line_manufacturer
 FROM [Preprocessor].[InforActiveCLRefCCXSyncedCL] icl
 WHERE icl.CCX_pkid IN :ccx_pkids
@@ -36,6 +38,7 @@ WHERE icl.CCX_pkid IN :ccx_pkids
 SELECT
     icl.Infor_pkid,
     icl.OrganizationEID,
+  icl.Organization,
     icl.ContractID,
     icl.ERPVendorID_Infor        AS erp_vendor_id,
     icl.VendorID_Infor           AS vendor_id,
@@ -51,6 +54,7 @@ SELECT
     icl.reduced_vendor_num_infor,
     icl.CCXCurrentSyncFlag,
     icl.JoinSyncType,
+    icl.ItemDescription_Infor,
     icl.ContractLineManufacturer_Infor AS contract_line_manufacturer,
     CASE
         WHEN icl.reduced_mfg_num_infor = :reduced_mfg_num THEN 'REDUCED_MFG'

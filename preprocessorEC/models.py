@@ -288,7 +288,19 @@ class MatchResult(Base):
     contract_number = Column(String(100), nullable=True)
     match_type = Column(String(20), nullable=True)  # EXACT_MFG | REDUCED_MFG | REDUCED_VPN | CROSS_MATCH
     ccx_pkid = Column(Integer, nullable=True)
+    ccx_pkids_matched = Column(String(255), nullable=True)
     infor_pkid = Column(String(31), nullable=True)
+    contract_id_matched = Column(String(100), nullable=True)
+    organization_eid_matched = Column(String(10), nullable=True)
+    organization_matched = Column(String(100), nullable=True)
+    manufacturer_number_matched = Column(String(255), nullable=True)
+    uom_matched = Column(String(10), nullable=True)
+    erp_vendor_id_matched = Column(String(20), nullable=True)
+    vendor_item_matched = Column(String(255), nullable=True)
+    uom_to_match_infor_matched = Column(String(10), nullable=True)
+    qoe_matched = Column(Integer, nullable=True)
+    contract_price_matched = Column(Numeric(18, 4), nullable=True)
+    item_desc_matched = Column(String(500), nullable=True)
 
     # Scoring detail columns
     mfn_score = Column(Float, nullable=True)
@@ -323,7 +335,19 @@ class MatchResult(Base):
             "contract_number": self.contract_number,
             "match_type": self.match_type,
             "ccx_pkid": self.ccx_pkid,
+            "ccx_pkids_matched": self.ccx_pkids_matched,
             "infor_pkid": self.infor_pkid,
+            "contract_id_matched": self.contract_id_matched,
+            "organization_eid_matched": self.organization_eid_matched,
+            "organization_matched": self.organization_matched,
+            "manufacturer_number_matched": self.manufacturer_number_matched,
+            "uom_matched": self.uom_matched,
+            "erp_vendor_id_matched": self.erp_vendor_id_matched,
+            "vendor_item_matched": self.vendor_item_matched,
+            "uom_to_match_infor_matched": self.uom_to_match_infor_matched,
+            "qoe_matched": self.qoe_matched,
+            "contract_price_matched": float(self.contract_price_matched) if self.contract_price_matched is not None else None,
+            "item_desc_matched": self.item_desc_matched,
             "mfn_score": self.mfn_score,
             "mfn_complexity": self.mfn_complexity,
             "uom_score": self.uom_score,

@@ -428,6 +428,43 @@ def get_rejected_ccx_pkids(task_id: str) -> list[int]:
         return [r[0] for r in rows]
 
 
+def _parse_ccx_pkid_list(value: Optional[str]) -> list[int]:
+    if not value:
+        return []
+    parsed = []
+    for chunk in value.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        try:
+            parsed.append(int(chunk))
+        except ValueError:
+            continue
+    return parsed
+
+
+def _aggregate_cascade_status(source_matches: list[MatchResult]) -> str:
+    statuses = {(match.match_status or "PENDING").upper() for match in source_matches}
+    if "ACCEPTED" in statuses:
+        return "ACCEPTED"
+    if statuses == {"REJECTED"}:
+        return "REJECTED"
+    return "PENDING"
+
+
+def _aggregate_cascade_bucket(source_matches: list[MatchResult]) -> Optional[str]:
+    priority = {"HIGH": 3, "MED": 2, "LOW": 1}
+    best_bucket = None
+    best_score = -1
+    for match in source_matches:
+        bucket = (match.similarity_bucket or "").upper()
+        score = priority.get(bucket, 0)
+        if score > best_score:
+            best_bucket = bucket or None
+            best_score = score
+    return best_bucket
+
+
 def get_items_by_source(task_id: str, source_dataset: str) -> list[TaskItem]:
     """Fetch items for a task filtered by source_dataset (INPUT | CCX | INFOR)."""
     with _session() as s:
@@ -449,6 +486,35 @@ def update_match_decision(match_id: int, match_status: str, reviewed_by: str) ->
             mr.match_status = match_status
             mr.reviewed_by = reviewed_by
             mr.reviewed_at = ny_now()
+
+            if mr.matched_source == "CCX" and mr.ccx_pkid is not None:
+                linked_rows = (
+                    s.query(MatchResult)
+                    .filter(
+                        MatchResult.task_id == mr.task_id,
+                        MatchResult.matched_source == "INFOR_CL",
+                        MatchResult.match_type == "CASCADE",
+                    )
+                    .all()
+                )
+                for linked in linked_rows:
+                    lineage_pkids = _parse_ccx_pkid_list(linked.ccx_pkids_matched)
+                    effective_pkids = set(lineage_pkids or ([] if linked.ccx_pkid is None else [linked.ccx_pkid]))
+                    if mr.ccx_pkid not in effective_pkids:
+                        continue
+                    source_rows = (
+                        s.query(MatchResult)
+                        .filter(
+                            MatchResult.task_id == mr.task_id,
+                            MatchResult.matched_source == "CCX",
+                            MatchResult.ccx_pkid.in_(sorted(effective_pkids)),
+                        )
+                        .all()
+                    )
+                    linked.match_status = _aggregate_cascade_status(source_rows)
+                    linked.similarity_bucket = _aggregate_cascade_bucket(source_rows)
+                    linked.reviewed_by = reviewed_by
+                    linked.reviewed_at = mr.reviewed_at
             s.commit()
 
 

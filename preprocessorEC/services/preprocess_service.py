@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 # MHS org EID (matches all orgs)
 MHS_ORG_EID = "105188574"
+BUCKET_PRIORITY = {"HIGH": 3, "MED": 2, "LOW": 1}
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +50,49 @@ def _determine_contract_type(items: list) -> str:
         if vpn and mfg and vpn.strip().upper() != mfg.strip().upper():
             return "DISTRIBUTOR_PREMIER"
     return "MANUFACTURER"
+
+
+def _row_get(row, *keys):
+    for key in keys:
+        value = row.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def _bucket_priority(bucket: Optional[str]) -> int:
+    return BUCKET_PRIORITY.get((bucket or "").upper(), 0)
+
+
+def _build_matched_snapshot(row, matched_source: str) -> dict:
+    if matched_source == "CCX":
+        return {
+            "contract_id_matched": _row_get(row, "ContractID"),
+            "organization_eid_matched": _row_get(row, "OrganizationEID"),
+            "organization_matched": _row_get(row, "Organization"),
+            "manufacturer_number_matched": _row_get(row, "mfg_catalog_num_ccx", "ManufacturerNumber_CCX"),
+            "uom_matched": _row_get(row, "uom_ccx", "UOM_CCX"),
+            "erp_vendor_id_matched": _row_get(row, "ERPVendorID"),
+            "vendor_item_matched": _row_get(row, "vendor_catalog_num_ccx", "VendorItem_CCX"),
+            "uom_to_match_infor_matched": _row_get(row, "uom_to_match_infor_ccx", "UOMtoMatchInfor_CCX"),
+            "qoe_matched": _row_get(row, "qoe_ccx", "QOE_CCX"),
+            "contract_price_matched": _row_get(row, "unit_price_ccx", "ContractPrice_CCX"),
+            "item_desc_matched": _row_get(row, "description_ccx", "ItemDescription_CCX"),
+        }
+
+    return {
+        "contract_id_matched": _row_get(row, "ContractID"),
+        "organization_eid_matched": _row_get(row, "OrganizationEID"),
+        "organization_matched": _row_get(row, "Organization"),
+        "manufacturer_number_matched": _row_get(row, "mfg_catalog_num_infor", "ManufacturerNumber_Infor"),
+        "uom_matched": _row_get(row, "uom_infor", "UOM_Infor"),
+        "erp_vendor_id_matched": _row_get(row, "erp_vendor_id", "ERPVendorID_Infor"),
+        "vendor_item_matched": _row_get(row, "vendor_catalog_num_infor", "VendorItem_Infor"),
+        "uom_to_match_infor_matched": _row_get(row, "uom_infor", "UOM_Infor"),
+        "qoe_matched": _row_get(row, "qoe_infor", "QOE_Infor"),
+        "contract_price_matched": _row_get(row, "unit_price_infor", "ContractPrice_Infor"),
+        "item_desc_matched": _row_get(row, "ItemDescription_Infor"),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +213,7 @@ def run_sku_matching(task_id: str, state_machine: TaskStateMachine) -> dict:
                     "match_ea_price": scores["match_ea_price"],
                     "input_ea_price": scores["input_ea_price"],
                     "vendor_item_score": scores["vendor_item_score"],
+                    **_build_matched_snapshot(row, "CCX"),
                 })
 
     if all_matches:
@@ -306,34 +351,69 @@ def run_infor_cascade(task_id: str, state_machine: TaskStateMachine) -> dict:
         bound_query = query.bindparams(bindparam("ccx_pkids", expanding=True))
         rows = sess.execute(bound_query, {"ccx_pkids": accepted_pkids, "org_eid": org_eid}).mappings().all()
 
-        # Map CCX_pkid -> input_item_id via accepted match results
-        ccx_to_input = {}
-        for m in task_repo.get_match_results(task_id, matched_source="CCX"):
-            if m.match_status == "ACCEPTED" and m.ccx_pkid:
-                ccx_to_input[m.ccx_pkid] = m.input_item_id
+        # Map every task CCX pkid to the task rows that matched it so a single
+        # Infor line can carry all CCX source rows for the same input item.
+        ccx_matches = [m for m in task_repo.get_match_results(task_id, matched_source="CCX") if m.ccx_pkid]
+        ccx_matches_by_pkid: dict[int, list] = {}
+        for match in ccx_matches:
+            ccx_matches_by_pkid.setdefault(match.ccx_pkid, []).append(match)
 
+        relevant_infor_pkids = sorted({row.get("Infor_pkid") for row in rows if row.get("Infor_pkid")})
+        lineage_by_key: dict[tuple[int, str], set[int]] = {}
+        if relevant_infor_pkids and ccx_matches_by_pkid:
+            lineage_rows = sess.execute(
+                bound_query,
+                {"ccx_pkids": sorted(ccx_matches_by_pkid.keys()), "org_eid": org_eid},
+            ).mappings().all()
+            for lineage_row in lineage_rows:
+                infor_pkid = lineage_row.get("Infor_pkid")
+                ccx_pkid = lineage_row.get("CCX_pkid")
+                if not infor_pkid or not ccx_pkid or infor_pkid not in relevant_infor_pkids:
+                    continue
+                for source_match in ccx_matches_by_pkid.get(ccx_pkid, []):
+                    lineage_by_key.setdefault((source_match.input_item_id, infor_pkid), set()).add(ccx_pkid)
+
+        grouped_rows: dict[tuple[int, str], list] = {}
         for row in rows:
-            input_item_id = ccx_to_input.get(row["CCX_pkid"])
-            if not input_item_id:
+            ccx_pkid = row.get("CCX_pkid")
+            if not ccx_pkid:
                 continue
+            for source_match in ccx_matches_by_pkid.get(ccx_pkid, []):
+                if source_match.match_status != "ACCEPTED":
+                    continue
+                infor_pkid = row.get("Infor_pkid")
+                if not infor_pkid:
+                    continue
+                grouped_rows.setdefault((source_match.input_item_id, infor_pkid), []).append((row, source_match))
+
+        for (input_item_id, infor_pkid), row_sources in grouped_rows.items():
+            lineage_pkids = sorted(lineage_by_key.get((input_item_id, infor_pkid), set()))
+            accepted_sources = [source_match for _row, source_match in row_sources]
+            primary_match = min(
+                accepted_sources,
+                key=lambda match: (-_bucket_priority(match.similarity_bucket), match.ccx_pkid or 0, match.match_id),
+            )
+            primary_row = next(row for row, source_match in row_sources if source_match.match_id == primary_match.match_id)
 
             # matched_item_ref: mfg+UOM for manufacturer, vendor+UOM for distributor
             if is_distributor:
-                ref = f"{row.get('vendor_catalog_num_infor', '')}|{row.get('uom_infor', '')}"
+                ref = f"{primary_row.get('vendor_catalog_num_infor', '')}|{primary_row.get('uom_infor', '')}"
             else:
-                ref = f"{row.get('mfg_catalog_num_infor', '')}|{row.get('uom_infor', '')}"
+                ref = f"{primary_row.get('mfg_catalog_num_infor', '')}|{primary_row.get('uom_infor', '')}"
 
             infor_matches.append({
                 "input_item_id": input_item_id,
                 "matched_source": "INFOR_CL",
                 "matched_item_ref": ref,
-                "contract_number": row.get("ContractID", ""),
+                "contract_number": primary_row.get("ContractID", ""),
                 "match_type": "CASCADE",
-                "infor_pkid": row.get("Infor_pkid", ""),
-                "ccx_pkid": row.get("CCX_pkid"),
-                "match_status": "ACCEPTED",
+                "infor_pkid": infor_pkid,
+                "ccx_pkid": primary_match.ccx_pkid,
+                "ccx_pkids_matched": ", ".join(str(pkid) for pkid in lineage_pkids) or None,
+                "match_status": primary_match.match_status,
                 "similarity_score": None,
-                "similarity_bucket": "HIGH",
+                "similarity_bucket": primary_match.similarity_bucket,
+                **_build_matched_snapshot(primary_row, "INFOR_CL"),
             })
 
     if infor_matches:
@@ -443,6 +523,7 @@ def run_infor_residue(task_id: str, state_machine: TaskStateMachine) -> dict:
                     "match_ea_price": scores["match_ea_price"],
                     "input_ea_price": scores["input_ea_price"],
                     "vendor_item_score": scores["vendor_item_score"],
+                    **_build_matched_snapshot(row, "INFOR_CL"),
                 })
 
     if residue_matches:
@@ -617,8 +698,8 @@ def run_full_preprocess(
 
     1. CCX SKU matching + similarity
     2. Contract-level review routing
-    3. LLM review for MED/LOW CCX matches
-    4. Infor cascade (via accepted CCX pkids)
+    3. Infor cascade (via deterministic CCX HIGH matches)
+    4. LLM review for MED/LOW CCX matches
     5. Infor residue matching + LLM review
     6. 3-source Item# labeling + buy UOM
 
@@ -627,11 +708,12 @@ def run_full_preprocess(
     results = {}
     results["sku_matching"] = run_sku_matching(task_id, state_machine)
     results["contract_check"] = run_contract_check(task_id, state_machine)
+    # Keep the initial INFOR_CL candidate set independent from the LLM toggle.
+    results["infor_cascade"] = run_infor_cascade(task_id, state_machine)
     if enable_llm:
         results["llm_review_ccx"] = run_llm_review(task_id, state_machine)
     else:
         results["llm_review_ccx"] = _llm_step_skipped()
-    results["infor_cascade"] = run_infor_cascade(task_id, state_machine)
     results["infor_residue"] = run_infor_residue(task_id, state_machine)
     if enable_llm:
         results["llm_review_infor"] = run_infor_residue_llm_review(task_id, state_machine)

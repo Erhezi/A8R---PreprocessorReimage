@@ -5,6 +5,7 @@
 SELECT
     ccx.CCX_pkid,
     ccx.OrganizationEID,
+    ccx.Organization,
     ccx.ContractID,
     ccx.ERPVendorID,
     ccx.ManufacturerNumber_CCX       AS mfg_catalog_num_ccx,
@@ -39,6 +40,7 @@ WHERE ccx.reduced_mfg_num_ccx = :reduced_mfg_num
 SELECT
     ccx.CCX_pkid,
     ccx.OrganizationEID,
+    ccx.Organization,
     ccx.ContractID,
     ccx.ERPVendorID,
     ccx.ManufacturerNumber_CCX       AS mfg_catalog_num_ccx,
@@ -81,6 +83,7 @@ WHERE (
 SELECT
     ccx.CCX_pkid,
     ccx.OrganizationEID,
+    ccx.Organization,
     ccx.ContractID,
     ccx.ERPVendorID,
     ccx.ManufacturerNumber_CCX       AS mfg_catalog_num_ccx,
