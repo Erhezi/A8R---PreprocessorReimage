@@ -72,14 +72,14 @@ def api_intake_state(task_id: str):
 @intake_bp.route("/api/intake/<task_id>/items/<int:item_id>", methods=["DELETE"])
 @login_required
 def api_delete_item(task_id: str, item_id: int):
-    """Soft-delete a single item row (mark as DELETED)."""
+    """Soft-delete a single item row (mark as DELETED_PC1)."""
     task = task_repo.get_task(task_id)
     if not task:
         return jsonify({"error": "Task not found"}), 404
     ok = task_repo.soft_delete_item(item_id)
     if not ok:
         return jsonify({"error": "Item not found"}), 404
-    return jsonify({"deleted": item_id, "status": "DELETED"})
+    return jsonify({"deleted": item_id, "status": "DELETED_PC1"})
 
 
 @intake_bp.route("/api/intake/<task_id>/upload", methods=["POST"])

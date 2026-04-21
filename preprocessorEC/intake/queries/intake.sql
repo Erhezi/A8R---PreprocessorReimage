@@ -3,6 +3,15 @@
 SELECT DISTINCT UPPER(UOM)
 FROM [Preprocessor].ValidUOM;
 
+-- name: get_uom_to_match_infor_map
+-- Translate standardized input UOM (ExternalValue) to Infor UOM (LawsonValue)
+SELECT DISTINCT
+    UPPER(LTRIM(RTRIM(externalValue))) AS external_value,
+    UPPER(LTRIM(RTRIM(LawsonValue))) AS lawson_value
+FROM [DM_MONTYNT\dli2].MDM_EDI_SUB_UOM
+WHERE NULLIF(LTRIM(RTRIM(externalValue)), '') IS NOT NULL
+  AND NULLIF(LTRIM(RTRIM(LawsonValue)), '') IS NOT NULL;
+
 -- name: get_valid_vendors
 -- Active vendor codes from MDM supplier master
 SELECT DISTINCT LTRIM(RTRIM(Vendor))

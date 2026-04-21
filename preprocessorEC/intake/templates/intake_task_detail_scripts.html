@@ -78,7 +78,7 @@ function renderItemsTable() {
   const inIntake = currentTask && currentTask.phase === "INTAKE";
   const body = document.getElementById("itemsBody");
   if (!currentItems.length) {
-    body.innerHTML = '<tr><td colspan="9" class="text-center text-muted">No items yet</td></tr>';
+    body.innerHTML = '<tr><td colspan="10" class="text-center text-muted">No items yet</td></tr>';
     return;
   }
 
@@ -96,7 +96,7 @@ function renderItemsTable() {
   }
 
   if (!visible.length) {
-    body.innerHTML = '<tr><td colspan="9" class="text-center text-muted">No matching items</td></tr>';
+    body.innerHTML = '<tr><td colspan="10" class="text-center text-muted">No matching items</td></tr>';
   } else {
     const dupItemIds = new Set();
     currentDupGroups.forEach(group => (group.item_ids || []).forEach(id => dupItemIds.add(id)));
@@ -120,6 +120,7 @@ function renderItemsTable() {
           <td>${item.vendor_catalog_num || "—"}</td>
           <td class="text-truncate" style="max-width:250px" title="${(item.description || '').replace(/"/g, '&quot;')}">${item.description || "—"}</td>
           <td>${item.uom}</td>
+          <td>${item.uom_to_match_infor || "—"}</td>
           <td>${item.qoe}</td>
           <td>${item.unit_price != null ? item.unit_price : "—"}</td>
           <td>${statusBadge(item.status)}</td>
@@ -398,6 +399,7 @@ async function runPrecheck() {
   document.getElementById("precheckBody").innerHTML = `
     <p class="mb-1">${summary}</p>
     ${data.uom_mappings && data.uom_mappings.length ? `<p class="small text-muted mb-0">UOM mappings: ${data.uom_mappings.map(mapping => mapping.from + " → " + mapping.to).join(", ")}</p>` : ""}
+    ${data.uom_to_match_mappings && data.uom_to_match_mappings.length ? `<p class="small text-muted mb-0">Infor UOM mappings: ${data.uom_to_match_mappings.map(mapping => mapping.from + " → " + mapping.to).join(", ")}</p>` : ""}
   `;
   loadTask();
 }
@@ -457,7 +459,7 @@ async function manuallyPass(itemId) {
 }
 
 async function softDeleteItem(itemId) {
-  if (!confirm("Mark this duplicate item as DELETED? It will be excluded from future pre-checks.")) return;
+  if (!confirm("Mark this duplicate item as DELETED_PC1? It will be excluded from future pre-checks and later phases.")) return;
   const resp = await fetch(`${PREFIX}/api/intake/${TASK_ID}/items/${itemId}`, {method: "DELETE"});
   if (resp.ok) {
     loadTask();
@@ -489,6 +491,7 @@ async function recheckAll() {
   document.getElementById("precheckHeader").className = `card-header ${cls}`;
   document.getElementById("precheckBody").innerHTML = `
     <p class="mb-1"><strong>Total:</strong> ${data.total} &nbsp; <strong>Passed:</strong> ${data.passed} &nbsp; <strong>Warned:</strong> ${data.warned || 0} &nbsp; <strong>Failed:</strong> ${data.failed} &nbsp; <strong>Mode:</strong> ${mode.charAt(0).toUpperCase() + mode.slice(1)}</p>
+    ${data.uom_to_match_mappings && data.uom_to_match_mappings.length ? `<p class="small text-muted mb-0">Infor UOM mappings: ${data.uom_to_match_mappings.map(mapping => mapping.from + " → " + mapping.to).join(", ")}</p>` : ""}
   `;
   loadTask();
 }

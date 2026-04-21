@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from collections import defaultdict
 from decimal import Decimal, InvalidOperation
 from typing import Optional
 
@@ -110,6 +109,14 @@ def _load_valid_uoms() -> set[str]:
     return {r[0] for r in rows if r[0]}
 
 
+def _load_uom_to_match_infor_map() -> dict[str, str]:
+    """Load standardized UOM to Lawson UOM translations from MDM_EDI_SUB_UOM."""
+    engine = get_sqlserver_engine()
+    with engine.connect() as conn:
+        rows = conn.execute(load_query("intake", "intake", query="get_uom_to_match_infor_map")).fetchall()
+    return {external_value: lawson_value for external_value, lawson_value in rows if external_value and lawson_value}
+
+
 # def _load_valid_vendors() -> set[str]:
 #     """Load active vendor IDs from PurchaseVendorLocation (both 0000000 and 0000000-B000 forms)."""
 #     return _load_valid_erp_vendor_ids()
@@ -153,6 +160,13 @@ def _check_qoe_uom_compat(uom: str, qoe: int) -> list[tuple[str, str, str]]:
     if uom in ("PK", "BX", "CA", "CS", "PR") and qoe == 1:
         issues.append(("QOE_UOM_WARNING", f"UOM is {uom} but QOE is 1 — verify packaging quantity", "WARNING"))
     return issues
+
+
+def _translate_uom_to_match_infor(std_uom: str, uom_map: dict[str, str]) -> str:
+    """Translate a standardized input UOM to the Lawson UOM used for Infor matching."""
+    if not std_uom:
+        return ""
+    return uom_map.get(std_uom, std_uom)
 
 
 # ---------------------------------------------------------------------------
@@ -301,7 +315,8 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
 
     Checks:
       1. Text cleaning + standardization
-      2. UOM standardization (alias map) + validation against MDM_EDI_SUB_UOM
+        2. UOM standardization (alias map) + validation against MDM_EDI_SUB_UOM
+            plus Lawson translation into uom_to_match_infor
       3. QOE parsing + QOE/UOM compatibility
       4. Price parsing
       5. Null field checks (mfg cat, description, UOM)
@@ -319,8 +334,8 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
     """
     # Load ALL items for the task regardless of current status
     all_items = task_repo.get_items(task_id)
-    # Exclude DELETED items — soft-deleted by user, should not participate
-    items = [i for i in all_items if i.status != "DELETED"]
+    # Exclude DELETED_PC1 items — soft-deleted by user, should not participate
+    items = [i for i in all_items if i.status != "DELETED_PC1"]
     if not items:
         return {"total": 0, "passed": 0, "failed": 0, "errors": [], "uom_mappings": []}
 
@@ -339,6 +354,7 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
 
     # Load reference data once
     valid_uoms = _load_valid_uoms()
+    uom_to_match_infor_map = _load_uom_to_match_infor_map()
     valid_erp_ids = _load_valid_erp_vendor_ids()
 
     source_type = (task.source_type or "").upper()
@@ -347,6 +363,7 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
 
     errors = []
     uom_mappings = []
+    uom_to_match_mappings = []
     passed_ids = []
     warned_ids = []
     failed_ids = []
@@ -400,12 +417,16 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
 
         # --- UOM standardization ---
         std_uom, uom_note = _standardize_uom(item.uom)
+        uom_to_match_infor = _translate_uom_to_match_infor(std_uom, uom_to_match_infor_map)
+        validated_uom = uom_to_match_infor or std_uom
         if uom_note:
             uom_mappings.append({"item_id": item.item_id, "from": item.uom, "to": std_uom})
+        if std_uom and uom_to_match_infor and uom_to_match_infor != std_uom:
+            uom_to_match_mappings.append({"item_id": item.item_id, "from": std_uom, "to": uom_to_match_infor})
 
         # --- UOM validation against MDM ---
-        if std_uom and std_uom not in valid_uoms:
-            item_errors.append(("INVALID_UOM", f"UOM '{std_uom}' not found in MDM_EDI_SUB_UOM"))
+        if validated_uom and validated_uom not in valid_uoms:
+            item_errors.append(("INVALID_UOM", f"UOM to match Infor '{validated_uom}' not found in valid UOM reference"))
 
         # --- QOE ---
         qoe_val, qoe_err = _parse_qoe(item.qoe)
@@ -413,8 +434,8 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
             item_errors.append(("INVALID_QOE", qoe_err))
 
         # --- QOE/UOM compatibility ---
-        if qoe_val and std_uom:
-            for etype, edetail, severity in _check_qoe_uom_compat(std_uom, qoe_val):
+        if qoe_val and validated_uom:
+            for etype, edetail, severity in _check_qoe_uom_compat(validated_uom, qoe_val):
                 if severity == "ERROR":
                     item_errors.append((etype, edetail))
                 else:
@@ -430,7 +451,7 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
             item_errors.append(("NULL_MFG_NUM", "Manufacturer catalog number is required"))
         if not clean_desc:
             item_errors.append(("NULL_DESCRIPTION", "Description is required"))
-        if not std_uom:
+        if not validated_uom:
             item_errors.append(("NULL_UOM", "UOM is required"))
 
         # --- Reduced catalog numbers ---
@@ -442,7 +463,7 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
         mfg_result, mfg_issue = "pass", None
         if precheck_mode != "distributor":
             mfg_result, mfg_issue = _check_mfg_dup(
-                reduced_mfg, std_uom, clean_mfg, row_ref, item.item_id, seen_mfg,
+                reduced_mfg, validated_uom, clean_mfg, row_ref, item.item_id, seen_mfg,
                 dup_groups, precheck_mode=precheck_mode,
             )
 
@@ -470,6 +491,17 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
         if item_errors:
             failed_ids.append(item.item_id)
             task_repo.update_item_status(item.item_id, "ERROR_PC1", "; ".join(e[1] for e in item_errors))
+            task_repo.update_items_bulk(
+                [item.item_id],
+                description=clean_desc,
+                mfg_catalog_num=clean_mfg,
+                vendor_catalog_num=clean_vendor,
+                uom=std_uom,
+                uom_to_match_infor=uom_to_match_infor or None,
+                qoe=qoe_val or item.qoe,
+                reduced_mfg_num=reduced_mfg,
+                reduced_vendor_num=reduced_vendor,
+            )
             for err_type, err_detail in all_issues:
                 task_repo.add_precheck_error(task_id, item.item_id, "PC1", err_type, err_detail)
                 errors.append({"item_id": item.item_id, "error_type": err_type, "error_detail": err_detail})
@@ -486,6 +518,7 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
                 mfg_catalog_num=clean_mfg,
                 vendor_catalog_num=clean_vendor,
                 uom=std_uom,
+                uom_to_match_infor=uom_to_match_infor or None,
                 qoe=qoe_val or item.qoe,
                 reduced_mfg_num=reduced_mfg,
                 reduced_vendor_num=reduced_vendor,
@@ -500,6 +533,7 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
                 mfg_catalog_num=clean_mfg,
                 vendor_catalog_num=clean_vendor,
                 uom=std_uom,
+                uom_to_match_infor=uom_to_match_infor or None,
                 qoe=qoe_val or item.qoe,
                 reduced_mfg_num=reduced_mfg,
                 reduced_vendor_num=reduced_vendor,
@@ -612,6 +646,7 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
         "task_status": task_status,
         "errors": errors,
         "uom_mappings": uom_mappings,
+        "uom_to_match_mappings": uom_to_match_mappings,
         "dup_groups": dup_groups_out,
     }
 

@@ -192,12 +192,12 @@ def delete_item(item_id: int) -> bool:
 
 
 def soft_delete_item(item_id: int) -> bool:
-    """Mark an item as DELETED (soft-delete) and resolve its errors."""
+    """Mark an item as DELETED_PC1 and resolve its errors."""
     with _session() as s:
         item = s.get(TaskItem, item_id)
         if not item:
             return False
-        item.status = "DELETED"
+        item.status = "DELETED_PC1"
         item.updated_at = ny_now()
         s.query(PreCheckError).filter(
             PreCheckError.item_id == item_id,
