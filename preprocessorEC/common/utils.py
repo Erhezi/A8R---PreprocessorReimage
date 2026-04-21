@@ -5,10 +5,14 @@ Domain-specific logic lives in services/.
 
 from __future__ import annotations
 
+from functools import wraps
 import re
 import unicodedata
 from datetime import datetime
 from zoneinfo import ZoneInfo
+
+from flask import flash, redirect, url_for
+from flask_login import current_user
 
 _NY = ZoneInfo("America/New_York")
 
@@ -102,3 +106,21 @@ def reduce_catalog_number(part_num: str) -> str:
     if reduced.isdigit():
         reduced = reduced.lstrip('0') or '0'
     return reduced
+
+
+def role_required(*allowed_roles: str):
+    """Restrict a route to one or more user roles."""
+    allowed = {role.strip().lower() for role in allowed_roles if role and role.strip()}
+
+    def decorator(view_func):
+        @wraps(view_func)
+        def wrapped(*args, **kwargs):
+            user_role = (getattr(current_user, "role", "") or "").lower()
+            if user_role not in allowed:
+                flash("You do not have access to that page.", "warning")
+                return redirect(url_for("tasks.task_list"))
+            return view_func(*args, **kwargs)
+
+        return wrapped
+
+    return decorator

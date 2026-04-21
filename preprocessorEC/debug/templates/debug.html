@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Debug - Contract Atlas{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-3">
+  <div class="row g-3">
+    <div class="col-12">
+      <h4 class="mb-1">Debug</h4>
+      <p class="text-muted mb-0">Current authenticated user and Flask session payload.</p>
+    </div>
+
+    <div class="col-12 col-lg-4">
+      <div class="card shadow-sm">
+        <div class="card-header">User</div>
+        <div class="card-body">
+          <dl class="row mb-0">
+            <dt class="col-sm-4">Email</dt>
+            <dd class="col-sm-8">{{ user_data.email or '-' }}</dd>
+
+            <dt class="col-sm-4">Name</dt>
+            <dd class="col-sm-8">{{ user_data.name or '-' }}</dd>
+
+            <dt class="col-sm-4">Role</dt>
+            <dd class="col-sm-8">{{ user_data.role or '-' }}</dd>
+
+            <dt class="col-sm-4">Auth</dt>
+            <dd class="col-sm-8">{{ 'Yes' if user_data.is_authenticated else 'No' }}</dd>
+          </dl>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-12 col-lg-8">
+      <div class="card shadow-sm">
+        <div class="card-header">Session Data</div>
+        <div class="card-body">
+          {% if session_data %}
+          <pre class="mb-0 small" style="white-space: pre-wrap; word-break: break-word;">{{ session_json }}</pre>
+          {% else %}
+          <p class="text-muted mb-0">Session is empty.</p>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

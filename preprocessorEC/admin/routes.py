@@ -1,6 +1,6 @@
-﻿"""Admin module â€” user management, system settings.
+﻿"""Admin module user management, system settings.
 
-Stub â€” carried from original, to be updated later.
+Stub carried from original, to be updated later.
 """
 
 from flask import render_template, jsonify

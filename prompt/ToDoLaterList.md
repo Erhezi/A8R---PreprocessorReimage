@@ -16,7 +16,8 @@ fixed: 2026-04-20
   - Default: on reduced manufacturer
   - Strict: on manufacturer part number
   - Explicit: on manufacturer part number + UOM
-
-need check:
   - Distributor: on vendor part number (only offer this to distributor contract), trigger WARN if the reduced vendor part number is the same.
 - the precheck on default will always be the first pass choice, only allow user to pick other mode when they offer to re-run precheck after seeing the result of default mode. once the new pre-check mode is selected and run, register that as the pre-check mode for the task and this could be used as a parameter in some subsequent steps.
+
+to_to:
+- the UOM to Match Infor column on Items table currently is showing togather with UOM, and I need to see if the edit is functioning on which UOM column. maybe I should also add visual color so highlight the difference between the two UOM columns.

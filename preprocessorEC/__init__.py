@@ -89,6 +89,7 @@ def create_app(config_name: str | None = None, test_config: dict | None = None) 
     from .export import export_bp
     from .monitoring import monitoring_bp
     from .admin import admin_blueprint
+    from .debug import debug_bp
 
     app.register_blueprint(auth_blueprint, url_prefix=f"{url_prefix}/auth")
     app.register_blueprint(tasks_bp, url_prefix=url_prefix)
@@ -99,6 +100,7 @@ def create_app(config_name: str | None = None, test_config: dict | None = None) 
     app.register_blueprint(export_bp, url_prefix=url_prefix)
     app.register_blueprint(monitoring_bp, url_prefix=url_prefix)
     app.register_blueprint(admin_blueprint, url_prefix=url_prefix)
+    app.register_blueprint(debug_bp, url_prefix=url_prefix)
 
     # ── Context processors ──────────────────────────────────────────
     @app.context_processor
