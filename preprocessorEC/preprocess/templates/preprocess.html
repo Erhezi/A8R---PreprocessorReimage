@@ -317,18 +317,17 @@
             <tr>
               <th>Input ID</th>
               <th>Input UOM</th>
-              <th>Input UOM (UOM to match Infor)</th>
-              <th>Expected Buy UOM</th>
+              <th>Input UOM (Infor)</th>
+              <th>Input QOE</th>
               <th>Input Desc.</th>
               <th>Item</th>
               <th>Item Desc.</th>
               <th>Valid Buy UOMs</th>
-              <th>Buy UOM Match</th>
               <th>Active GTIN</th>
             </tr>
           </thead>
           <tbody id="itemMatchBody">
-            <tr><td colspan="10" class="text-center text-muted">No item matching results yet</td></tr>
+            <tr><td colspan="8" class="text-center text-muted">No item matching results yet</td></tr>
           </tbody>
         </table>
       </div>
@@ -805,7 +804,7 @@ async function loadItemMatches() {
 
   const tbody = document.getElementById("itemMatchBody");
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted">No item matching results yet</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted">No item matching results yet</td></tr>';
     return;
   }
 
@@ -814,12 +813,11 @@ async function loadItemMatches() {
       <td>${esc(r.input_item_id ?? '-')}</td>
       <td>${esc(r.input_uom || '-')}</td>
       <td>${esc(r.input_uom_to_match_infor || '-')}</td>
-      <td>${esc(r.expected_buy_uom_option || '-')}</td>
+      <td>${esc(r.input_qoe ?? '-')}</td>
       <td class="text-truncate" style="max-width:240px" title="${esc(r.input_description)}">${esc(r.input_description || '-')}</td>
       <td>${esc(r.infor_item_number || '-')}</td>
       <td class="text-truncate" style="max-width:240px" title="${esc(r.item_description)}">${esc(r.item_description || '-')}</td>
       <td class="text-truncate" style="max-width:260px" title="${esc(r.infor_buy_uom_options)}">${esc(r.infor_buy_uom_options || '-')}</td>
-      <td>${r.buy_uom_match == null ? '-' : esc(r.buy_uom_match ? 'matched' : 'not matched')}</td>
       <td>${esc(r.active_gtin || '-')}</td>
     </tr>
   `).join("");

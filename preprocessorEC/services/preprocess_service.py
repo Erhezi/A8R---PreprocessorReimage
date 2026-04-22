@@ -816,14 +816,14 @@ def run_item_labeling(task_id: str, state_machine: TaskStateMachine) -> dict:
                 items_found.update(_split_multi_value_items(update.get(key)))
 
             if len(items_found) == 0:
-                update["status"] = Status.NO_MATCH
+                update["status"] = Status.ITEM_FETCHED
             elif len(items_found) == 1:
                 final_item = next(iter(items_found))
                 update["infor_item_number"] = final_item
                 update["status"] = Status.ITEM_LABELED
             else:
                 update["infor_item_number"] = ", ".join(sorted(items_found))
-                update["status"] = Status.MULTI_ITEM_ERROR
+                update["status"] = Status.BUY_UOM_ERROR
 
             final_items = _split_multi_value_items(update.get("infor_item_number"))
             for final_item in final_items:
@@ -873,19 +873,24 @@ def run_buy_uom_check(task_id: str, state_machine: TaskStateMachine) -> dict:
     q_uom = load_query("preprocess", "item_matching", query="item_uom_options")
     q_inactive_gtin = load_query("preprocess", "item_matching", query="inactive_gtin_items")
     candidate_rows = task_repo.get_item_matches(task_id)
+    input_item_by_id = {item.item_id: item for item in input_items}
     updates = [{"item_id": item.item_id, "infor_buy_uom_options": None} for item in input_items]
     options_by_item_id: dict[int, set[str]] = {}
     expected_option_by_item_id = {item.item_id: _expected_buy_uom_option(item) for item in input_items}
+    status_by_item_id = {item.item_id: getattr(item, "status", None) for item in input_items}
     candidate_updates: list[dict] = []
     matched_candidate_count = 0
 
     with _sql_session() as sess:
         uom_cache: dict[str, list[str]] = {}
         inactive_gtin_rows = sess.execute(q_inactive_gtin).mappings().all()
-        inactive_gtin_items = {
-            str(row.get("Item") or "").strip()
+        inactive_gtin_pairs = {
+            (
+                str(row.get("Item") or "").strip(),
+                _normalize_uom(row.get("UOM")),
+            )
             for row in inactive_gtin_rows
-            if str(row.get("Item") or "").strip()
+            if str(row.get("Item") or "").strip() and _normalize_uom(row.get("UOM"))
         }
         for candidate in candidate_rows:
             item_number = candidate.infor_item_number
@@ -907,17 +912,35 @@ def run_buy_uom_check(task_id: str, state_machine: TaskStateMachine) -> dict:
             if expected_option and expected_option in set(option_values):
                 matched_candidate_count += 1
 
+            input_item = input_item_by_id.get(candidate.item_id)
+            input_infor_uom = _normalize_uom(getattr(input_item, "uom_to_match_infor", None))
+
             candidate_updates.append(
                 {
                     "match_item_id": candidate.match_item_id,
                     "infor_buy_uom_options": ", ".join(option_values) if option_values else None,
-                    "active_gtin": "invalid" if item_number in inactive_gtin_items else "okay",
+                    "active_gtin": "invalid"
+                    if input_infor_uom and (item_number, input_infor_uom) in inactive_gtin_pairs
+                    else "okay",
                 }
             )
 
     update_map = {entry["item_id"]: entry for entry in updates}
     for item_id, options in options_by_item_id.items():
         update_map[item_id]["infor_buy_uom_options"] = ", ".join(sorted(options))
+
+    for item in input_items:
+        expected_option = expected_option_by_item_id.get(item.item_id)
+        option_values = options_by_item_id.get(item.item_id, set())
+        current_status = status_by_item_id.get(item.item_id)
+        has_item_number = bool(_split_multi_value_items(getattr(item, "infor_item_number", None)))
+        if not has_item_number:
+            update_map[item.item_id]["status"] = Status.ITEM_PREPROCESSED
+            continue
+        if current_status == Status.BUY_UOM_ERROR:
+            continue
+        if expected_option and expected_option not in option_values:
+            update_map[item.item_id]["status"] = Status.BUY_UOM_ERROR
 
     if updates:
         task_repo.update_items_bulk(updates)
@@ -1035,6 +1058,15 @@ def submit_item_decision(
 
 def finalize_preprocess(task_id: str, state_machine: TaskStateMachine, user: str) -> dict:
     """Mark preprocess complete and advance to DEDUP phase."""
+    input_items = task_repo.get_items_by_source(task_id, "INPUT")
+    finalize_updates = [
+        {"item_id": item.item_id, "status": Status.ITEM_PREPROCESSED}
+        for item in input_items
+        if "ERROR" not in str(getattr(item, "status", "")).upper()
+    ]
+    if finalize_updates:
+        task_repo.update_items_bulk(finalize_updates)
+
     state = state_machine.get_state(task_id)
     state["status"] = Status.PREPROCESSED
     state_machine.save_state(task_id, state)

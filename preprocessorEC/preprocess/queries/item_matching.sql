@@ -140,9 +140,10 @@ WHERE iu.Item = :item_number
 ORDER BY CAST(iu.UOMConversion AS INT), iu.UOMConversion;
 
 -- name: inactive_gtin_items
--- Find items that have an inactive GTIN record.
+-- Find item/UOM pairs that have an inactive GTIN record.
 SELECT
     gtin.Item,
+    gtin.UOM,
     gtin.Active AS ActiveGTIN
 FROM [DM_MONTYNT\dli2].[MDM_ITEMGTIN] gtin
 WHERE gtin.Active = 'No';
