@@ -75,6 +75,17 @@ def _normalize_infor_item_number(value: object) -> Optional[str]:
     return text if text.isdigit() and len(text) == 6 else None
 
 
+def _load_distributor_groups(sess: Session) -> dict[str, int]:
+    rows = sess.execute(load_query("preprocess", "distributor_group")).mappings().all()
+    distributor_groups: dict[str, int] = {}
+    for row in rows:
+        vendor_id = str(row.get("ERPVendorID") or "").strip().upper()
+        group_id = row.get("Group")
+        if vendor_id and group_id is not None:
+            distributor_groups[vendor_id] = int(group_id)
+    return distributor_groups
+
+
 def _split_multi_value_items(value: Optional[str]) -> list[str]:
     if not value:
         return []
@@ -91,6 +102,34 @@ def _join_multi_value_items(values: list[str] | set[str]) -> Optional[str]:
     if not unique_values:
         return None
     return ", ".join(unique_values)
+
+
+def _normalize_uom(value: object) -> Optional[str]:
+    text = str(value or "").strip().upper()
+    return text or None
+
+
+def _build_buy_uom_option(uom: object, conversion: object) -> Optional[str]:
+    normalized_uom = _normalize_uom(uom)
+    if not normalized_uom:
+        return None
+    try:
+        normalized_conversion = int(conversion)
+    except (TypeError, ValueError):
+        return None
+    if normalized_conversion <= 0:
+        return None
+    return f"{normalized_uom}*{normalized_conversion}"
+
+
+def _parse_buy_uom_options(value: Optional[str]) -> set[str]:
+    if not value:
+        return set()
+    return {chunk.strip().upper() for chunk in value.split(",") if chunk.strip()}
+
+
+def _expected_buy_uom_option(item) -> Optional[str]:
+    return _build_buy_uom_option(getattr(item, "uom_to_match_infor", None), getattr(item, "qoe", None))
 
 
 def _build_matched_snapshot(row, matched_source: str) -> dict:
@@ -168,6 +207,8 @@ def run_sku_matching(task_id: str, state_machine: TaskStateMachine) -> dict:
     with _sql_session() as sess:
         from sqlalchemy import bindparam
 
+        distributor_groups = _load_distributor_groups(sess)
+        task_vendor_group = distributor_groups.get(str(task.vendor_id or "").strip().upper())
         linked_infor_query = linked_infor_query.bindparams(bindparam("ccx_pkids", expanding=True))
         for item in input_items:
             reduced_mfg = reduce_catalog_number(item.mfg_catalog_num)
@@ -200,9 +241,11 @@ def run_sku_matching(task_id: str, state_machine: TaskStateMachine) -> dict:
                     task_process_type=process_type,
                     task_contract_manufacturer=task.contract_manufacturer_infor or "",
                     task_vendor_id=task.vendor_id or "",
+                    task_vendor_group=task_vendor_group,
                     match_contract_id=row.get("ContractID", ""),
                     match_contract_manufacturer=row.get("contract_manufacturer", ""),
                     match_erp_vendor_id=row.get("ERPVendorID", ""),
+                    match_vendor_group=distributor_groups.get(str(row.get("ERPVendorID") or "").strip().upper()),
                 )
 
                 # Multi-factor scoring
@@ -359,6 +402,7 @@ def run_llm_review(task_id: str, state_machine: TaskStateMachine) -> dict:
             "qoe": match.qoe_matched,
             "contract_price": float(match.contract_price_matched) if match.contract_price_matched is not None else None,
             "similarity_score": match.similarity_score,
+            "pair_type": match.pair_type or "",
         }
         result = review_match_pair(input_dict, match_dict)
         new_status = "ACCEPTED" if result["decision"] == "ACCEPT" else "REJECTED"
@@ -633,6 +677,7 @@ def run_infor_residue_llm_review(task_id: str, state_machine: TaskStateMachine) 
             "qoe": match.qoe_matched,
             "contract_price": float(match.contract_price_matched) if match.contract_price_matched is not None else None,
             "similarity_score": match.similarity_score,
+            "pair_type": match.pair_type or "",
         }
         result = review_match_pair(input_dict, match_dict)
         new_status = "ACCEPTED" if result["decision"] == "ACCEPT" else "REJECTED"
@@ -826,26 +871,49 @@ def run_buy_uom_check(task_id: str, state_machine: TaskStateMachine) -> dict:
         return {"checked": 0, "matched_items": 0}
 
     q_uom = load_query("preprocess", "item_matching", query="item_uom_options")
+    q_inactive_gtin = load_query("preprocess", "item_matching", query="inactive_gtin_items")
     candidate_rows = task_repo.get_item_matches(task_id)
     updates = [{"item_id": item.item_id, "infor_buy_uom_options": None} for item in input_items]
     options_by_item_id: dict[int, set[str]] = {}
+    expected_option_by_item_id = {item.item_id: _expected_buy_uom_option(item) for item in input_items}
+    candidate_updates: list[dict] = []
+    matched_candidate_count = 0
 
     with _sql_session() as sess:
         uom_cache: dict[str, list[str]] = {}
+        inactive_gtin_rows = sess.execute(q_inactive_gtin).mappings().all()
+        inactive_gtin_items = {
+            str(row.get("Item") or "").strip()
+            for row in inactive_gtin_rows
+            if str(row.get("Item") or "").strip()
+        }
         for candidate in candidate_rows:
             item_number = candidate.infor_item_number
             if item_number not in uom_cache:
                 rows = sess.execute(q_uom, {"item_number": item_number}).mappings().all()
                 uom_cache[item_number] = sorted(
                     {
-                        f"{row['UOM']}*{row['UOMConversion']}"
+                        option
                         for row in rows
-                        if row.get("UOM") is not None and row.get("UOMConversion") is not None
+                        for option in [_build_buy_uom_option(row.get("UOM"), row.get("UOMConversion"))]
+                        if option
                     }
                 )
-            if not uom_cache[item_number]:
-                continue
-            options_by_item_id.setdefault(candidate.item_id, set()).update(uom_cache[item_number])
+            option_values = uom_cache[item_number]
+            if option_values:
+                options_by_item_id.setdefault(candidate.item_id, set()).update(option_values)
+
+            expected_option = expected_option_by_item_id.get(candidate.item_id)
+            if expected_option and expected_option in set(option_values):
+                matched_candidate_count += 1
+
+            candidate_updates.append(
+                {
+                    "match_item_id": candidate.match_item_id,
+                    "infor_buy_uom_options": ", ".join(option_values) if option_values else None,
+                    "active_gtin": "invalid" if item_number in inactive_gtin_items else "okay",
+                }
+            )
 
     update_map = {entry["item_id"]: entry for entry in updates}
     for item_id, options in options_by_item_id.items():
@@ -853,10 +921,16 @@ def run_buy_uom_check(task_id: str, state_machine: TaskStateMachine) -> dict:
 
     if updates:
         task_repo.update_items_bulk(updates)
+    if candidate_updates:
+        task_repo.update_item_matches_bulk(candidate_updates)
 
     state["buy_uom_check_done"] = True
     state_machine.save_state(task_id, state)
-    return {"checked": len(input_items), "matched_items": len(candidate_rows)}
+    return {
+        "checked": len(input_items),
+        "matched_items": len(candidate_rows),
+        "buy_uom_matched_candidates": matched_candidate_count,
+    }
 
 
 # ---------------------------------------------------------------------------

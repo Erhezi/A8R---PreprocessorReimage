@@ -388,6 +388,8 @@ class ItemMatchCandidate(Base):
     item_id = Column(Integer, ForeignKey(f"{SCHEMA}.PreprocessorTaskItem.item_id"), nullable=False)
     infor_item_number = Column(String(20), nullable=False)
     item_description = Column(Text, nullable=True)
+    infor_buy_uom_options = Column(String(500), nullable=True)
+    active_gtin = Column(String(10), nullable=True)
     created_at = Column(DateTime, default=ny_now)
     updated_at = Column(DateTime, default=ny_now, onupdate=ny_now)
 
@@ -401,6 +403,8 @@ class ItemMatchCandidate(Base):
             "item_id": self.item_id,
             "infor_item_number": self.infor_item_number,
             "item_description": self.item_description,
+            "infor_buy_uom_options": self.infor_buy_uom_options,
+            "active_gtin": self.active_gtin,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

@@ -360,6 +360,8 @@ def determine_pair_type(
     match_contract_id: str,
     match_contract_manufacturer: str,
     match_erp_vendor_id: str,
+    task_vendor_group: object | None = None,
+    match_vendor_group: object | None = None,
 ) -> str:
     """Determine the pair type (A/B/C/D) for a match pair.
 
@@ -385,9 +387,20 @@ def determine_pair_type(
 
     # Type C: both distributor, same vendor
     if "DISTRIBUTOR" in proc:
+        task_vendor_full = str(task_vendor_id or "").strip().upper()
+        match_vendor_full = str(match_erp_vendor_id or "").strip().upper()
         task_vid = str(task_vendor_id or "")[:7].strip().upper()
         match_vid = str(match_erp_vendor_id or "")[:7].strip().upper()
-        if task_vid and match_vid and task_vid == match_vid:
+        task_group = str(task_vendor_group or "").strip()
+        match_group = str(match_vendor_group or "").strip()
+
+        same_vendor_id = bool(
+            (task_vid and match_vid and task_vid == match_vid)
+            or (task_vendor_full and match_vendor_full and task_vendor_full == match_vendor_full)
+        )
+        same_vendor_group = bool(task_group and match_group and task_group == match_group)
+
+        if same_vendor_id or same_vendor_group:
             return "C"
 
     return "D"

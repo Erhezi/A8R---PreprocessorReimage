@@ -406,3 +406,21 @@ CREATE TABLE [DM_MONTYNT\dli2].[MDM_ITEMGTIN](
 3) On Item:
 - same Item should always have the same Manufacturer + ManufacturerNumber combination, and only one Manufacturer + ManufacturerNumber combination is allowed per Item. So basically Infor do not allow the same Item to be sourced from different manfuacturer or within same manufacturer but changed in manufacturer number. 
 - It assume Item can have different UOM, but will be reference under singular ManufactuerNumber (SKU), which in some real life cases can be a problem since manufacturer could have different SKUs for the same item with different UOM. The design suggests that Infor use Item to handle different UOM, and VendorItem further resovles on which vendor to purchase from.
+
+
+`[Preprocessor].[DistributorGroup]` -- a small manually maintained table to group distributors by their ERPVendorID, since we have cases that the same vendor (e.g. Medline) has multiple ERPVendorID account so we can set up different contract and pay them differently. But when we run the scoring, for type C we would like to define the same vendor as if they are in the same Group on this table.
+CREATE TABLE [Preprocessor].[DistributorGroup](
+	[ERPVendorID] [varchar](20) NOT NULL,
+	[VendorName] [varchar](100) NULL,
+	[Group] [int] NOT NULL,
+	[EditBy] [varchar](40) NOT NULL,
+	[EditDate] [date] NOT NULL,
+ CONSTRAINT [PK_DistributorGroup] PRIMARY KEY CLUSTERED 
+(
+	[ERPVendorID] ASC
+)WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON) ON [PRIMARY]
+) ON [PRIMARY]
+GO
+
+# 3. tables for reporting or related to reporting
+`[Preprocessor].[InforItemReplenishFrom]` -- a table that support the Item replenish from checks.

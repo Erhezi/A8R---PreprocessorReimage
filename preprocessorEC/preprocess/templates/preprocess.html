@@ -21,6 +21,18 @@
     white-space: nowrap;
   }
 
+  .contract-summary-table-wrap {
+    max-height: 300px;
+    overflow-x: auto;
+    overflow-y: auto;
+  }
+
+  .contract-summary-table-wrap thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+  }
+
   .task-meta-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -36,10 +48,55 @@
   }
 
   .task-meta-value {
-    font-size: 0.96rem;
+    font-size: 0.9rem;
     font-weight: 600;
     color: #1f2937;
     word-break: break-word;
+  }
+
+  .match-filter-contract {
+    min-width: 220px;
+  }
+
+  .match-filter-contract .dropdown-menu {
+    width: 100%;
+    max-height: 260px;
+    overflow-y: auto;
+    padding: 0.35rem 0;
+  }
+
+  .match-filter-contract-option {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.35rem 0.75rem;
+    margin: 0;
+    font-size: 0.875rem;
+    cursor: pointer;
+  }
+
+  .match-filter-contract-option:hover {
+    background: #f8f9fa;
+  }
+
+  .match-filter-contract-option input {
+    margin: 0;
+  }
+
+  .match-pagination {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 0.75rem;
+    border-top: 1px solid #dee2e6;
+    background: #f8f9fa;
+  }
+
+  .match-pagination-controls {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
   }
 </style>
 {% endblock %}
@@ -48,38 +105,6 @@
 <div class="container-fluid mt-3">
   <a href="{{ url_prefix }}/tasks/{{ task_id }}" class="text-decoration-none">&larr; Task #{{ task_id }}</a>
   <h4 class="mt-1">Phase 3: Preprocess Core</h4>
-
-  <div class="card mb-3">
-    <div class="card-header">Current Task</div>
-    <div class="card-body">
-      <div class="task-meta-grid">
-        <div>
-          <div class="task-meta-label">Contract ID</div>
-          <div class="task-meta-value">{{ task.contract_number or '—' }}</div>
-        </div>
-        <div>
-          <div class="task-meta-label">Vendor</div>
-          <div class="task-meta-value">{{ ((task.vendor_id or '—') ~ ' - ' ~ (task.erp_vendor_name or '—')) if (task.vendor_id or task.erp_vendor_name) else '—' }}</div>
-        </div>
-        <div>
-          <div class="task-meta-label">Type</div>
-          <div class="task-meta-value">{{ (task.process_type or '—') ~ (' / ' ~ task.source_type if task.source_type else '') }}</div>
-        </div>
-        <div>
-          <div class="task-meta-label">Org</div>
-          <div class="task-meta-value">{{ task.organization or '—' }}</div>
-        </div>
-        <div>
-          <div class="task-meta-label">OEM</div>
-          <div class="task-meta-value">{{ task.oem_name or '—' }}</div>
-        </div>
-        <div>
-          <div class="task-meta-label">Precheck Mode</div>
-          <div class="task-meta-value">{{ task.precheck_mode or '—' }}</div>
-        </div>
-      </div>
-    </div>
-  </div>
 
   <div class="card mb-3">
     <div class="card-header d-flex justify-content-between">
@@ -141,6 +166,42 @@
     </div>
   </div>
 
+  <div class="card mb-3">
+    <div class="card-header">Current Task</div>
+    <div class="card-body">
+      <div class="task-meta-grid">
+        <div>
+          <div class="task-meta-label">Contract ID</div>
+          <div class="task-meta-value">{{ task.contract_number or '—' }}</div>
+        </div>
+        <div>
+          <div class="task-meta-label">Precheck Mode</div>
+          <div class="task-meta-value">{{ task.precheck_mode or '—' }}</div>
+        </div>
+        <div>
+          <div class="task-meta-label">Type</div>
+          <div class="task-meta-value">{{ (task.process_type or '—') ~ (' / ' ~ task.source_type if task.source_type else '') }}</div>
+        </div>
+        <div>
+          <div class="task-meta-label">Org</div>
+          <div class="task-meta-value">{{ task.organization or '—' }}</div>
+        </div>
+        <div>
+          <div class="task-meta-label">OEM</div>
+          <div class="task-meta-value">{{ task.oem_name or '—' }}</div>
+        </div>
+        <div>
+          <div class="task-meta-label">Manufacturer</div>
+          <div class="task-meta-value">{{ ((task.contract_manufacturer_infor or '—') ~ ' - ' ~ (task.contract_manufacturer_name_infor or '—')) if (task.contract_manufacturer_infor or task.contract_manufacturer_name_infor) else '—' }}</div>
+        </div>
+        <div>
+          <div class="task-meta-label">Vendor</div>
+          <div class="task-meta-value">{{ ((task.vendor_id or '—') ~ ' - ' ~ (task.erp_vendor_name or '—')) if (task.vendor_id or task.erp_vendor_name) else '—' }}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Contract-level summary -->
   <div class="card mb-3" id="contractCard" style="display:none">
     <div class="card-header d-flex justify-content-between align-items-center">
@@ -157,19 +218,21 @@
       </div>
     </div>
     <div class="card-body p-0">
-      <table class="table table-sm table-hover mb-0">
-        <thead class="table-light">
-          <tr>
-            <th>Source</th><th>Organization</th><th class="contract-summary-contract">Contract</th><th>ERP Vendor ID</th><th>MF Name</th><th>Vendor Name</th><th>Contract Description</th><th>Total Lines</th><th>Matched</th>
-            <th class="text-success">HIGH</th><th class="text-warning">MED</th><th class="text-secondary">LOW</th>
-            <th>Accepted</th><th>Rejected</th><th>Pending</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody id="contractBody">
-          <tr><td colspan="17" class="text-center text-muted">Run pipeline first</td></tr>
-        </tbody>
-      </table>
+      <div class="contract-summary-table-wrap">
+        <table class="table table-sm table-hover mb-0">
+          <thead class="table-light">
+            <tr>
+              <th>Source</th><th>Organization</th><th class="contract-summary-contract">Contract</th><th>ERP Vendor ID</th><th>MF Name</th><th>Vendor Name</th><th>Contract Description</th><th>Total Lines</th><th>Matched</th>
+              <th class="text-success">HIGH</th><th class="text-warning">MED</th><th class="text-secondary">LOW</th>
+              <th>Accepted</th><th>Rejected</th><th>Pending</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="contractBody">
+            <tr><td colspan="17" class="text-center text-muted">Run pipeline first</td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
   </div>
 
@@ -195,9 +258,12 @@
           <option value="REJECTED">Rejected</option>
           <option value="PENDING">Pending</option>
         </select>
-        <select class="form-select form-select-sm" id="filterContract" style="width:auto">
-          <option value="">All Contracts</option>
-        </select>
+        <div class="dropdown match-filter-contract" id="filterContract" data-bs-auto-close="outside">
+          <button class="btn btn-sm btn-outline-secondary dropdown-toggle w-100 text-start" type="button" id="filterContractButton" data-bs-toggle="dropdown" aria-expanded="false">
+            All Contracts
+          </button>
+          <div class="dropdown-menu" aria-labelledby="filterContractButton"></div>
+        </div>
         <button class="btn btn-sm btn-outline-primary" id="btnFilterMatches">Filter</button>
         <button class="btn btn-sm btn-outline-secondary" id="btnClearMatchFilters">Clear Filters</button>
       </div>
@@ -221,13 +287,20 @@
               <th>Input Price</th><th>Matched Price</th>
               <th>Input EA Price</th><th>Matched EA Price</th>
               <th>Score</th><th>Bucket</th><th>Status</th><th>Source</th>
-              <th>Input Desc.</th><th>Matched Desc.</th><th>Contract</th><th>Match Type</th><th>Pair Type</th>
+              <th>Input Desc.</th><th>Matched Desc.</th><th>Contract</th><th>Organization</th><th>Match Type</th><th>Pair Type</th>
             </tr>
           </thead>
           <tbody id="matchBody">
-            <tr><td colspan="21" class="text-center text-muted">No results yet</td></tr>
+            <tr><td colspan="24" class="text-center text-muted">No results yet</td></tr>
           </tbody>
         </table>
+      </div>
+      <div class="match-pagination">
+        <span id="matchPageInfo" class="small text-muted">Page 0 of 0</span>
+        <div class="match-pagination-controls">
+          <button class="btn btn-sm btn-outline-secondary" id="btnMatchPrevPage" disabled>Previous</button>
+          <button class="btn btn-sm btn-outline-secondary" id="btnMatchNextPage" disabled>Next</button>
+        </div>
       </div>
     </div>
   </div>
@@ -245,13 +318,17 @@
               <th>Input ID</th>
               <th>Input UOM</th>
               <th>Input UOM (UOM to match Infor)</th>
+              <th>Expected Buy UOM</th>
               <th>Input Desc.</th>
               <th>Item</th>
               <th>Item Desc.</th>
+              <th>Valid Buy UOMs</th>
+              <th>Buy UOM Match</th>
+              <th>Active GTIN</th>
             </tr>
           </thead>
           <tbody id="itemMatchBody">
-            <tr><td colspan="6" class="text-center text-muted">No item matching results yet</td></tr>
+            <tr><td colspan="10" class="text-center text-muted">No item matching results yet</td></tr>
           </tbody>
         </table>
       </div>
@@ -269,6 +346,10 @@
 const PREFIX = "{{ url_prefix }}";
 const TASK_ID = "{{ task_id }}";
 let selectedContractScope = null;
+const MATCH_PAGE_SIZE = 1000;
+let matchResultsData = [];
+let matchCurrentPage = 1;
+let selectedMatchIds = new Set();
 
 // ---- Step-by-step pipeline -----------
 const STEPS = [
@@ -314,9 +395,44 @@ function setSelectedContractScope(scope) {
   selectedContractScope = scope;
 }
 
+function updateContractFilterButtonLabel() {
+  const button = document.getElementById("filterContractButton");
+  if (!button) {
+    return;
+  }
+
+  const selectedContracts = getSelectedContractFilters();
+  if (!selectedContracts.length) {
+    button.textContent = "All Contracts";
+    return;
+  }
+  if (selectedContracts.length === 1) {
+    button.textContent = selectedContracts[0];
+    return;
+  }
+  button.textContent = `${selectedContracts.length} Contracts Selected`;
+}
+
+function getSelectedContractFilters() {
+  return [...document.querySelectorAll("#filterContract input[type='checkbox']:checked")]
+    .map(option => option.value)
+    .filter(Boolean);
+}
+
+function setSelectedContractFilters(contracts) {
+  const selectedValues = new Set((contracts || []).filter(Boolean));
+  [...document.querySelectorAll("#filterContract input[type='checkbox']")].forEach(option => {
+    option.checked = selectedValues.has(option.value);
+  });
+  updateContractFilterButtonLabel();
+}
+
 function getActiveContractScope() {
-  const contract = document.getElementById("filterContract").value;
-  if (!selectedContractScope || selectedContractScope.contractNumber !== contract) {
+  const contracts = getSelectedContractFilters();
+  if (contracts.length !== 1) {
+    return null;
+  }
+  if (!selectedContractScope || selectedContractScope.contractNumber !== contracts[0]) {
     return null;
   }
   return selectedContractScope;
@@ -418,7 +534,8 @@ let contractSummaryData = [];
 
 function renderContracts(contracts) {
   const tbody = document.getElementById("contractBody");
-  const filterSelect = document.getElementById("filterContract");
+  const filterDropdownMenu = document.querySelector("#filterContract .dropdown-menu");
+  const selectedContracts = getSelectedContractFilters();
   const summaryFilterField = document.getElementById("contractSummaryFilterField").value;
   const summaryFilterValue = document.getElementById("contractSummaryFilterValue").value.trim().toUpperCase();
 
@@ -427,21 +544,58 @@ function renderContracts(contracts) {
       return true;
     }
     return String(c[summaryFilterField] || "").toUpperCase().includes(summaryFilterValue);
+  }).sort((left, right) => {
+    const contractCompare = String(left.contract_id || "").localeCompare(String(right.contract_id || ""), undefined, {
+      numeric: true,
+      sensitivity: "base",
+    });
+    if (contractCompare !== 0) {
+      return contractCompare;
+    }
+    const organizationCompare = String(left.organization || "").localeCompare(String(right.organization || ""), undefined, {
+      numeric: true,
+      sensitivity: "base",
+    });
+    if (organizationCompare !== 0) {
+      return organizationCompare;
+    }
+    const sourceCompare = String(left.source || "").localeCompare(String(right.source || ""), undefined, {
+      numeric: true,
+      sensitivity: "base",
+    });
+    if (sourceCompare !== 0) {
+      return sourceCompare;
+    }
+    return String(left.erp_vendor_id || "").localeCompare(String(right.erp_vendor_id || ""), undefined, {
+      numeric: true,
+      sensitivity: "base",
+    });
   });
 
   // Rebuild contract filter options
-  filterSelect.innerHTML = '<option value="">All Contracts</option>';
+  filterDropdownMenu.innerHTML = "";
   const seenContracts = new Set();
   visibleContracts.forEach(c => {
     if (seenContracts.has(c.contract_id)) {
       return;
     }
     seenContracts.add(c.contract_id);
-    const opt = document.createElement("option");
-    opt.value = c.contract_id;
-    opt.textContent = c.contract_id;
-    filterSelect.appendChild(opt);
+    const label = document.createElement("label");
+    label.className = "match-filter-contract-option";
+
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.value = c.contract_id;
+    checkbox.className = "form-check-input";
+
+    const text = document.createElement("span");
+    text.textContent = c.contract_id;
+
+    label.appendChild(checkbox);
+    label.appendChild(text);
+    filterDropdownMenu.appendChild(label);
   });
+  setSelectedContractFilters(selectedContracts);
 
   if (!visibleContracts.length) {
     tbody.innerHTML = '<tr><td colspan="17" class="text-center text-muted">No contracts found</td></tr>';
@@ -480,7 +634,7 @@ function renderContracts(contracts) {
         organizationEid: a.dataset.organizationEid || "",
         erpVendorId: a.dataset.erpVendorId || "",
       });
-      document.getElementById("filterContract").value = a.dataset.contract;
+      setSelectedContractFilters([a.dataset.contract || ""]);
       loadMatches();
     });
   });
@@ -523,14 +677,14 @@ async function loadMatches() {
   const bucket   = document.getElementById("filterBucket").value;
   const source   = document.getElementById("filterSource").value;
   const status   = document.getElementById("filterStatus").value;
-  const contract = document.getElementById("filterContract").value;
+  const contracts = getSelectedContractFilters();
   const contractScope = getActiveContractScope();
 
   const params = new URLSearchParams();
   if (bucket)   params.set("bucket", bucket);
   if (source)   params.set("source", source);
   if (status)   params.set("status", status);
-  if (contract) params.set("contract", contract);
+  contracts.forEach(contract => params.append("contract", contract));
   if (contractScope) {
     params.set("organization_eid", contractScope.organizationEid);
     params.set("erp_vendor_id", contractScope.erpVendorId);
@@ -538,17 +692,78 @@ async function loadMatches() {
 
   const resp = await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/matches?${params}`);
   const matches = await resp.json();
-  document.getElementById("matchCount").textContent = `${matches.length} matches`;
+  matchResultsData = [...matches].sort((left, right) => {
+    const inputCompare = Number(left.input_item_id || 0) - Number(right.input_item_id || 0);
+    if (inputCompare !== 0) {
+      return inputCompare;
+    }
+    const contractCompare = String(left.contract_number || "").localeCompare(String(right.contract_number || ""), undefined, {
+      numeric: true,
+      sensitivity: "base",
+    });
+    if (contractCompare !== 0) {
+      return contractCompare;
+    }
+    const organizationCompare = String(left.organization_matched || "").localeCompare(String(right.organization_matched || ""), undefined, {
+      numeric: true,
+      sensitivity: "base",
+    });
+    if (organizationCompare !== 0) {
+      return organizationCompare;
+    }
+    const matchedVpnCompare = String(left.vendor_item_matched || "").localeCompare(String(right.vendor_item_matched || ""), undefined, {
+      numeric: true,
+      sensitivity: "base",
+    });
+    if (matchedVpnCompare !== 0) {
+      return matchedVpnCompare;
+    }
+    const matchedUomCompare = String(left.uom_matched || "").localeCompare(String(right.uom_matched || ""), undefined, {
+      numeric: true,
+      sensitivity: "base",
+    });
+    if (matchedUomCompare !== 0) {
+      return matchedUomCompare;
+    }
+    const matchedQoeCompare = Number(left.qoe_matched || 0) - Number(right.qoe_matched || 0);
+    if (matchedQoeCompare !== 0) {
+      return matchedQoeCompare;
+    }
+    return String(left.matched_source || "").localeCompare(String(right.matched_source || ""), undefined, {
+      numeric: true,
+      sensitivity: "base",
+    });
+  });
+  matchCurrentPage = 1;
+  selectedMatchIds = new Set();
+  document.getElementById("selectAll").checked = false;
+  document.getElementById("matchCount").textContent = `${matchResultsData.length} matches`;
 
+  renderMatchesPage();
+}
+
+function renderMatchesPage() {
   const tbody = document.getElementById("matchBody");
-  if (!matches.length) {
-    tbody.innerHTML = '<tr><td colspan="23" class="text-center text-muted">No matches</td></tr>';
+  if (!matchResultsData.length) {
+    tbody.innerHTML = '<tr><td colspan="24" class="text-center text-muted">No matches</td></tr>';
+    document.getElementById("matchPageInfo").textContent = "Page 0 of 0";
+    document.getElementById("btnMatchPrevPage").disabled = true;
+    document.getElementById("btnMatchNextPage").disabled = true;
+    updateSelectionButtons();
     return;
   }
 
-  tbody.innerHTML = matches.map(m => `
+  const totalPages = Math.max(1, Math.ceil(matchResultsData.length / MATCH_PAGE_SIZE));
+  if (matchCurrentPage > totalPages) {
+    matchCurrentPage = totalPages;
+  }
+
+  const startIndex = (matchCurrentPage - 1) * MATCH_PAGE_SIZE;
+  const pageRows = matchResultsData.slice(startIndex, startIndex + MATCH_PAGE_SIZE);
+
+  tbody.innerHTML = pageRows.map(m => `
     <tr>
-      <td><input type="checkbox" class="match-cb" value="${m.match_id}"></td>
+      <td><input type="checkbox" class="match-cb" value="${m.match_id}" ${selectedMatchIds.has(Number(m.match_id)) ? "checked" : ""}></td>
       <td>${m.input_item_id}</td>
       <td class="text-truncate" style="max-width:120px" title="${esc(m.input_mfg_catalog_num)}">${esc(m.input_mfg_catalog_num || '-')}</td>
       <td class="text-truncate" style="max-width:120px" title="${esc(m.manufacturer_number_matched)}">${esc(m.manufacturer_number_matched || '-')}</td>
@@ -569,11 +784,16 @@ async function loadMatches() {
       <td class="text-truncate" style="max-width:220px" title="${esc(m.input_description)}">${esc(m.input_description || '-')}</td>
       <td class="text-truncate" style="max-width:220px" title="${esc(m.item_desc_matched)}">${esc(m.item_desc_matched || '-')}</td>
       <td class="text-truncate" style="max-width:160px" title="${esc(m.contract_number)}">${esc(m.contract_number || '-')}</td>
+      <td class="text-truncate" style="max-width:180px" title="${esc(m.organization_matched)}">${esc(m.organization_matched || '-')}</td>
       <td>${esc(m.match_type || '-')}</td>
       <td>${esc(m.pair_type || '-')}</td>
     </tr>
   `).join("");
 
+  document.getElementById("matchPageInfo").textContent = `Page ${matchCurrentPage} of ${totalPages}`;
+  document.getElementById("btnMatchPrevPage").disabled = matchCurrentPage <= 1;
+  document.getElementById("btnMatchNextPage").disabled = matchCurrentPage >= totalPages;
+  document.getElementById("selectAll").checked = pageRows.length > 0 && pageRows.every(m => selectedMatchIds.has(Number(m.match_id)));
   updateSelectionButtons();
 }
 
@@ -585,7 +805,7 @@ async function loadItemMatches() {
 
   const tbody = document.getElementById("itemMatchBody");
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No item matching results yet</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted">No item matching results yet</td></tr>';
     return;
   }
 
@@ -594,9 +814,13 @@ async function loadItemMatches() {
       <td>${esc(r.input_item_id ?? '-')}</td>
       <td>${esc(r.input_uom || '-')}</td>
       <td>${esc(r.input_uom_to_match_infor || '-')}</td>
+      <td>${esc(r.expected_buy_uom_option || '-')}</td>
       <td class="text-truncate" style="max-width:240px" title="${esc(r.input_description)}">${esc(r.input_description || '-')}</td>
       <td>${esc(r.infor_item_number || '-')}</td>
       <td class="text-truncate" style="max-width:240px" title="${esc(r.item_description)}">${esc(r.item_description || '-')}</td>
+      <td class="text-truncate" style="max-width:260px" title="${esc(r.infor_buy_uom_options)}">${esc(r.infor_buy_uom_options || '-')}</td>
+      <td>${r.buy_uom_match == null ? '-' : esc(r.buy_uom_match ? 'matched' : 'not matched')}</td>
+      <td>${esc(r.active_gtin || '-')}</td>
     </tr>
   `).join("");
 }
@@ -605,7 +829,7 @@ function clearMatchFilters() {
   document.getElementById("filterBucket").value = "";
   document.getElementById("filterSource").value = "";
   document.getElementById("filterStatus").value = "";
-  document.getElementById("filterContract").value = "";
+  setSelectedContractFilters([]);
   setSelectedContractScope(null);
   loadMatches();
 }
@@ -619,7 +843,7 @@ function bucketColor(b) { return b === 'HIGH' ? 'success' : b === 'MED' ? 'warni
 function statusColor(s) { return s === 'ACCEPTED' ? 'success' : s === 'REJECTED' ? 'danger' : 'warning'; }
 
 function updateSelectionButtons() {
-  const checked = document.querySelectorAll(".match-cb:checked").length;
+  const checked = selectedMatchIds.size;
   const rejectBtn = document.getElementById("btnRejectSelected");
   const acceptBtn = document.getElementById("btnAcceptSelected");
   rejectBtn.disabled = checked === 0;
@@ -628,23 +852,67 @@ function updateSelectionButtons() {
   acceptBtn.textContent = checked > 0 ? `Mark ${checked} as True Match` : "Mark Selected as True Match";
 }
 
-document.getElementById("matchBody").addEventListener("change", updateSelectionButtons);
+document.getElementById("matchBody").addEventListener("change", (event) => {
+  const checkbox = event.target.closest(".match-cb");
+  if (!checkbox) {
+    return;
+  }
+
+  const matchId = Number(checkbox.value);
+  if (checkbox.checked) {
+    selectedMatchIds.add(matchId);
+  } else {
+    selectedMatchIds.delete(matchId);
+  }
+
+  document.getElementById("selectAll").checked = [...document.querySelectorAll(".match-cb")].every(cb => cb.checked);
+  updateSelectionButtons();
+});
 document.getElementById("selectAll").addEventListener("change", (e) => {
-  document.querySelectorAll(".match-cb").forEach(cb => cb.checked = e.target.checked);
+  document.querySelectorAll(".match-cb").forEach(cb => {
+    cb.checked = e.target.checked;
+    const matchId = Number(cb.value);
+    if (e.target.checked) {
+      selectedMatchIds.add(matchId);
+    } else {
+      selectedMatchIds.delete(matchId);
+    }
+  });
   updateSelectionButtons();
 });
 
 document.getElementById("btnFilterMatches").addEventListener("click", loadMatches);
 document.getElementById("btnClearMatchFilters").addEventListener("click", clearMatchFilters);
-document.getElementById("filterContract").addEventListener("change", (e) => {
-  if (!selectedContractScope || selectedContractScope.contractNumber === e.target.value) {
+document.getElementById("filterContract").addEventListener("change", (event) => {
+  if (!event.target.matches("input[type='checkbox']")) {
+    return;
+  }
+
+  updateContractFilterButtonLabel();
+  const selectedContracts = getSelectedContractFilters();
+  if (!selectedContractScope || (selectedContracts.length === 1 && selectedContractScope.contractNumber === selectedContracts[0])) {
     return;
   }
   setSelectedContractScope(null);
 });
+document.getElementById("btnMatchPrevPage").addEventListener("click", () => {
+  if (matchCurrentPage <= 1) {
+    return;
+  }
+  matchCurrentPage -= 1;
+  renderMatchesPage();
+});
+document.getElementById("btnMatchNextPage").addEventListener("click", () => {
+  const totalPages = Math.max(1, Math.ceil(matchResultsData.length / MATCH_PAGE_SIZE));
+  if (matchCurrentPage >= totalPages) {
+    return;
+  }
+  matchCurrentPage += 1;
+  renderMatchesPage();
+});
 
 document.getElementById("btnRejectSelected").addEventListener("click", async () => {
-  const ids = [...document.querySelectorAll(".match-cb:checked")].map(cb => parseInt(cb.value));
+  const ids = [...selectedMatchIds];
   if (!ids.length) return;
   if (!confirm(`Mark ${ids.length} match(es) as false positive?`)) return;
   await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/update-false-positives`, {
@@ -652,12 +920,13 @@ document.getElementById("btnRejectSelected").addEventListener("click", async () 
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify({match_ids: ids})
   });
+  selectedMatchIds = new Set();
   loadContracts();
   loadMatches();
 });
 
 document.getElementById("btnAcceptSelected").addEventListener("click", async () => {
-  const ids = [...document.querySelectorAll(".match-cb:checked")].map(cb => parseInt(cb.value));
+  const ids = [...selectedMatchIds];
   if (!ids.length) return;
   if (!confirm(`Mark ${ids.length} match(es) as true match?`)) return;
   await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/update-true-matches`, {
@@ -665,6 +934,7 @@ document.getElementById("btnAcceptSelected").addEventListener("click", async () 
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify({match_ids: ids})
   });
+  selectedMatchIds = new Set();
   loadContracts();
   loadMatches();
 });

@@ -30,6 +30,7 @@ to_do:
 # preprocess
 to_do:
 - add more sophisticated logic in handling the match within the same contract.
+- I think I do have some logic already implemented in scoring.py to handle strict and explicit mode, but I think those might not be fully correct or sufficient, I will review and see what I want to do. most likely:
   - consider the pre-check's pre-check mode as a parameter when matched to same contract. If pair type fall as 'A', we will overwrite the match score based on pre-check mode
     - Default: on reduced manufacturer  
       - keep the original score

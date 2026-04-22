@@ -20,6 +20,7 @@ You are an expert supply-chain analyst reviewing potential duplicate items
 between a hospital's input item list and existing contract lines.
 
 For each pair you will receive:
+- Pair type: A, B, C, or D
 - INPUT item: description, manufacturer number, vendor catalog number, UOM, QOE, contract price
 - MATCH item: description, manufacturer number, vendor catalog number, UOM, QOE, contract price, source system
 
@@ -30,6 +31,11 @@ Consider:
 3. UOM and QOE compatibility, including known synonym packaging units across systems
 4. Contract price reasonableness relative to UOM and QOE; a large price gap can indicate that one side has the wrong item, wrong pack, or wrong record even if catalog numbers look similar
 
+Special rule for pair types A and C:
+- For pair type A and pair type C, the INPUT and MATCH must represent the same packaging, not just the same base product.
+- If they are the same product but sold in different packaging, pack size, UOM, or quantity-per-pack, you must REJECT.
+- Treat differences like BX 20 vs EA 1, CA vs BX, or other pack/count differences as different packaging unless the evidence clearly shows they are the exact same sellable pack.
+
 Do not accept a match only because the descriptions are broadly similar.
 Use all fields together. If UOM looks interchangeable but the contract price is materially inconsistent for the stated pack and quantity, prefer REJECT.
 For example, if both sides have the same vendor and manufacturer number and both have QOE 6, but one side is priced around 6 times higher than the other, that usually indicates they are not the same contract line and should be REJECTED.
@@ -39,21 +45,23 @@ Respond with a JSON object:
 """
 
 _USER_TEMPLATE = """\
+Pair Type: {pair_type}
+
 INPUT item:
   Description: {input_desc}
   Mfg Catalog #: {input_mfg}
   Vendor Catalog #: {input_vpn}
   UOM: {input_uom}
-    QOE: {input_qoe}
-    Contract Price: {input_price}
+  QOE: {input_qoe}
+  Contract Price: {input_price}
 
 MATCH item (source: {match_source}):
   Description: {match_desc}
-    Mfg Catalog #: {match_mfg}
-    Vendor Catalog #: {match_vpn}
+  Mfg Catalog #: {match_mfg}
+  Vendor Catalog #: {match_vpn}
   UOM: {match_uom}
-    QOE: {match_qoe}
-    Contract Price: {match_price}
+  QOE: {match_qoe}
+  Contract Price: {match_price}
   Similarity Score: {sim_score}
 
 Is this the same product?"""
@@ -69,6 +77,7 @@ def _build_messages(
         {
             "role": "user",
             "content": _USER_TEMPLATE.format(
+                pair_type=match_item.get("pair_type", ""),
                 input_desc=input_item.get("description", ""),
                 input_mfg=input_item.get("mfg_catalog_num", ""),
                 input_vpn=input_item.get("vendor_catalog_num", ""),
@@ -161,6 +170,33 @@ def _parse_response(content: str) -> dict:
         return {"decision": "REJECT", "confidence": 0, "reason": "LLM response parse error"}
 
 
+def _normalize_text(value) -> str:
+    return str(value or "").strip().upper()
+
+
+def _normalize_qoe(value) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        return str(int(float(text)))
+    except (TypeError, ValueError):
+        return text
+
+
+def _requires_same_packaging(pair_type: str) -> bool:
+    return _normalize_text(pair_type) in {"A", "C"}
+
+
+def _same_packaging(input_item: dict, match_item: dict) -> bool:
+    input_uom = _normalize_text(input_item.get("uom"))
+    match_uom = _normalize_text(match_item.get("uom"))
+    input_qoe = _normalize_qoe(input_item.get("qoe"))
+    match_qoe = _normalize_qoe(match_item.get("qoe"))
+
+    return bool(input_uom and match_uom and input_qoe and match_qoe and input_uom == match_uom and input_qoe == match_qoe)
+
+
 # ── Public API ──────────────────────────────────────────────────────────
 def review_match_pair(
     input_item: dict,
@@ -171,6 +207,13 @@ def review_match_pair(
     Returns ``{"decision": "ACCEPT"|"REJECT", "confidence": int, "reason": str}``.
     Falls back to REJECT if the API is unavailable or errors.
     """
+    if _requires_same_packaging(match_item.get("pair_type", "")) and not _same_packaging(input_item, match_item):
+        return {
+            "decision": "REJECT",
+            "confidence": 100,
+            "reason": "Pair type A/C requires the same packaging; UOM or QOE indicates a different pack.",
+        }
+
     client = _get_client()
     if client is None:
         return {"decision": "REJECT", "confidence": 0, "reason": "LLM unavailable"}

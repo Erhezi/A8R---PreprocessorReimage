@@ -341,7 +341,7 @@ def api_get_matches(task_id: str):
 
     Query params:
         bucket  — HIGH | MED | LOW
-        contract — contract number filter
+        contract — one or more contract number filters
         organization_eid — organization EID filter
         erp_vendor_id — ERP vendor ID filter
         source  — CCX | INFOR_CL
@@ -351,7 +351,11 @@ def api_get_matches(task_id: str):
     matches = task_repo.get_match_results(task_id, matched_source=source)
 
     bucket_filter = request.args.get("bucket", "").upper()
-    contract_filter = request.args.get("contract", "").upper()
+    contract_filters = {
+        value.upper()
+        for value in request.args.getlist("contract")
+        if value and value.strip()
+    }
     status_filter = request.args.get("status", "").upper()
     has_organization_filter = "organization_eid" in request.args
     has_vendor_filter = "erp_vendor_id" in request.args
@@ -366,7 +370,7 @@ def api_get_matches(task_id: str):
     for m in matches:
         if bucket_filter and (m.similarity_bucket or "").upper() != bucket_filter:
             continue
-        if contract_filter and (m.contract_number or "").upper() != contract_filter:
+        if contract_filters and (m.contract_number or "").upper() not in contract_filters:
             continue
         if has_organization_filter and _normalize_scope_value(m.organization_eid_matched) != organization_filter:
             continue
@@ -399,15 +403,31 @@ def api_get_item_matches(task_id: str):
     rows = []
     for match in task_repo.get_item_matches(task_id):
         input_item = item_by_id.get(match.item_id)
+        expected_buy_uom_option = None
+        buy_uom_match = None
+        if input_item and input_item.uom_to_match_infor and input_item.qoe:
+            expected_buy_uom_option = f"{str(input_item.uom_to_match_infor).strip().upper()}*{int(input_item.qoe)}"
+        if expected_buy_uom_option:
+            option_set = {
+                chunk.strip().upper()
+                for chunk in str(match.infor_buy_uom_options or "").split(",")
+                if chunk.strip()
+            }
+            buy_uom_match = expected_buy_uom_option in option_set
         rows.append(
             {
                 "match_item_id": match.match_item_id,
                 "input_item_id": match.item_id,
                 "input_uom": input_item.uom if input_item else None,
                 "input_uom_to_match_infor": input_item.uom_to_match_infor if input_item else None,
+                "input_qoe": input_item.qoe if input_item else None,
+                "expected_buy_uom_option": expected_buy_uom_option,
+                "buy_uom_match": buy_uom_match,
                 "input_description": input_item.description if input_item else None,
                 "infor_item_number": match.infor_item_number,
                 "item_description": match.item_description,
+                "infor_buy_uom_options": match.infor_buy_uom_options,
+                "active_gtin": match.active_gtin,
             }
         )
     return jsonify(rows)

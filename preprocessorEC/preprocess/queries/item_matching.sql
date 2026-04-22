@@ -136,5 +136,13 @@ SELECT
     iu.ValidForBuying
 FROM [DM_MONTYNT\dli2].[MDM_ITEMUOM] iu
 WHERE iu.Item = :item_number
-  AND UPPER(LTRIM(RTRIM(CONVERT(VARCHAR(50), iu.ValidForBuying)))) IN ('1', 'YES', 'Y', 'TRUE', 'DEFAULT')
+  AND iu.ValidForBuying IN ('Valid', 'Default')
 ORDER BY CAST(iu.UOMConversion AS INT), iu.UOMConversion;
+
+-- name: inactive_gtin_items
+-- Find items that have an inactive GTIN record.
+SELECT
+    gtin.Item,
+    gtin.Active AS ActiveGTIN
+FROM [DM_MONTYNT\dli2].[MDM_ITEMGTIN] gtin
+WHERE gtin.Active = 'No';

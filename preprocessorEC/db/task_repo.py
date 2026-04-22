@@ -286,6 +286,22 @@ def add_item_matches_bulk(matches: list[dict]) -> list[ItemMatchCandidate]:
         return db_matches
 
 
+def update_item_matches_bulk(updates: list[dict]) -> None:
+    with _session() as s:
+        for entry in updates:
+            match_item_id = entry.get("match_item_id") if isinstance(entry, dict) else None
+            if match_item_id is None:
+                continue
+            candidate = s.get(ItemMatchCandidate, match_item_id)
+            if not candidate:
+                continue
+            for key, value in entry.items():
+                if key != "match_item_id" and hasattr(candidate, key):
+                    setattr(candidate, key, value)
+            candidate.updated_at = ny_now()
+        s.commit()
+
+
 def get_item_matches(task_id: str) -> list[ItemMatchCandidate]:
     with _session() as s:
         matches = (
