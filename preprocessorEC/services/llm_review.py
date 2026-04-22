@@ -20,14 +20,19 @@ You are an expert supply-chain analyst reviewing potential duplicate items
 between a hospital's input item list and existing contract lines.
 
 For each pair you will receive:
-- INPUT item: description, manufacturer number, vendor catalog number, UOM
-- MATCH item: description, catalog numbers, UOM, source system
+- INPUT item: description, manufacturer number, vendor catalog number, UOM, QOE, contract price
+- MATCH item: description, manufacturer number, vendor catalog number, UOM, QOE, contract price, source system
 
 Decide whether the INPUT and MATCH represent the SAME physical product.
 Consider:
 1. Catalog / part number similarity (after normalisation)
-2. Description overlap (brand, size, material, quantity)
-3. UOM compatibility (e.g. BX vs CS with different QOE)
+2. Description overlap and whether both descriptions refer to the same physical item, size, formulation, packaging, and brand
+3. UOM and QOE compatibility, including known synonym packaging units across systems
+4. Contract price reasonableness relative to UOM and QOE; a large price gap can indicate that one side has the wrong item, wrong pack, or wrong record even if catalog numbers look similar
+
+Do not accept a match only because the descriptions are broadly similar.
+Use all fields together. If UOM looks interchangeable but the contract price is materially inconsistent for the stated pack and quantity, prefer REJECT.
+For example, if both sides have the same vendor and manufacturer number and both have QOE 6, but one side is priced around 6 times higher than the other, that usually indicates they are not the same contract line and should be REJECTED.
 
 Respond with a JSON object:
 {"decision": "ACCEPT" | "REJECT", "confidence": 0-100, "reason": "<one sentence>"}
@@ -39,11 +44,16 @@ INPUT item:
   Mfg Catalog #: {input_mfg}
   Vendor Catalog #: {input_vpn}
   UOM: {input_uom}
+    QOE: {input_qoe}
+    Contract Price: {input_price}
 
 MATCH item (source: {match_source}):
   Description: {match_desc}
-  Catalog Reference: {match_ref}
+    Mfg Catalog #: {match_mfg}
+    Vendor Catalog #: {match_vpn}
   UOM: {match_uom}
+    QOE: {match_qoe}
+    Contract Price: {match_price}
   Similarity Score: {sim_score}
 
 Is this the same product?"""
@@ -63,10 +73,15 @@ def _build_messages(
                 input_mfg=input_item.get("mfg_catalog_num", ""),
                 input_vpn=input_item.get("vendor_catalog_num", ""),
                 input_uom=input_item.get("uom", ""),
+                input_qoe=input_item.get("qoe", ""),
+                input_price=input_item.get("contract_price", ""),
                 match_source=match_item.get("matched_source", ""),
                 match_desc=match_item.get("description", ""),
-                match_ref=match_item.get("matched_item_ref", ""),
+                match_mfg=match_item.get("mfg_catalog_num", ""),
+                match_vpn=match_item.get("vendor_catalog_num", ""),
                 match_uom=match_item.get("uom", ""),
+                match_qoe=match_item.get("qoe", ""),
+                match_price=match_item.get("contract_price", ""),
                 sim_score=match_item.get("similarity_score", ""),
             ),
         },

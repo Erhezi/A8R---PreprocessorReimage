@@ -275,6 +275,30 @@ def api_update_false_positives(task_id: str):
     return jsonify({"updated": updated})
 
 
+@preprocess_bp.route("/api/preprocess/<task_id>/update-true-matches", methods=["POST"])
+@login_required
+def api_update_true_matches(task_id: str):
+    """Mark selected match_ids as ACCEPTED (true match).
+
+    Body: {"match_ids": [1, 2, 3]}
+    """
+    data = request.get_json(force=True)
+    match_ids = data.get("match_ids", [])
+    if not match_ids or not isinstance(match_ids, list):
+        return jsonify({"error": "match_ids list required"}), 400
+
+    user = current_user.username if current_user.is_authenticated else "system"
+    updated = 0
+    for mid in match_ids:
+        try:
+            task_repo.update_match_decision(int(mid), "ACCEPTED", user)
+            updated += 1
+        except (ValueError, TypeError):
+            continue
+
+    return jsonify({"updated": updated})
+
+
 @preprocess_bp.route("/api/preprocess/<task_id>/toggle-contract", methods=["POST"])
 @login_required
 def api_toggle_contract(task_id: str):

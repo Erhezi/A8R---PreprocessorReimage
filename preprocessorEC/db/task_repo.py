@@ -444,25 +444,26 @@ def _parse_ccx_pkid_list(value: Optional[str]) -> list[int]:
 
 
 def _aggregate_cascade_status(source_matches: list[MatchResult]) -> str:
-    statuses = {(match.match_status or "PENDING").upper() for match in source_matches}
-    if "ACCEPTED" in statuses:
-        return "ACCEPTED"
-    if statuses == {"REJECTED"}:
-        return "REJECTED"
-    return "PENDING"
+    if not source_matches:
+        return "PENDING"
+    if len(source_matches) > 1:
+        return "PENDING"
+    return (source_matches[0].match_status or "PENDING").upper()
 
 
 def _aggregate_cascade_bucket(source_matches: list[MatchResult]) -> Optional[str]:
     priority = {"HIGH": 3, "MED": 2, "LOW": 1}
-    best_bucket = None
-    best_score = -1
+    selected_bucket = None
+    selected_score = None
     for match in source_matches:
         bucket = (match.similarity_bucket or "").upper()
         score = priority.get(bucket, 0)
-        if score > best_score:
-            best_bucket = bucket or None
-            best_score = score
-    return best_bucket
+        if score <= 0:
+            continue
+        if selected_score is None or score < selected_score:
+            selected_bucket = bucket or None
+            selected_score = score
+    return selected_bucket
 
 
 _UNSET = object()
@@ -519,6 +520,7 @@ def update_match_decision(
                         s.query(MatchResult)
                         .filter(
                             MatchResult.task_id == mr.task_id,
+                            MatchResult.input_item_id == linked.input_item_id,
                             MatchResult.matched_source == "CCX",
                             MatchResult.ccx_pkid.in_(sorted(effective_pkids)),
                         )

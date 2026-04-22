@@ -318,12 +318,17 @@ def run_llm_review(task_id: str, state_machine: TaskStateMachine) -> dict:
             "mfg_catalog_num": item.mfg_catalog_num or "",
             "vendor_catalog_num": item.vendor_catalog_num or "",
             "uom": item.uom or "",
+            "qoe": item.qoe,
+            "contract_price": float(item.unit_price) if item.unit_price is not None else None,
         }
         match_dict = {
             "matched_source": match.matched_source,
-            "description": match.matched_item_ref or "",
-            "matched_item_ref": match.matched_item_ref or "",
-            "uom": "",
+            "description": match.item_desc_matched or "",
+            "mfg_catalog_num": match.manufacturer_number_matched or "",
+            "vendor_catalog_num": match.vendor_item_matched or "",
+            "uom": match.uom_matched or "",
+            "qoe": match.qoe_matched,
+            "contract_price": float(match.contract_price_matched) if match.contract_price_matched is not None else None,
             "similarity_score": match.similarity_score,
         }
         result = review_match_pair(input_dict, match_dict)
@@ -341,10 +346,10 @@ def run_llm_review(task_id: str, state_machine: TaskStateMachine) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Step 4 -- Infor Cascade (via accepted CCX pkids)
+# Step 4 -- Infor Cascade (via CCX pkids)
 # ---------------------------------------------------------------------------
 def run_infor_cascade(task_id: str, state_machine: TaskStateMachine) -> dict:
-    """Fetch Infor contract lines linked to accepted CCX matches.
+    """Fetch Infor contract lines linked to CCX matches.
 
     Uses CCX_pkid to find corresponding Infor rows in
     InforActiveCLRefCCXSyncedCL.
@@ -354,8 +359,12 @@ def run_infor_cascade(task_id: str, state_machine: TaskStateMachine) -> dict:
     state_machine.save_state(task_id, state)
     task_repo.update_task_phase(task_id, Phase.PREPROCESS, Status.INFOR_MATCHING)
 
-    accepted_pkids = task_repo.get_accepted_ccx_pkids(task_id)
-    if not accepted_pkids:
+    ccx_matches = [m for m in task_repo.get_match_results(task_id, matched_source="CCX") if m.ccx_pkid]
+    if not ccx_matches:
+        return {"infor_lines": 0}
+
+    cascade_pkids = sorted({match.ccx_pkid for match in ccx_matches if match.ccx_pkid is not None})
+    if not cascade_pkids:
         return {"infor_lines": 0}
 
     input_items = task_repo.get_items_by_source(task_id, "INPUT")
@@ -371,11 +380,10 @@ def run_infor_cascade(task_id: str, state_machine: TaskStateMachine) -> dict:
         # SQLAlchemy text() with IN requires expanding bindparam
         from sqlalchemy import bindparam
         bound_query = query.bindparams(bindparam("ccx_pkids", expanding=True))
-        rows = sess.execute(bound_query, {"ccx_pkids": accepted_pkids, "org_eid": org_eid}).mappings().all()
+        rows = sess.execute(bound_query, {"ccx_pkids": cascade_pkids, "org_eid": org_eid}).mappings().all()
 
         # Map every task CCX pkid to the task rows that matched it so a single
         # Infor line can carry all CCX source rows for the same input item.
-        ccx_matches = [m for m in task_repo.get_match_results(task_id, matched_source="CCX") if m.ccx_pkid]
         ccx_matches_by_pkid: dict[int, list] = {}
         for match in ccx_matches:
             ccx_matches_by_pkid.setdefault(match.ccx_pkid, []).append(match)
@@ -401,8 +409,6 @@ def run_infor_cascade(task_id: str, state_machine: TaskStateMachine) -> dict:
             if not ccx_pkid:
                 continue
             for source_match in ccx_matches_by_pkid.get(ccx_pkid, []):
-                if source_match.match_status != "ACCEPTED":
-                    continue
                 infor_pkid = row.get("Infor_pkid")
                 if not infor_pkid:
                     continue
@@ -410,10 +416,10 @@ def run_infor_cascade(task_id: str, state_machine: TaskStateMachine) -> dict:
 
         for (input_item_id, infor_pkid), row_sources in grouped_rows.items():
             lineage_pkids = sorted(lineage_by_key.get((input_item_id, infor_pkid), set()))
-            accepted_sources = [source_match for _row, source_match in row_sources]
+            source_matches = [source_match for _row, source_match in row_sources]
             primary_match = min(
-                accepted_sources,
-                key=lambda match: (-_bucket_priority(match.similarity_bucket), match.ccx_pkid or 0, match.match_id),
+                source_matches,
+                key=lambda match: ((_bucket_priority(match.similarity_bucket) or 99), match.ccx_pkid or 0, match.match_id),
             )
             primary_row = next(row for row, source_match in row_sources if source_match.match_id == primary_match.match_id)
 
@@ -432,9 +438,9 @@ def run_infor_cascade(task_id: str, state_machine: TaskStateMachine) -> dict:
                 "infor_pkid": infor_pkid,
                 "ccx_pkid": primary_match.ccx_pkid,
                 "ccx_pkids_matched": ", ".join(str(pkid) for pkid in lineage_pkids) or None,
-                "match_status": primary_match.match_status,
+                "match_status": task_repo._aggregate_cascade_status(source_matches),
                 "similarity_score": None,
-                "similarity_bucket": primary_match.similarity_bucket,
+                "similarity_bucket": task_repo._aggregate_cascade_bucket(source_matches),
                 **_build_matched_snapshot(primary_row, "INFOR_CL"),
             })
 
@@ -586,12 +592,17 @@ def run_infor_residue_llm_review(task_id: str, state_machine: TaskStateMachine) 
             "mfg_catalog_num": item.mfg_catalog_num or "",
             "vendor_catalog_num": item.vendor_catalog_num or "",
             "uom": item.uom or "",
+            "qoe": item.qoe,
+            "contract_price": float(item.unit_price) if item.unit_price is not None else None,
         }
         match_dict = {
             "matched_source": match.matched_source,
-            "description": match.matched_item_ref or "",
-            "matched_item_ref": match.matched_item_ref or "",
-            "uom": "",
+            "description": match.item_desc_matched or "",
+            "mfg_catalog_num": match.manufacturer_number_matched or "",
+            "vendor_catalog_num": match.vendor_item_matched or "",
+            "uom": match.uom_matched or "",
+            "qoe": match.qoe_matched,
+            "contract_price": float(match.contract_price_matched) if match.contract_price_matched is not None else None,
             "similarity_score": match.similarity_score,
         }
         result = review_match_pair(input_dict, match_dict)

@@ -117,22 +117,27 @@
     <div class="card-body p-0">
       <div class="d-flex justify-content-between align-items-center px-3 py-2 border-bottom bg-light">
         <span id="matchCount" class="small text-muted">0 matches</span>
-        <button class="btn btn-sm btn-outline-danger" id="btnRejectSelected" disabled>Mark Selected as False Positive</button>
+        <div class="d-flex gap-2">
+          <button class="btn btn-sm btn-outline-success" id="btnAcceptSelected" disabled>Mark Selected as True Match</button>
+          <button class="btn btn-sm btn-outline-danger" id="btnRejectSelected" disabled>Mark Selected as False Positive</button>
+        </div>
       </div>
       <div class="table-responsive" style="max-height:600px; overflow-y:auto">
         <table class="table table-sm table-hover mb-0">
           <thead class="table-light" style="position:sticky;top:0;z-index:1">
             <tr>
               <th><input type="checkbox" id="selectAll"></th>
-              <th>Input ID</th><th>Input MFN</th><th>Input Desc</th>
-              <th>Match Ref</th><th>Contract</th><th>Source</th>
-              <th>Pair</th><th>Score</th>
-              <th>MFN</th><th>UOM</th><th>Desc</th><th>Price</th>
-              <th>Bucket</th><th>Status</th><th>LLM Conf</th><th>LLM Reason</th>
+              <th>Input ID</th><th>Input MFN</th><th>Matched MFN</th>
+              <th>Input VPN</th><th>Matched VPN</th>
+              <th>Input UOM</th><th>Matched UOM</th><th>Input QOE</th><th>Matched QOE</th>
+              <th>Input Price</th><th>Matched Price</th>
+              <th>Input EA Price</th><th>Matched EA Price</th>
+              <th>Score</th><th>Bucket</th><th>Status</th><th>Source</th>
+              <th>Input Desc.</th><th>Matched Desc.</th><th>Contract</th><th>Match Type</th><th>Pair Type</th>
             </tr>
           </thead>
           <tbody id="matchBody">
-            <tr><td colspan="17" class="text-center text-muted">No results yet</td></tr>
+            <tr><td colspan="21" class="text-center text-muted">No results yet</td></tr>
           </tbody>
         </table>
       </div>
@@ -346,7 +351,7 @@ async function loadMatches() {
 
   const tbody = document.getElementById("matchBody");
   if (!matches.length) {
-    tbody.innerHTML = '<tr><td colspan="17" class="text-center text-muted">No matches</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="23" class="text-center text-muted">No matches</td></tr>';
     return;
   }
 
@@ -355,42 +360,54 @@ async function loadMatches() {
       <td><input type="checkbox" class="match-cb" value="${m.match_id}"></td>
       <td>${m.input_item_id}</td>
       <td class="text-truncate" style="max-width:120px" title="${esc(m.input_mfg_catalog_num)}">${esc(m.input_mfg_catalog_num || '-')}</td>
-      <td class="text-truncate" style="max-width:180px" title="${esc(m.input_description)}">${esc(m.input_description || '-')}</td>
-      <td class="text-truncate" style="max-width:140px" title="${esc(m.matched_item_ref)}">${esc(m.matched_item_ref || '-')}</td>
-      <td>${esc(m.contract_number || '-')}</td>
-      <td><span class="badge bg-info">${m.matched_source}</span></td>
-      <td>${m.pair_type || '-'}</td>
-      <td>${n(m.similarity_score, 1)}</td>
-      <td>${n(m.mfn_score, 2)}</td>
-      <td>${n(m.uom_score, 2)}</td>
-      <td>${n(m.desc_score, 2)}</td>
-      <td>${n(m.price_score, 2)}</td>
+      <td class="text-truncate" style="max-width:120px" title="${esc(m.manufacturer_number_matched)}">${esc(m.manufacturer_number_matched || '-')}</td>
+      <td class="text-truncate" style="max-width:120px" title="${esc(m.input_vendor_catalog_num)}">${esc(m.input_vendor_catalog_num || '-')}</td>
+      <td class="text-truncate" style="max-width:120px" title="${esc(m.vendor_item_matched)}">${esc(m.vendor_item_matched || '-')}</td>
+      <td>${esc(m.input_uom || '-')}</td>
+      <td>${esc(m.uom_matched || '-')}</td>
+      <td>${esc(m.input_qoe || '-')}</td>
+      <td>${esc(m.qoe_matched || '-')}</td>
+      <td title="${currencyTitle(m.input_unit_price)}">${currency(m.input_unit_price)}</td>
+      <td title="${currencyTitle(m.contract_price_matched)}">${currency(m.contract_price_matched)}</td>
+      <td title="${currencyTitle(m.input_ea_price)}">${currency(m.input_ea_price)}</td>
+      <td title="${currencyTitle(m.match_ea_price)}">${currency(m.match_ea_price)}</td>
+      <td>${percent(m.similarity_score)}</td>
       <td><span class="badge bg-${bucketColor(m.similarity_bucket)}">${m.similarity_bucket || '-'}</span></td>
-      <td><span class="badge bg-${statusColor(m.match_status)}">${m.match_status}</span></td>
-      <td>${m.llm_confidence != null ? esc(String(m.llm_confidence)) : '-'}</td>
-      <td class="text-truncate" style="max-width:260px" title="${esc(m.llm_reason)}">${esc(m.llm_reason || '-')}</td>
+      <td><span class="badge bg-${statusColor(m.match_status)}">${m.match_status || '-'}</span></td>
+      <td><span class="badge bg-info">${m.matched_source}</span></td>
+      <td class="text-truncate" style="max-width:220px" title="${esc(m.input_description)}">${esc(m.input_description || '-')}</td>
+      <td class="text-truncate" style="max-width:220px" title="${esc(m.item_desc_matched)}">${esc(m.item_desc_matched || '-')}</td>
+      <td class="text-truncate" style="max-width:160px" title="${esc(m.contract_number)}">${esc(m.contract_number || '-')}</td>
+      <td>${esc(m.match_type || '-')}</td>
+      <td>${esc(m.pair_type || '-')}</td>
     </tr>
   `).join("");
 
-  updateRejectButton();
+  updateSelectionButtons();
 }
 
 function esc(s) { if (!s) return ''; const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 function n(v, dp) { return v != null ? Number(v).toFixed(dp) : '-'; }
+function percent(v) { return v != null ? `${Number(v).toFixed(1)}%` : '-'; }
+function currency(v) { return v != null ? `$${Number(v).toFixed(2)}` : '-'; }
+function currencyTitle(v) { return v != null ? `$${Number(v).toFixed(4)}` : ''; }
 function bucketColor(b) { return b === 'HIGH' ? 'success' : b === 'MED' ? 'warning' : 'secondary'; }
 function statusColor(s) { return s === 'ACCEPTED' ? 'success' : s === 'REJECTED' ? 'danger' : 'warning'; }
 
-function updateRejectButton() {
+function updateSelectionButtons() {
   const checked = document.querySelectorAll(".match-cb:checked").length;
-  const btn = document.getElementById("btnRejectSelected");
-  btn.disabled = checked === 0;
-  btn.textContent = checked > 0 ? `Mark ${checked} as False Positive` : "Mark Selected as False Positive";
+  const rejectBtn = document.getElementById("btnRejectSelected");
+  const acceptBtn = document.getElementById("btnAcceptSelected");
+  rejectBtn.disabled = checked === 0;
+  acceptBtn.disabled = checked === 0;
+  rejectBtn.textContent = checked > 0 ? `Mark ${checked} as False Positive` : "Mark Selected as False Positive";
+  acceptBtn.textContent = checked > 0 ? `Mark ${checked} as True Match` : "Mark Selected as True Match";
 }
 
-document.getElementById("matchBody").addEventListener("change", updateRejectButton);
+document.getElementById("matchBody").addEventListener("change", updateSelectionButtons);
 document.getElementById("selectAll").addEventListener("change", (e) => {
   document.querySelectorAll(".match-cb").forEach(cb => cb.checked = e.target.checked);
-  updateRejectButton();
+  updateSelectionButtons();
 });
 
 document.getElementById("btnFilterMatches").addEventListener("click", loadMatches);
@@ -400,6 +417,19 @@ document.getElementById("btnRejectSelected").addEventListener("click", async () 
   if (!ids.length) return;
   if (!confirm(`Mark ${ids.length} match(es) as false positive?`)) return;
   await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/update-false-positives`, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({match_ids: ids})
+  });
+  loadContracts();
+  loadMatches();
+});
+
+document.getElementById("btnAcceptSelected").addEventListener("click", async () => {
+  const ids = [...document.querySelectorAll(".match-cb:checked")].map(cb => parseInt(cb.value));
+  if (!ids.length) return;
+  if (!confirm(`Mark ${ids.length} match(es) as true match?`)) return;
+  await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/update-true-matches`, {
     method: "POST",
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify({match_ids: ids})
