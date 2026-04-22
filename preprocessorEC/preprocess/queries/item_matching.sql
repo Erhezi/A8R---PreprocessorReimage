@@ -32,6 +32,16 @@ WHERE icl.CCX_pkid IN :ccx_pkids
       OR icl.OrganizationEID IN (:org_eid, '105188574')
   );
 
+-- name: infor_linked_pkids_by_ccx_pkids
+-- Fetch all linked Infor pkids for a set of CCX pkids.
+-- One CCX pkid can map to multiple Infor pkids in rare cases.
+SELECT DISTINCT
+    link.CCX_pkid,
+    link.Infor_pkid
+FROM [Preprocessor].[CCXInforMatchedLink] link
+WHERE link.CCX_pkid IN :ccx_pkids
+  AND link.Infor_pkid IS NOT NULL;
+
 -- name: infor_residue_match
 -- Infor residue: Infor lines with NULL CCX_pkid (no CCX match).
 -- Match by reduced mfg or vendor number against INPUT items.

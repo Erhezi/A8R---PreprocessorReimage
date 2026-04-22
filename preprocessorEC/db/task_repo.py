@@ -465,6 +465,9 @@ def _aggregate_cascade_bucket(source_matches: list[MatchResult]) -> Optional[str
     return best_bucket
 
 
+_UNSET = object()
+
+
 def get_items_by_source(task_id: str, source_dataset: str) -> list[TaskItem]:
     """Fetch items for a task filtered by source_dataset (INPUT | CCX | INFOR)."""
     with _session() as s:
@@ -479,13 +482,23 @@ def get_items_by_source(task_id: str, source_dataset: str) -> list[TaskItem]:
         return items
 
 
-def update_match_decision(match_id: int, match_status: str, reviewed_by: str) -> None:
+def update_match_decision(
+    match_id: int,
+    match_status: str,
+    reviewed_by: str,
+    llm_confidence: Optional[int] | object = _UNSET,
+    llm_reason: Optional[str] | object = _UNSET,
+) -> None:
     with _session() as s:
         mr = s.get(MatchResult, match_id)
         if mr:
             mr.match_status = match_status
             mr.reviewed_by = reviewed_by
             mr.reviewed_at = ny_now()
+            if llm_confidence is not _UNSET:
+                mr.llm_confidence = llm_confidence
+            if llm_reason is not _UNSET:
+                mr.llm_reason = llm_reason
 
             if mr.matched_source == "CCX" and mr.ccx_pkid is not None:
                 linked_rows = (

@@ -21,3 +21,16 @@ fixed: 2026-04-20
 
 to_to:
 - the UOM to Match Infor column on Items table currently is showing togather with UOM, and I need to see if the edit is functioning on which UOM column. maybe I should also add visual color so highlight the difference between the two UOM columns.
+
+# preprocess
+to_do:
+- add more sophisticated logic in handling the match within the same contract.
+  - consider the pre-check's pre-check mode as a parameter when matched to same contract. If pair type fall as 'A', we will overwrite the match score based on pre-check mode
+    - Default: on reduced manufacturer  
+      - keep the original score
+    - Strict: on manufacturer part number   
+      - if the manufacturer part number is not exactly the same, downgrade the score to 0 else keep the original score
+    - Explicit: on manufacturer part number + UOM      
+      - if the manufacturer part number or UOM is not exactly the same, downgrade the score to 0 else keep the original score
+    - Distributor: on vendor part number (only offer this to distributor contract), trigger WARN if the reduced vendor part number is the same.            
+      - if the reduced vendor part number is not exactly the same, downgrade the score to 0 else trigger WARN else keep the original score

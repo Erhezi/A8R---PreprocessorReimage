@@ -301,16 +301,38 @@ def compute_similarities_batch(
     if not match_descriptions:
         return []
 
+    input_norm = str(desc_input or "").strip().lower()
+    exact_match_scores: list[Optional[float]] = []
+    unresolved_indices: list[int] = []
+    unresolved_descriptions: list[str] = []
+
+    for index, description in enumerate(match_descriptions):
+        description_norm = str(description or "").strip().lower()
+        if input_norm and description_norm and input_norm == description_norm:
+            exact_match_scores.append(1.0)
+        else:
+            exact_match_scores.append(None)
+            unresolved_indices.append(index)
+            unresolved_descriptions.append(description)
+
+    if not unresolved_descriptions:
+        return [score if score is not None else 0.0 for score in exact_match_scores]
+
     if model is None:
         model = _get_model()
 
     if model is not None:
-        all_texts = [desc_input] + match_descriptions
+        all_texts = [desc_input] + unresolved_descriptions
         embeddings = model.encode(all_texts)
         input_vec = embeddings[0]
-        return [float(_cosine(input_vec, embeddings[i + 1])) for i in range(len(match_descriptions))]
+        resolved_scores = [float(_cosine(input_vec, embeddings[i + 1])) for i in range(len(unresolved_descriptions))]
+        for index, score in zip(unresolved_indices, resolved_scores):
+            exact_match_scores[index] = score
+        return [score if score is not None else 0.0 for score in exact_match_scores]
 
-    return [_token_overlap(desc_input or "", d or "") for d in match_descriptions]
+    for index, description in zip(unresolved_indices, unresolved_descriptions):
+        exact_match_scores[index] = _token_overlap(desc_input or "", description or "")
+    return [score if score is not None else 0.0 for score in exact_match_scores]
 
 
 # =====================================================================

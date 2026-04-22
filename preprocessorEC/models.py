@@ -283,12 +283,15 @@ class MatchResult(Base):
     match_status = Column(String(20), nullable=False, default="PENDING")  # PENDING | ACCEPTED | REJECTED | LLM_REVIEW
     reviewed_by = Column(String(120), nullable=True)
     reviewed_at = Column(DateTime, nullable=True)
+    llm_confidence = Column(Integer, nullable=True)
+    llm_reason = Column(Text, nullable=True)
 
     # Phase 3 — contract grouping and match details
     contract_number = Column(String(100), nullable=True)
     match_type = Column(String(20), nullable=True)  # EXACT_MFG | REDUCED_MFG | REDUCED_VPN | CROSS_MATCH
     ccx_pkid = Column(Integer, nullable=True)
     ccx_pkids_matched = Column(String(255), nullable=True)
+    infor_pkids_matched = Column(String(255), nullable=True)
     infor_pkid = Column(String(31), nullable=True)
     contract_id_matched = Column(String(100), nullable=True)
     organization_eid_matched = Column(String(10), nullable=True)
@@ -332,10 +335,13 @@ class MatchResult(Base):
             "match_status": self.match_status,
             "reviewed_by": self.reviewed_by,
             "reviewed_at": self.reviewed_at.isoformat() if self.reviewed_at else None,
+            "llm_confidence": self.llm_confidence,
+            "llm_reason": self.llm_reason,
             "contract_number": self.contract_number,
             "match_type": self.match_type,
             "ccx_pkid": self.ccx_pkid,
             "ccx_pkids_matched": self.ccx_pkids_matched,
+            "infor_pkids_matched": self.infor_pkids_matched,
             "infor_pkid": self.infor_pkid,
             "contract_id_matched": self.contract_id_matched,
             "organization_eid_matched": self.organization_eid_matched,

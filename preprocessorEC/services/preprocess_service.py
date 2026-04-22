@@ -130,12 +130,16 @@ def run_sku_matching(task_id: str, state_machine: TaskStateMachine) -> dict:
     }
     query_name = query_map.get(contract_type, "ccx_match_manufacturer")
     query = load_query("preprocess", "dup_detection", query=query_name)
+    linked_infor_query = load_query("preprocess", "item_matching", query="infor_linked_pkids_by_ccx_pkids")
 
     # all items in a task share the same org
     org_eid = getattr(input_items[0], "organization_eid", None) or MHS_ORG_EID
 
     all_matches = []
     with _sql_session() as sess:
+        from sqlalchemy import bindparam
+
+        linked_infor_query = linked_infor_query.bindparams(bindparam("ccx_pkids", expanding=True))
         for item in input_items:
             reduced_mfg = reduce_catalog_number(item.mfg_catalog_num)
             reduced_vpn = reduce_catalog_number(item.vendor_catalog_num)
@@ -149,6 +153,16 @@ def run_sku_matching(task_id: str, state_machine: TaskStateMachine) -> dict:
                 "org_eid": org_eid,
             }
             rows = sess.execute(query, params).mappings().all()
+            ccx_pkids = sorted({row.get("CCX_pkid") for row in rows if row.get("CCX_pkid") is not None})
+            linked_infor_by_ccx_pkid: dict[int, list[str]] = {}
+            if ccx_pkids:
+                linked_rows = sess.execute(linked_infor_query, {"ccx_pkids": ccx_pkids}).mappings().all()
+                for linked_row in linked_rows:
+                    ccx_pkid = linked_row.get("CCX_pkid")
+                    infor_pkid = linked_row.get("Infor_pkid")
+                    if ccx_pkid is None or not infor_pkid:
+                        continue
+                    linked_infor_by_ccx_pkid.setdefault(ccx_pkid, []).append(str(infor_pkid))
 
             for row in rows:
                 # Determine pair type for this match
@@ -190,6 +204,7 @@ def run_sku_matching(task_id: str, state_machine: TaskStateMachine) -> dict:
 
                 match_type = row.get("match_type", "REDUCED_MFG")
                 bucket = scores["similarity_bucket"]
+                linked_infor_pkids = sorted(set(linked_infor_by_ccx_pkid.get(row.get("CCX_pkid"), [])))
 
                 all_matches.append({
                     "input_item_id": item.item_id,
@@ -201,6 +216,7 @@ def run_sku_matching(task_id: str, state_machine: TaskStateMachine) -> dict:
                     "contract_number": row.get("ContractID", ""),
                     "match_type": match_type,
                     "ccx_pkid": row.get("CCX_pkid"),
+                    "infor_pkids_matched": ", ".join(linked_infor_pkids) or None,
                     "pair_type": pt,
                     "mfn_score": scores["mfn_score"],
                     "mfn_complexity": scores["mfn_complexity"],
@@ -312,7 +328,13 @@ def run_llm_review(task_id: str, state_machine: TaskStateMachine) -> dict:
         }
         result = review_match_pair(input_dict, match_dict)
         new_status = "ACCEPTED" if result["decision"] == "ACCEPT" else "REJECTED"
-        task_repo.update_match_decision(match.match_id, new_status, "LLM")
+        task_repo.update_match_decision(
+            match.match_id,
+            new_status,
+            "LLM",
+            llm_confidence=result.get("confidence"),
+            llm_reason=result.get("reason"),
+        )
         reviewed += 1
 
     return {"reviewed": reviewed}
@@ -478,7 +500,7 @@ def run_infor_residue(task_id: str, state_machine: TaskStateMachine) -> dict:
                     mfn_input=item.mfg_catalog_num or "",
                     mfn_match=row.get("mfg_catalog_num_infor", ""),
                     desc_input=item.description or "",
-                    desc_match=row.get("description", "") or "",
+                    desc_match=row.get("ItemDescription_Infor", "") or "",
                     uom_input=item.uom or "",
                     uom_match=row.get("uom_infor", ""),
                     qoe_input=item.qoe,
@@ -574,7 +596,13 @@ def run_infor_residue_llm_review(task_id: str, state_machine: TaskStateMachine) 
         }
         result = review_match_pair(input_dict, match_dict)
         new_status = "ACCEPTED" if result["decision"] == "ACCEPT" else "REJECTED"
-        task_repo.update_match_decision(match.match_id, new_status, "LLM")
+        task_repo.update_match_decision(
+            match.match_id,
+            new_status,
+            "LLM",
+            llm_confidence=result.get("confidence"),
+            llm_reason=result.get("reason"),
+        )
         reviewed += 1
 
     return {"reviewed": reviewed}

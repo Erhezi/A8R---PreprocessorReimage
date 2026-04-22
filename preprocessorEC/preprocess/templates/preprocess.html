@@ -128,11 +128,11 @@
               <th>Match Ref</th><th>Contract</th><th>Source</th>
               <th>Pair</th><th>Score</th>
               <th>MFN</th><th>UOM</th><th>Desc</th><th>Price</th>
-              <th>Bucket</th><th>Status</th>
+              <th>Bucket</th><th>Status</th><th>LLM Conf</th><th>LLM Reason</th>
             </tr>
           </thead>
           <tbody id="matchBody">
-            <tr><td colspan="15" class="text-center text-muted">No results yet</td></tr>
+            <tr><td colspan="17" class="text-center text-muted">No results yet</td></tr>
           </tbody>
         </table>
       </div>
@@ -346,7 +346,7 @@ async function loadMatches() {
 
   const tbody = document.getElementById("matchBody");
   if (!matches.length) {
-    tbody.innerHTML = '<tr><td colspan="15" class="text-center text-muted">No matches</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="17" class="text-center text-muted">No matches</td></tr>';
     return;
   }
 
@@ -367,6 +367,8 @@ async function loadMatches() {
       <td>${n(m.price_score, 2)}</td>
       <td><span class="badge bg-${bucketColor(m.similarity_bucket)}">${m.similarity_bucket || '-'}</span></td>
       <td><span class="badge bg-${statusColor(m.match_status)}">${m.match_status}</span></td>
+      <td>${m.llm_confidence != null ? esc(String(m.llm_confidence)) : '-'}</td>
+      <td class="text-truncate" style="max-width:260px" title="${esc(m.llm_reason)}">${esc(m.llm_reason || '-')}</td>
     </tr>
   `).join("");
 
