@@ -15,17 +15,97 @@ Jinja:
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 from flask import jsonify, request, render_template, abort
 from flask_login import login_required, current_user
+from sqlalchemy import inspect, text
 
 from . import preprocess_bp
 from ..db import task_repo, workstate_repo
+from ..db.engine import get_sqlserver_engine
 from ..services import preprocess_service
 from ..state import TaskStateMachine
 
 
 def _sm() -> TaskStateMachine:
     return TaskStateMachine(task_repo, workstate_repo)
+
+
+def _normalize_scope_value(value: str | None) -> str:
+    return (value or "").strip().upper()
+
+
+@lru_cache(maxsize=1)
+def _get_ccx_line_count_column() -> str | None:
+    columns = {
+        column["name"]
+        for column in inspect(get_sqlserver_engine()).get_columns(
+            "CCXSyncedContractLineCnt",
+            schema="Preprocessor",
+        )
+    }
+    if "LineCnt_CCX" in columns:
+        return "LineCnt_CCX"
+    if "LineCnt_Infor" in columns:
+        return "LineCnt_Infor"
+    return None
+
+
+def _fetch_contract_lookup(conn, matched_source: str, organization_eid: str, contract_id: str, erp_vendor_id: str) -> dict:
+    if not matched_source or not organization_eid or not contract_id or not erp_vendor_id:
+        return {}
+
+    if matched_source == "CCX":
+        line_count_column = _get_ccx_line_count_column()
+        if not line_count_column:
+            return {}
+        stmt = text(
+            f"""
+            SELECT
+                [{line_count_column}] AS total_lines,
+                [Manufacturer] AS mf_name,
+                [Vendor] AS vendor_name,
+                [ContractDescription] AS contract_description
+            FROM [Preprocessor].[CCXSyncedContractLineCnt]
+            WHERE OrganizationEID = :organization_eid
+              AND ContractID = :contract_id
+              AND ERPVendorID = :erp_vendor_id
+            """
+        )
+    elif matched_source == "INFOR_CL":
+        stmt = text(
+            """
+            SELECT
+                [LineCnt_Infor] AS total_lines,
+                [ManufacturerName_Infor] AS mf_name,
+                [VendorName_Infor] AS vendor_name,
+                [ContractDescription_Infor] AS contract_description
+            FROM [Preprocessor].[InforActiveContractLineCnt]
+            WHERE OrganizationEID = :organization_eid
+              AND ContractID = :contract_id
+              AND ERPVendorID_Infor = :erp_vendor_id
+            """
+        )
+    else:
+        return {}
+
+    row = conn.execute(
+        stmt,
+        {
+            "organization_eid": organization_eid,
+            "contract_id": contract_id,
+            "erp_vendor_id": erp_vendor_id,
+        },
+    ).mappings().first()
+    if not row:
+        return {}
+    return {
+        "total_lines": row.get("total_lines"),
+        "mf_name": row.get("mf_name"),
+        "vendor_name": row.get("vendor_name"),
+        "contract_description": row.get("contract_description"),
+    }
 
 
 @preprocess_bp.route("/api/preprocess/<task_id>/run", methods=["POST"])
@@ -67,12 +147,24 @@ def api_get_contracts(task_id: str):
 def api_contract_decision(task_id: str):
     data = request.get_json(force=True)
     contract_number = data.get("contract_number")
+    has_organization_eid = "organization_eid" in data
+    has_erp_vendor_id = "erp_vendor_id" in data
+    organization_eid = data.get("organization_eid")
+    erp_vendor_id = data.get("erp_vendor_id")
     include = data.get("include", True)
     if not contract_number:
         return jsonify({"error": "contract_number required"}), 400
+    if not has_organization_eid or not has_erp_vendor_id:
+        return jsonify({"error": "organization_eid and erp_vendor_id required"}), 400
     user = current_user.username if current_user.is_authenticated else "system"
     result = preprocess_service.submit_contract_decision(
-        task_id, contract_number, include, user, _sm()
+        task_id,
+        contract_number,
+        organization_eid,
+        erp_vendor_id,
+        include,
+        user,
+        _sm(),
     )
     return jsonify(result)
 
@@ -175,32 +267,61 @@ def api_finalize(task_id: str):
 def api_contract_summary(task_id: str):
     """Return contract-level match summary with per-bucket counts."""
     matches = task_repo.get_match_results(task_id)
-    contracts: dict[str, dict] = {}
-    for m in matches:
-        cid = m.contract_number or "__no_contract__"
-        if cid not in contracts:
-            contracts[cid] = {
-                "contract_id": cid,
-                "total": 0, "high": 0, "med": 0, "low": 0,
-                "accepted": 0, "rejected": 0, "pending": 0,
-                "included": True,
-            }
-        c = contracts[cid]
-        c["total"] += 1
-        bucket = (m.similarity_bucket or "LOW").upper()
-        if bucket == "HIGH":
-            c["high"] += 1
-        elif bucket == "MED":
-            c["med"] += 1
-        else:
-            c["low"] += 1
-        status = (m.match_status or "PENDING").upper()
-        if status == "ACCEPTED":
-            c["accepted"] += 1
-        elif status == "REJECTED":
-            c["rejected"] += 1
-        else:
-            c["pending"] += 1
+    contracts: dict[tuple[str, str, str, str, str], dict] = {}
+
+    with get_sqlserver_engine().connect() as conn:
+        for m in matches:
+            cid = m.contract_number or "__no_contract__"
+            source = m.matched_source or ""
+            organization_eid = m.organization_eid_matched or ""
+            organization = m.organization_matched or ""
+            erp_vendor_id = m.erp_vendor_id_matched or ""
+            key = (source, organization_eid, organization, cid, erp_vendor_id)
+
+            if key not in contracts:
+                lookup = _fetch_contract_lookup(conn, source, organization_eid, cid, erp_vendor_id)
+                contracts[key] = {
+                    "contract_id": cid,
+                    "source": source,
+                    "organization": organization,
+                    "organization_eid": organization_eid,
+                    "erp_vendor_id": erp_vendor_id,
+                    "total_lines": lookup.get("total_lines"),
+                    "mf_name": lookup.get("mf_name"),
+                    "vendor_name": lookup.get("vendor_name"),
+                    "contract_description": lookup.get("contract_description"),
+                    "total": 0,
+                    "high": 0,
+                    "med": 0,
+                    "low": 0,
+                    "accepted": 0,
+                    "rejected": 0,
+                    "pending": 0,
+                    "included": True,
+                }
+
+            c = contracts[key]
+            c["total"] += 1
+            bucket = (m.similarity_bucket or "LOW").upper()
+            if bucket == "HIGH":
+                c["high"] += 1
+            elif bucket == "MED":
+                c["med"] += 1
+            else:
+                c["low"] += 1
+            status = (m.match_status or "PENDING").upper()
+            if status == "ACCEPTED":
+                c["accepted"] += 1
+            elif status == "REJECTED":
+                c["rejected"] += 1
+            else:
+                c["pending"] += 1
+
+    for contract in contracts.values():
+        contract["included"] = not (
+            contract["total"] > 0
+            and contract["rejected"] == contract["total"]
+        )
 
     return jsonify(list(contracts.values()))
 
@@ -213,6 +334,8 @@ def api_get_matches(task_id: str):
     Query params:
         bucket  — HIGH | MED | LOW
         contract — contract number filter
+        organization_eid — organization EID filter
+        erp_vendor_id — ERP vendor ID filter
         source  — CCX | INFOR_CL
         status  — ACCEPTED | REJECTED | PENDING
     """
@@ -222,6 +345,10 @@ def api_get_matches(task_id: str):
     bucket_filter = request.args.get("bucket", "").upper()
     contract_filter = request.args.get("contract", "").upper()
     status_filter = request.args.get("status", "").upper()
+    has_organization_filter = "organization_eid" in request.args
+    has_vendor_filter = "erp_vendor_id" in request.args
+    organization_filter = _normalize_scope_value(request.args.get("organization_eid"))
+    vendor_filter = _normalize_scope_value(request.args.get("erp_vendor_id"))
 
     # Build input item lookup for enrichment
     input_items = task_repo.get_items_by_source(task_id, "INPUT")
@@ -232,6 +359,10 @@ def api_get_matches(task_id: str):
         if bucket_filter and (m.similarity_bucket or "").upper() != bucket_filter:
             continue
         if contract_filter and (m.contract_number or "").upper() != contract_filter:
+            continue
+        if has_organization_filter and _normalize_scope_value(m.organization_eid_matched) != organization_filter:
+            continue
+        if has_vendor_filter and _normalize_scope_value(m.erp_vendor_id_matched) != vendor_filter:
             continue
         if status_filter and (m.match_status or "").upper() != status_filter:
             continue
@@ -304,25 +435,46 @@ def api_update_true_matches(task_id: str):
 def api_toggle_contract(task_id: str):
     """Include or exclude all matches under a contract.
 
-    Body: {"contract_number": "X", "include": true|false}
+    Body: {"contract_number": "X", "organization_eid": "Y", "erp_vendor_id": "Z", "include": true|false}
     """
     data = request.get_json(force=True)
     contract_number = data.get("contract_number")
+    has_organization_eid = "organization_eid" in data
+    has_erp_vendor_id = "erp_vendor_id" in data
+    organization_eid = data.get("organization_eid")
+    erp_vendor_id = data.get("erp_vendor_id")
     include = data.get("include", True)
     if not contract_number:
         return jsonify({"error": "contract_number required"}), 400
+    if not has_organization_eid or not has_erp_vendor_id:
+        return jsonify({"error": "organization_eid and erp_vendor_id required"}), 400
 
     user = current_user.username if current_user.is_authenticated else "system"
     new_status = "ACCEPTED" if include else "REJECTED"
+    contract_filter = _normalize_scope_value(contract_number)
+    organization_filter = _normalize_scope_value(organization_eid)
+    vendor_filter = _normalize_scope_value(erp_vendor_id)
 
     matches = task_repo.get_match_results(task_id)
     updated = 0
     for m in matches:
-        if (m.contract_number or "").upper() == contract_number.upper():
+        if (
+            _normalize_scope_value(m.contract_number) == contract_filter
+            and _normalize_scope_value(m.organization_eid_matched) == organization_filter
+            and _normalize_scope_value(m.erp_vendor_id_matched) == vendor_filter
+        ):
             task_repo.update_match_decision(m.match_id, new_status, user)
             updated += 1
 
-    return jsonify({"contract_number": contract_number, "status": new_status, "updated": updated})
+    return jsonify(
+        {
+            "contract_number": contract_number,
+            "organization_eid": organization_eid,
+            "erp_vendor_id": erp_vendor_id,
+            "status": new_status,
+            "updated": updated,
+        }
+    )
 
 
 @preprocess_bp.route("/preprocess/<task_id>")

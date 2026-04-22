@@ -21,6 +21,11 @@ fixed: 2026-04-20
 
 to_to:
 - the UOM to Match Infor column on Items table currently is showing togather with UOM, and I need to see if the edit is functioning on which UOM column. maybe I should also add visual color so highlight the difference between the two UOM columns.
+- add spinner when the pre-check is running since it can take a couple seconds to run and for large file it might take 10-20 seconds, without spinner user might think the system is not responsive and click multiple times which can cause issues.
+
+# identity
+to_do:
+ - currently if user forget to copy the standard description it will show error and once this is happening, the copy button is no longer functional. we should allow user to still use the copy button to copy the standard description even after they have made changes to the standard description and got error, so that they can easily reset the standard description back to original version without having to re-upload the file again.
 
 # preprocess
 to_do:
@@ -34,3 +39,7 @@ to_do:
       - if the manufacturer part number or UOM is not exactly the same, downgrade the score to 0 else keep the original score
     - Distributor: on vendor part number (only offer this to distributor contract), trigger WARN if the reduced vendor part number is the same.            
       - if the reduced vendor part number is not exactly the same, downgrade the score to 0 else trigger WARN else keep the original score
+
+
+# not belong to module
+on data model, for preprocessor.CCXInforSyncedContractHeader, I think we should change the vendor_id column to erp_vendor_id since it is actually storing the VendorID-Bxxx version. This will make it more clear what is what.

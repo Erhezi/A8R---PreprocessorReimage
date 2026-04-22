@@ -64,6 +64,10 @@ def _bucket_priority(bucket: Optional[str]) -> int:
     return BUCKET_PRIORITY.get((bucket or "").upper(), 0)
 
 
+def _normalize_scope_value(value: Optional[str]) -> str:
+    return (value or "").strip().upper()
+
+
 def _build_matched_snapshot(row, matched_source: str) -> dict:
     if matched_source == "CCX":
         return {
@@ -768,13 +772,23 @@ def run_full_preprocess(
 def submit_contract_decision(
     task_id: str,
     contract_number: str,
+    organization_eid: str | None,
+    erp_vendor_id: str | None,
     include: bool,
     decided_by: str,
     state_machine: TaskStateMachine,
 ) -> dict:
-    """Accept or reject all matches under a contract."""
-    grouped = task_repo.get_match_results_by_contract(task_id)
-    matches = grouped.get(contract_number, [])
+    """Accept or reject matches for one contract summary row."""
+    contract_filter = _normalize_scope_value(contract_number)
+    organization_filter = _normalize_scope_value(organization_eid)
+    vendor_filter = _normalize_scope_value(erp_vendor_id)
+    matches = [
+        match
+        for match in task_repo.get_match_results(task_id)
+        if _normalize_scope_value(match.contract_number) == contract_filter
+        and _normalize_scope_value(match.organization_eid_matched) == organization_filter
+        and _normalize_scope_value(match.erp_vendor_id_matched) == vendor_filter
+    ]
     decision = "ACCEPTED" if include else "REJECTED"
     for m in matches:
         task_repo.update_match_decision(m.match_id, decision, decided_by)
@@ -783,7 +797,13 @@ def submit_contract_decision(
     state["ccx_decisions_done"] = True
     state_machine.save_state(task_id, state)
 
-    return {"contract_number": contract_number, "decision": decision, "affected": len(matches)}
+    return {
+        "contract_number": contract_number,
+        "organization_eid": organization_eid,
+        "erp_vendor_id": erp_vendor_id,
+        "decision": decision,
+        "affected": len(matches),
+    }
 
 
 def submit_item_decision(

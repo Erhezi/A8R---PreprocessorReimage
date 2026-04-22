@@ -109,7 +109,7 @@ CREATE TABLE [Preprocessor].[CCXSyncedContractLineCnt](
 	[ERPVendorID] [varchar](20) NOT NULL,
 	[VendorID] [varchar](7) NULL,
 	[Vendor] [varchar](255) NOT NULL,
-	[LineCnt_Infor] [int] NULL,
+	[LineCnt_CCX] [int] NULL,
 	[ContractDescription] [varchar](255) NULL,
  CONSTRAINT [PK_CCXSyncedContractLineCnt] PRIMARY KEY CLUSTERED 
 (

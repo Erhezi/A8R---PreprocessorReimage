@@ -1,6 +1,28 @@
 {% extends "base.html" %}
 {% block title %}Preprocess — Task #{{ task_id }}{% endblock %}
 
+{% block head %}
+<style>
+  .contract-action-btn {
+    padding: 0.12rem 0.38rem !important;
+    font-size: 0.775rem !important;
+    line-height: 1.2 !important;
+    min-height: auto !important;
+    border-width: 1px;
+  }
+
+  .contract-action-group {
+    display: inline-flex;
+    gap: 0.2rem;
+    white-space: nowrap;
+  }
+
+  .contract-summary-contract {
+    white-space: nowrap;
+  }
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="container-fluid mt-3">
   <a href="{{ url_prefix }}/tasks/{{ task_id }}" class="text-decoration-none">&larr; Task #{{ task_id }}</a>
@@ -66,6 +88,13 @@
     <div class="card-header d-flex justify-content-between align-items-center">
       <span>Contract Summary</span>
       <div class="d-flex align-items-center gap-2">
+        <select class="form-select form-select-sm" id="contractSummaryFilterField" style="width:auto">
+          <option value="">No Filter</option>
+          <option value="source">Source</option>
+          <option value="mf_name">MF Name</option>
+          <option value="vendor_name">Vendor Name</option>
+        </select>
+        <input class="form-control form-control-sm" id="contractSummaryFilterValue" type="text" placeholder="Filter summary" style="width:170px">
         <button class="btn btn-sm btn-outline-secondary" id="btnRefreshContracts">Refresh</button>
       </div>
     </div>
@@ -73,14 +102,14 @@
       <table class="table table-sm table-hover mb-0">
         <thead class="table-light">
           <tr>
-            <th>Contract</th><th>Total</th>
+            <th>Source</th><th>Organization</th><th class="contract-summary-contract">Contract</th><th>ERP Vendor ID</th><th>MF Name</th><th>Vendor Name</th><th>Contract Description</th><th>Total Lines</th><th>Matched</th>
             <th class="text-success">HIGH</th><th class="text-warning">MED</th><th class="text-secondary">LOW</th>
             <th>Accepted</th><th>Rejected</th><th>Pending</th>
             <th>Actions</th>
           </tr>
         </thead>
         <tbody id="contractBody">
-          <tr><td colspan="9" class="text-center text-muted">Run pipeline first</td></tr>
+          <tr><td colspan="17" class="text-center text-muted">Run pipeline first</td></tr>
         </tbody>
       </table>
     </div>
@@ -112,6 +141,7 @@
           <option value="">All Contracts</option>
         </select>
         <button class="btn btn-sm btn-outline-primary" id="btnFilterMatches">Filter</button>
+        <button class="btn btn-sm btn-outline-secondary" id="btnClearMatchFilters">Clear Filters</button>
       </div>
     </div>
     <div class="card-body p-0">
@@ -154,6 +184,7 @@
 <script>
 const PREFIX = "{{ url_prefix }}";
 const TASK_ID = "{{ task_id }}";
+let selectedContractScope = null;
 
 // ---- Step-by-step pipeline -----------
 const STEPS = [
@@ -192,6 +223,18 @@ function setStepStatus(key, status, detail) {
     statusEl.textContent = "";
     statusEl.className = "step-status ms-2 text-muted";
   }
+}
+
+function setSelectedContractScope(scope) {
+  selectedContractScope = scope;
+}
+
+function getActiveContractScope() {
+  const contract = document.getElementById("filterContract").value;
+  if (!selectedContractScope || selectedContractScope.contractNumber !== contract) {
+    return null;
+  }
+  return selectedContractScope;
 }
 
 function isLlmEnabled() {
@@ -269,38 +312,59 @@ document.getElementById("btnRun").addEventListener("click", async () => {
   llmToggle.disabled = false;
 });
 
-// ---- Contract summary ----------------
-async function loadContracts() {
-  document.getElementById("contractCard").style.display = "";
-  const resp = await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/contract-summary`);
-  const contracts = await resp.json();
+let contractSummaryData = [];
+
+function renderContracts(contracts) {
   const tbody = document.getElementById("contractBody");
   const filterSelect = document.getElementById("filterContract");
+  const summaryFilterField = document.getElementById("contractSummaryFilterField").value;
+  const summaryFilterValue = document.getElementById("contractSummaryFilterValue").value.trim().toUpperCase();
+
+  const visibleContracts = contracts.filter(c => {
+    if (!summaryFilterField || !summaryFilterValue) {
+      return true;
+    }
+    return String(c[summaryFilterField] || "").toUpperCase().includes(summaryFilterValue);
+  });
 
   // Rebuild contract filter options
   filterSelect.innerHTML = '<option value="">All Contracts</option>';
-  contracts.forEach(c => {
+  const seenContracts = new Set();
+  visibleContracts.forEach(c => {
+    if (seenContracts.has(c.contract_id)) {
+      return;
+    }
+    seenContracts.add(c.contract_id);
     const opt = document.createElement("option");
     opt.value = c.contract_id;
     opt.textContent = c.contract_id;
     filterSelect.appendChild(opt);
   });
 
-  if (!contracts.length) {
-    tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted">No contracts found</td></tr>';
+  if (!visibleContracts.length) {
+    tbody.innerHTML = '<tr><td colspan="17" class="text-center text-muted">No contracts found</td></tr>';
     return;
   }
-  tbody.innerHTML = contracts.map(c => `
+  tbody.innerHTML = visibleContracts.map(c => `
     <tr>
-      <td><a href="#" class="contract-link" data-contract="${c.contract_id}">${c.contract_id}</a></td>
+      <td>${esc(c.source || '-')}</td>
+      <td class="text-truncate" style="max-width:180px" title="${esc(c.organization)}">${esc(c.organization || '-')}</td>
+      <td class="contract-summary-contract"><a href="#" class="contract-link" data-contract="${esc(c.contract_id || '')}" data-organization-eid="${esc(c.organization_eid || '')}" data-erp-vendor-id="${esc(c.erp_vendor_id || '')}">${c.contract_id}</a></td>
+      <td>${esc(c.erp_vendor_id || '-')}</td>
+      <td class="text-truncate" style="max-width:160px" title="${esc(c.mf_name)}">${esc(c.mf_name || '-')}</td>
+      <td class="text-truncate" style="max-width:160px" title="${esc(c.vendor_name)}">${esc(c.vendor_name || '-')}</td>
+      <td class="text-truncate" style="max-width:220px" title="${esc(c.contract_description)}">${esc(c.contract_description || '-')}</td>
+      <td>${c.total_lines ?? '-'}</td>
       <td>${c.total}</td>
       <td class="text-success">${c.high}</td>
       <td class="text-warning">${c.med}</td>
       <td class="text-secondary">${c.low}</td>
       <td>${c.accepted}</td><td>${c.rejected}</td><td>${c.pending}</td>
       <td>
-        <button class="btn btn-xs btn-outline-success toggle-contract" data-contract="${c.contract_id}" data-action="include" title="Accept all">&#10003;</button>
-        <button class="btn btn-xs btn-outline-danger toggle-contract" data-contract="${c.contract_id}" data-action="exclude" title="Reject all">&times;</button>
+        <div class="contract-action-group">
+          <button class="btn btn-sm ${c.included ? 'btn-success' : 'btn-outline-success'} toggle-contract contract-action-btn" data-contract="${esc(c.contract_id || '')}" data-organization-eid="${esc(c.organization_eid || '')}" data-erp-vendor-id="${esc(c.erp_vendor_id || '')}" data-action="include" title="Accept all">Include</button>
+          <button class="btn btn-sm ${c.included ? 'btn-outline-danger' : 'btn-danger'} toggle-contract contract-action-btn" data-contract="${esc(c.contract_id || '')}" data-organization-eid="${esc(c.organization_eid || '')}" data-erp-vendor-id="${esc(c.erp_vendor_id || '')}" data-action="exclude" title="Reject all">Exclude</button>
+        </div>
       </td>
     </tr>
   `).join("");
@@ -309,6 +373,11 @@ async function loadContracts() {
   tbody.querySelectorAll(".contract-link").forEach(a => {
     a.addEventListener("click", (e) => {
       e.preventDefault();
+      setSelectedContractScope({
+        contractNumber: a.dataset.contract || "",
+        organizationEid: a.dataset.organizationEid || "",
+        erpVendorId: a.dataset.erpVendorId || "",
+      });
       document.getElementById("filterContract").value = a.dataset.contract;
       loadMatches();
     });
@@ -321,7 +390,12 @@ async function loadContracts() {
       await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/toggle-contract`, {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({contract_number: btn.dataset.contract, include})
+        body: JSON.stringify({
+          contract_number: btn.dataset.contract,
+          organization_eid: btn.dataset.organizationEid || "",
+          erp_vendor_id: btn.dataset.erpVendorId || "",
+          include,
+        })
       });
       loadContracts();
       loadMatches();
@@ -329,7 +403,17 @@ async function loadContracts() {
   });
 }
 
+// ---- Contract summary ----------------
+async function loadContracts() {
+  document.getElementById("contractCard").style.display = "";
+  const resp = await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/contract-summary`);
+  contractSummaryData = await resp.json();
+  renderContracts(contractSummaryData);
+}
+
 document.getElementById("btnRefreshContracts").addEventListener("click", loadContracts);
+document.getElementById("contractSummaryFilterField").addEventListener("change", () => renderContracts(contractSummaryData));
+document.getElementById("contractSummaryFilterValue").addEventListener("input", () => renderContracts(contractSummaryData));
 
 // ---- Match results -------------------
 async function loadMatches() {
@@ -338,12 +422,17 @@ async function loadMatches() {
   const source   = document.getElementById("filterSource").value;
   const status   = document.getElementById("filterStatus").value;
   const contract = document.getElementById("filterContract").value;
+  const contractScope = getActiveContractScope();
 
   const params = new URLSearchParams();
   if (bucket)   params.set("bucket", bucket);
   if (source)   params.set("source", source);
   if (status)   params.set("status", status);
   if (contract) params.set("contract", contract);
+  if (contractScope) {
+    params.set("organization_eid", contractScope.organizationEid);
+    params.set("erp_vendor_id", contractScope.erpVendorId);
+  }
 
   const resp = await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/matches?${params}`);
   const matches = await resp.json();
@@ -386,6 +475,15 @@ async function loadMatches() {
   updateSelectionButtons();
 }
 
+function clearMatchFilters() {
+  document.getElementById("filterBucket").value = "";
+  document.getElementById("filterSource").value = "";
+  document.getElementById("filterStatus").value = "";
+  document.getElementById("filterContract").value = "";
+  setSelectedContractScope(null);
+  loadMatches();
+}
+
 function esc(s) { if (!s) return ''; const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 function n(v, dp) { return v != null ? Number(v).toFixed(dp) : '-'; }
 function percent(v) { return v != null ? `${Number(v).toFixed(1)}%` : '-'; }
@@ -411,6 +509,13 @@ document.getElementById("selectAll").addEventListener("change", (e) => {
 });
 
 document.getElementById("btnFilterMatches").addEventListener("click", loadMatches);
+document.getElementById("btnClearMatchFilters").addEventListener("click", clearMatchFilters);
+document.getElementById("filterContract").addEventListener("change", (e) => {
+  if (!selectedContractScope || selectedContractScope.contractNumber === e.target.value) {
+    return;
+  }
+  setSelectedContractScope(null);
+});
 
 document.getElementById("btnRejectSelected").addEventListener("click", async () => {
   const ids = [...document.querySelectorAll(".match-cb:checked")].map(cb => parseInt(cb.value));
