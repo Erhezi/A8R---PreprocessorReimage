@@ -1,10 +1,10 @@
 """Preprocess service -- Phase 3 business logic.
 
 Unified CCX duplicate detection + Infor cascading/residue matching +
-3-source item labeling + buy-UOM pre-computation.
+3-source item labeling + buy-UOM validation.
 
 Pipeline:  SKU match -> similarity -> review -> Infor cascade ->
-           Infor residue -> item labeling -> finalise.
+           Infor residue -> item labeling -> buy UOM -> finalise.
 """
 
 from __future__ import annotations
@@ -66,6 +66,31 @@ def _bucket_priority(bucket: Optional[str]) -> int:
 
 def _normalize_scope_value(value: Optional[str]) -> str:
     return (value or "").strip().upper()
+
+
+def _normalize_infor_item_number(value: object) -> Optional[str]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    return text if text.isdigit() and len(text) == 6 else None
+
+
+def _split_multi_value_items(value: Optional[str]) -> list[str]:
+    if not value:
+        return []
+    items = []
+    for chunk in value.split(","):
+        normalized = _normalize_infor_item_number(chunk)
+        if normalized:
+            items.append(normalized)
+    return items
+
+
+def _join_multi_value_items(values: list[str] | set[str]) -> Optional[str]:
+    unique_values = sorted({_normalize_infor_item_number(value) for value in values if _normalize_infor_item_number(value)})
+    if not unique_values:
+        return None
+    return ", ".join(unique_values)
 
 
 def _build_matched_snapshot(row, matched_source: str) -> dict:
@@ -624,93 +649,150 @@ def run_infor_residue_llm_review(task_id: str, state_machine: TaskStateMachine) 
 
 
 # ---------------------------------------------------------------------------
-# Step 7 -- 3-Source Item# Labeling + Buy UOM
+# Step 7 -- 3-Source Item# Labeling
 # ---------------------------------------------------------------------------
 def run_item_labeling(task_id: str, state_machine: TaskStateMachine) -> dict:
-    """Label each INPUT item with Infor Item# from 3 sources + buy UOM options.
+    """Label each INPUT item with Infor Item# from 3 sources.
 
     Source 1: MDM_ITEM (Manufacturer + ManufacturerNumber)
     Source 2: MDM_VENDORITEM (Vendor + VendorItem)
     Source 3: Infor CL match (from accepted INFOR_CL match results)
 
-    If all 3 agree -> item_labeled. If conflict -> MULTI_ITEM_ERROR.
+    All source values and the final field store only 6-digit Infor Item values.
     """
     state = state_machine.get_state(task_id)
     state["status"] = Status.ITEM_LABELING
     state_machine.save_state(task_id, state)
     task_repo.update_task_phase(task_id, Phase.PREPROCESS, Status.ITEM_LABELING)
 
+    task = task_repo.get_task(task_id)
     input_items = task_repo.get_items_by_source(task_id, "INPUT")
     if not input_items:
+        task_repo.delete_item_matches_for_task(task_id)
         return {"labeled": 0}
 
     q_mdm_item = load_query("preprocess", "item_matching", query="item_label_mdm_item")
     q_mdm_vi = load_query("preprocess", "item_matching", query="item_label_mdm_vendoritem")
-    q_uom = load_query("preprocess", "item_matching", query="item_uom_options")
+    q_infor_item = load_query("preprocess", "item_matching", query="item_label_infor_item_by_pkid")
+    q_item_desc = load_query("preprocess", "item_matching", query="item_description_by_item_number")
 
-    # Pre-build accepted INFOR_CL matches by input_item_id
+    contract_manufacturer_infor = (getattr(task, "contract_manufacturer_infor", None) or "").strip()
+
+    # Pre-build accepted INFOR_CL items by input_item_id via infor_pkid lineage.
     infor_matches = task_repo.get_match_results(task_id, matched_source="INFOR_CL")
-    infor_items_by_input = {}
-    for m in infor_matches:
-        if m.match_status == "ACCEPTED" and m.matched_item_ref:
-            infor_items_by_input.setdefault(m.input_item_id, []).append(m.matched_item_ref)
+    accepted_infor_pkids_by_input: dict[int, set[str]] = {}
+    for match in infor_matches:
+        if match.match_status != "ACCEPTED" or not match.infor_pkid:
+            continue
+        accepted_infor_pkids_by_input.setdefault(match.input_item_id, set()).add(match.infor_pkid)
 
     labeled_count = 0
     updates = []
+    item_match_rows = []
+    item_desc_cache: dict[str, Optional[str]] = {}
 
     with _sql_session() as sess:
+        infor_item_by_pkid: dict[str, list[str]] = {}
+        for infor_pkids in accepted_infor_pkids_by_input.values():
+            for infor_pkid in infor_pkids:
+                if infor_pkid in infor_item_by_pkid:
+                    continue
+                rows = sess.execute(q_infor_item, {"infor_pkid": infor_pkid}).mappings().all()
+                infor_item_by_pkid[infor_pkid] = sorted(
+                    {
+                        normalized
+                        for row in rows
+                        for normalized in [_normalize_infor_item_number(row.get("Item"))]
+                        if normalized
+                    }
+                )
+
         for item in input_items:
-            update = {"item_id": item.item_id}
+            update = {
+                "item_id": item.item_id,
+                "infor_item_1": None,
+                "infor_item_1_active": None,
+                "infor_item_2": None,
+                "infor_item_2_active": None,
+                "infor_item_3": None,
+                "infor_item_3_active": None,
+                "infor_item_number": None,
+            }
 
             # Source 1: MDM_ITEM
-            mfg_code = item.contract_manufacturer or item.manufacturer_infor or ""
+            mfg_code = contract_manufacturer_infor
             mfg_num = item.mfg_catalog_num or ""
             if mfg_code and mfg_num:
                 rows = sess.execute(q_mdm_item, {"manufacturer": mfg_code, "mfg_catalog_num": mfg_num}).mappings().all()
-                if rows:
-                    update["infor_item_1"] = rows[0]["Item"]
-                    update["infor_item_1_active"] = rows[0]["Active"]
+                source_1_items = sorted(
+                    {
+                        normalized
+                        for row in rows
+                        for normalized in [_normalize_infor_item_number(row.get("Item"))]
+                        if normalized
+                    }
+                )
+                if source_1_items:
+                    update["infor_item_1"] = ", ".join(source_1_items)
+                    update["infor_item_1_active"] = "Yes"
 
             # Source 2: MDM_VENDORITEM
-            v_id = item.vendor_id_short or ""
+            v_id = (item.vendor_id_short or "")[:7] or (getattr(task, "vendor_id", None) or "")[:7]
             vpn = item.vendor_catalog_num or ""
             if v_id and vpn:
                 rows = sess.execute(q_mdm_vi, {"vendor_id": v_id, "vendor_catalog_num": vpn}).mappings().all()
-                if rows:
-                    update["infor_item_2"] = rows[0]["Item"]
-                    update["infor_item_2_active"] = rows[0]["Active"]
+                source_2_items = sorted(
+                    {
+                        normalized
+                        for row in rows
+                        for normalized in [_normalize_infor_item_number(row.get("Item"))]
+                        if normalized
+                    }
+                )
+                if source_2_items:
+                    update["infor_item_2"] = ", ".join(source_2_items)
+                    update["infor_item_2_active"] = "Yes"
 
             # Source 3: Infor CL match
-            infor_refs = infor_items_by_input.get(item.item_id, [])
-            if infor_refs:
-                unique_refs = sorted(set(infor_refs))
-                update["infor_item_3"] = ", ".join(unique_refs[:5])  # cap at 5
-                update["infor_item_3_active"] = "Y"  # from active CL table
+            infor_items = sorted(
+                {
+                    item_number
+                    for infor_pkid in accepted_infor_pkids_by_input.get(item.item_id, set())
+                    for item_number in infor_item_by_pkid.get(infor_pkid, [])
+                }
+            )
+            if infor_items:
+                update["infor_item_3"] = ", ".join(infor_items)
+                update["infor_item_3_active"] = "Yes"  # from active CL table
 
             # Determine consensus
             items_found = set()
             for key in ("infor_item_1", "infor_item_2", "infor_item_3"):
-                val = update.get(key)
-                if val:
-                    for v in val.split(", "):
-                        items_found.add(v.strip())
+                items_found.update(_split_multi_value_items(update.get(key)))
 
             if len(items_found) == 0:
                 update["status"] = Status.NO_MATCH
             elif len(items_found) == 1:
-                final_item = items_found.pop()
+                final_item = next(iter(items_found))
                 update["infor_item_number"] = final_item
                 update["status"] = Status.ITEM_LABELED
-
-                # Look up buy UOM options
-                uom_rows = sess.execute(q_uom, {"item_number": final_item}).mappings().all()
-                if uom_rows:
-                    uom_opts = [f"{r['UOM']}*{r['UOMConversion']}" for r in uom_rows]
-                    update["infor_buy_uom_options"] = ", ".join(uom_opts)
             else:
-                # Multiple different Item# -- flag for human review
                 update["infor_item_number"] = ", ".join(sorted(items_found))
                 update["status"] = Status.MULTI_ITEM_ERROR
+
+            final_items = _split_multi_value_items(update.get("infor_item_number"))
+            for final_item in final_items:
+                if final_item not in item_desc_cache:
+                    rows = sess.execute(q_item_desc, {"item_number": final_item}).mappings().all()
+                    item_desc_cache[final_item] = rows[0]["item_description"] if rows else None
+                item_match_rows.append(
+                    {
+                        "task_id": task_id,
+                        "item_id": item.item_id,
+                        "infor_item_number": final_item,
+                        "item_description": item_desc_cache[final_item],
+                    }
+                )
 
             updates.append(update)
             labeled_count += 1
@@ -718,11 +800,63 @@ def run_item_labeling(task_id: str, state_machine: TaskStateMachine) -> dict:
     # Bulk update items
     if updates:
         task_repo.update_items_bulk(updates)
+    task_repo.delete_item_matches_for_task(task_id)
+    if item_match_rows:
+        task_repo.add_item_matches_bulk(item_match_rows)
 
     state["item_labeling_done"] = True
+    state["buy_uom_check_done"] = False
     state_machine.save_state(task_id, state)
 
-    return {"labeled": labeled_count}
+    return {"labeled": labeled_count, "item_match_candidates": len(item_match_rows)}
+
+
+# ---------------------------------------------------------------------------
+# Step 8 -- Buy UOM aggregation for labeled item candidates
+# ---------------------------------------------------------------------------
+def run_buy_uom_check(task_id: str, state_machine: TaskStateMachine) -> dict:
+    """Aggregate valid buy UOM options from exploded item match candidates."""
+    state = state_machine.get_state(task_id)
+    state["status"] = Status.BUY_UOM_CHECKING
+    state_machine.save_state(task_id, state)
+    task_repo.update_task_phase(task_id, Phase.PREPROCESS, Status.BUY_UOM_CHECKING)
+
+    input_items = task_repo.get_items_by_source(task_id, "INPUT")
+    if not input_items:
+        return {"checked": 0, "matched_items": 0}
+
+    q_uom = load_query("preprocess", "item_matching", query="item_uom_options")
+    candidate_rows = task_repo.get_item_matches(task_id)
+    updates = [{"item_id": item.item_id, "infor_buy_uom_options": None} for item in input_items]
+    options_by_item_id: dict[int, set[str]] = {}
+
+    with _sql_session() as sess:
+        uom_cache: dict[str, list[str]] = {}
+        for candidate in candidate_rows:
+            item_number = candidate.infor_item_number
+            if item_number not in uom_cache:
+                rows = sess.execute(q_uom, {"item_number": item_number}).mappings().all()
+                uom_cache[item_number] = sorted(
+                    {
+                        f"{row['UOM']}*{row['UOMConversion']}"
+                        for row in rows
+                        if row.get("UOM") is not None and row.get("UOMConversion") is not None
+                    }
+                )
+            if not uom_cache[item_number]:
+                continue
+            options_by_item_id.setdefault(candidate.item_id, set()).update(uom_cache[item_number])
+
+    update_map = {entry["item_id"]: entry for entry in updates}
+    for item_id, options in options_by_item_id.items():
+        update_map[item_id]["infor_buy_uom_options"] = ", ".join(sorted(options))
+
+    if updates:
+        task_repo.update_items_bulk(updates)
+
+    state["buy_uom_check_done"] = True
+    state_machine.save_state(task_id, state)
+    return {"checked": len(input_items), "matched_items": len(candidate_rows)}
 
 
 # ---------------------------------------------------------------------------
@@ -744,7 +878,8 @@ def run_full_preprocess(
     3. Infor cascade (via deterministic CCX HIGH matches)
     4. LLM review for MED/LOW CCX matches
     5. Infor residue matching + LLM review
-    6. 3-source Item# labeling + buy UOM
+    6. 3-source Item# labeling
+    7. Buy UOM aggregation
 
     Returns aggregated results dict.
     """
@@ -763,6 +898,7 @@ def run_full_preprocess(
     else:
         results["llm_review_infor"] = _llm_step_skipped()
     results["item_labeling"] = run_item_labeling(task_id, state_machine)
+    results["buy_uom_check"] = run_buy_uom_check(task_id, state_machine)
     return results
 
 

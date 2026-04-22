@@ -11,7 +11,7 @@ from typing import Optional
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from ..models import Task, TaskItem, PreCheckError, MatchResult, TaskStatusLog
+from ..models import Task, TaskItem, PreCheckError, MatchResult, TaskStatusLog, ItemMatchCandidate
 from ..common.utils import ny_now
 from .engine import get_sqlserver_engine
 
@@ -134,6 +134,7 @@ def delete_task(task_id: str) -> bool:
         # (some child tables may have columns not yet in DB; raw DELETE is safe
         # because it never SELECTs — it just removes rows if they exist).
         child_tables = [
+            "[Preprocessor].PreprocessorItemMatching",
             "[Preprocessor].PreprocessorMatchResult",
             "[Preprocessor].PreprocessorPreCheckError",
             "[Preprocessor].PreprocessorTaskStatusLog",
@@ -171,6 +172,7 @@ def delete_items_for_task(task_id: str) -> int:
     violation from SQL Server.
     """
     with _session() as s:
+        s.query(ItemMatchCandidate).filter(ItemMatchCandidate.task_id == task_id).delete()
         # 1. Child table first — errors reference item_id
         s.query(PreCheckError).filter(PreCheckError.task_id == task_id).delete()
         # 2. Parent table second
@@ -185,6 +187,7 @@ def delete_item(item_id: int) -> bool:
     Returns True if the item existed and was deleted.
     """
     with _session() as s:
+        s.query(ItemMatchCandidate).filter(ItemMatchCandidate.item_id == item_id).delete()
         s.query(PreCheckError).filter(PreCheckError.item_id == item_id).delete()
         count = s.query(TaskItem).filter(TaskItem.item_id == item_id).delete()
         s.commit()
@@ -260,6 +263,40 @@ def update_items_bulk(updates: list[dict], **kwargs) -> None:
                         setattr(item, k, v)
                 item.updated_at = ny_now()
         s.commit()
+
+
+def delete_item_matches_for_task(task_id: str) -> int:
+    with _session() as s:
+        count = s.query(ItemMatchCandidate).filter(ItemMatchCandidate.task_id == task_id).delete()
+        s.commit()
+        return count
+
+
+def add_item_matches_bulk(matches: list[dict]) -> list[ItemMatchCandidate]:
+    with _session() as s:
+        db_matches = []
+        for match_data in matches:
+            candidate = ItemMatchCandidate(**match_data)
+            s.add(candidate)
+            db_matches.append(candidate)
+        s.commit()
+        for candidate in db_matches:
+            s.refresh(candidate)
+            s.expunge(candidate)
+        return db_matches
+
+
+def get_item_matches(task_id: str) -> list[ItemMatchCandidate]:
+    with _session() as s:
+        matches = (
+            s.query(ItemMatchCandidate)
+            .filter(ItemMatchCandidate.task_id == task_id)
+            .order_by(ItemMatchCandidate.item_id, ItemMatchCandidate.infor_item_number)
+            .all()
+        )
+        for match in matches:
+            s.expunge(match)
+        return matches
 
 
 # ---------------------------------------------------------------------------

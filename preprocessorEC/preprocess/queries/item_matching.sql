@@ -85,7 +85,7 @@ WHERE icl.CCX_pkid IS NULL
 -- name: item_label_mdm_item
 -- Find Infor Item# via MDM_ITEM (manufacturer + mfg catalog number).
 -- Returns Item with Active status.
-SELECT
+SELECT DISTINCT
     mi.Item,
     mi.Active,
     mi.DefaultBuyUOM,
@@ -93,29 +93,48 @@ SELECT
     mi.Description                AS mdm_description
 FROM [DM_MONTYNT\dli2].[MDM_ITEM] mi
 WHERE mi.Manufacturer = :manufacturer
-  AND mi.ManufacturerNumber = :mfg_catalog_num;
+  AND mi.ManufacturerNumber = :mfg_catalog_num
+  AND mi.Active = 'Yes';
 
 -- name: item_label_mdm_vendoritem
 -- Find Infor Item# via MDM_VENDORITEM (vendor + vendor item number).
 -- Returns Item with Active status.
-SELECT
+SELECT DISTINCT
     mvi.Item,
     mvi.Active,
     mvi.Manufacturer,
     mvi.ManufacturerNumber,
     mvi.VendorBuyUOM,
-    mvi.[VendorBuyUOM.UOMConversion] AS vendor_uom_conversion
+  CAST(mvi.[VendorBuyUOM.UOMConversion] AS INT) AS vendor_uom_conversion
 FROM [DM_MONTYNT\dli2].[MDM_VENDORITEM] mvi
 WHERE mvi.Vendor = :vendor_id
-  AND mvi.VendorItem = :vendor_catalog_num;
+  AND mvi.VendorItem = :vendor_catalog_num
+  AND mvi.Active = 'Yes';
+
+-- name: item_label_infor_item_by_pkid
+-- Find Infor master Item from an accepted INFOR_CL lineage row.
+SELECT DISTINCT
+    icl.Item,
+    icl.Infor_pkid
+FROM [Preprocessor].[InforActiveCLRefCCXSyncedCL] icl
+WHERE icl.Infor_pkid = :infor_pkid
+  AND icl.Item IS NOT NULL
+  AND LTRIM(RTRIM(CONVERT(VARCHAR(50), icl.Item))) <> '';
+
+-- name: item_description_by_item_number
+-- Find item master description for an individual Infor Item.
+SELECT TOP 1
+    mi.Description AS item_description
+FROM [DM_MONTYNT\dli2].[MDM_ITEM] mi
+WHERE mi.Item = :item_number;
 
 -- name: item_uom_options
 -- Get valid buy UOM options for an Infor Item.
 SELECT
     iu.UOM,
-    iu.UOMConversion,
+    CAST(iu.UOMConversion AS INT) AS UOMConversion,
     iu.ValidForBuying
 FROM [DM_MONTYNT\dli2].[MDM_ITEMUOM] iu
 WHERE iu.Item = :item_number
-  AND iu.ValidForBuying = 1
-ORDER BY iu.UOMConversion;
+  AND UPPER(LTRIM(RTRIM(CONVERT(VARCHAR(50), iu.ValidForBuying)))) IN ('1', 'YES', 'Y', 'TRUE', 'DEFAULT')
+ORDER BY CAST(iu.UOMConversion AS INT), iu.UOMConversion;

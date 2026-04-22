@@ -51,6 +51,7 @@ class Status:
     INFOR_MATCHING = "INFOR_MATCHING"
     INFOR_REVIEW = "INFOR_REVIEW"
     ITEM_LABELING = "ITEM_LABELING"
+    BUY_UOM_CHECKING = "BUY_UOM_CHECKING"
     PREPROCESSED = "PREPROCESSED"
 
     # Phase 3 — item-level statuses
@@ -109,6 +110,7 @@ class TaskState(TypedDict, total=False):
     ccx_decisions_done: bool
     infor_decisions_done: bool
     item_labeling_done: bool
+    buy_uom_check_done: bool
     preprocessed_dataset: list[dict]
 
     # Phase 4 — Dedup
@@ -148,6 +150,7 @@ def empty_task_state(task_id: str) -> TaskState:
         ccx_decisions_done=False,
         infor_decisions_done=False,
         item_labeling_done=False,
+        buy_uom_check_done=False,
         preprocessed_dataset=[],
         simulation_results=[],
         integrity_issues=[],

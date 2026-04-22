@@ -58,8 +58,8 @@ def _parse_named_blocks(sql_text: str) -> dict[str, str]:
 
 
 @lru_cache(maxsize=256)
-def _load_file(sql_path: str) -> dict[str, str]:
-    """Read and parse a SQL file; cached by path."""
+def _load_file(sql_path: str, mtime_ns: int) -> dict[str, str]:
+    """Read and parse a SQL file; cached by path and file modification time."""
     with open(sql_path, "r", encoding="utf-8") as f:
         return _parse_named_blocks(f.read())
 
@@ -85,7 +85,7 @@ def load_query(module: str, file: str, query: str | None = None) -> text:
             f"Expected at preprocessorEC/{module}/queries/{file}.sql"
         )
 
-    blocks = _load_file(sql_path)
+    blocks = _load_file(sql_path, os.stat(sql_path).st_mtime_ns)
 
     if query is None:
         key = "__all__" if "__all__" in blocks else next(iter(blocks))
@@ -107,7 +107,7 @@ def load_query_raw(module: str, file: str, query: str | None = None) -> str:
     if not os.path.isfile(sql_path):
         raise FileNotFoundError(f"SQL query file not found: {sql_path}")
 
-    blocks = _load_file(sql_path)
+    blocks = _load_file(sql_path, os.stat(sql_path).st_mtime_ns)
     if query is None:
         key = "__all__" if "__all__" in blocks else next(iter(blocks))
     else:

@@ -20,6 +20,27 @@
   .contract-summary-contract {
     white-space: nowrap;
   }
+
+  .task-meta-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 0.9rem 1.25rem;
+  }
+
+  .task-meta-label {
+    font-size: 0.72rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #6c757d;
+    margin-bottom: 0.2rem;
+  }
+
+  .task-meta-value {
+    font-size: 0.96rem;
+    font-weight: 600;
+    color: #1f2937;
+    word-break: break-word;
+  }
 </style>
 {% endblock %}
 
@@ -27,6 +48,38 @@
 <div class="container-fluid mt-3">
   <a href="{{ url_prefix }}/tasks/{{ task_id }}" class="text-decoration-none">&larr; Task #{{ task_id }}</a>
   <h4 class="mt-1">Phase 3: Preprocess Core</h4>
+
+  <div class="card mb-3">
+    <div class="card-header">Current Task</div>
+    <div class="card-body">
+      <div class="task-meta-grid">
+        <div>
+          <div class="task-meta-label">Contract ID</div>
+          <div class="task-meta-value">{{ task.contract_number or '—' }}</div>
+        </div>
+        <div>
+          <div class="task-meta-label">Vendor</div>
+          <div class="task-meta-value">{{ ((task.vendor_id or '—') ~ ' - ' ~ (task.erp_vendor_name or '—')) if (task.vendor_id or task.erp_vendor_name) else '—' }}</div>
+        </div>
+        <div>
+          <div class="task-meta-label">Type</div>
+          <div class="task-meta-value">{{ (task.process_type or '—') ~ (' / ' ~ task.source_type if task.source_type else '') }}</div>
+        </div>
+        <div>
+          <div class="task-meta-label">Org</div>
+          <div class="task-meta-value">{{ task.organization or '—' }}</div>
+        </div>
+        <div>
+          <div class="task-meta-label">OEM</div>
+          <div class="task-meta-value">{{ task.oem_name or '—' }}</div>
+        </div>
+        <div>
+          <div class="task-meta-label">Precheck Mode</div>
+          <div class="task-meta-value">{{ task.precheck_mode or '—' }}</div>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <div class="card mb-3">
     <div class="card-header d-flex justify-content-between">
@@ -75,7 +128,12 @@
         </div>
         <div class="step-row mb-1" data-step="item-labeling">
           <span class="badge bg-secondary me-2 step-badge">7</span>
-          <span class="step-label">3-Source Item# Labeling + UOM</span>
+          <span class="step-label">3-Source Item# Labeling</span>
+          <span class="step-status ms-2 text-muted"></span>
+        </div>
+        <div class="step-row mb-1" data-step="buy-uom-check">
+          <span class="badge bg-secondary me-2 step-badge">8</span>
+          <span class="step-label">Buy UOM Checking</span>
           <span class="step-status ms-2 text-muted"></span>
         </div>
       </div>
@@ -174,6 +232,32 @@
     </div>
   </div>
 
+  <div class="card mb-3" id="itemMatchCard" style="display:none">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span>Item Matching Results</span>
+      <span id="itemMatchCount" class="small text-muted">0 rows</span>
+    </div>
+    <div class="card-body p-0">
+      <div class="table-responsive" style="max-height:420px; overflow-y:auto">
+        <table class="table table-sm table-hover mb-0">
+          <thead class="table-light" style="position:sticky;top:0;z-index:1">
+            <tr>
+              <th>Input ID</th>
+              <th>Input UOM</th>
+              <th>Input UOM (UOM to match Infor)</th>
+              <th>Input Desc.</th>
+              <th>Item</th>
+              <th>Item Desc.</th>
+            </tr>
+          </thead>
+          <tbody id="itemMatchBody">
+            <tr><td colspan="6" class="text-center text-muted">No item matching results yet</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
   <div class="d-flex justify-content-end">
     <button class="btn btn-success" id="btnFinalize" disabled>Finalize &amp; Advance &rarr;</button>
   </div>
@@ -195,6 +279,7 @@ const STEPS = [
   { key: "infor-residue",   endpoint: `${PREFIX}/api/preprocess/${TASK_ID}/infor-residue` },
   { key: "llm-review-infor",endpoint: `${PREFIX}/api/preprocess/${TASK_ID}/llm-review?source=INFOR` },
   { key: "item-labeling",   endpoint: `${PREFIX}/api/preprocess/${TASK_ID}/item-labeling` },
+  { key: "buy-uom-check",   endpoint: `${PREFIX}/api/preprocess/${TASK_ID}/buy-uom` },
 ];
 
 function setStepStatus(key, status, detail) {
@@ -262,7 +347,23 @@ function summariseResult(key, data) {
       return `${data.residue_matches || 0} residue matches`;
     case "item-labeling":
       return `${data.labeled || 0} items labeled`;
+    case "buy-uom-check":
+      return `${data.checked || 0} items checked`;
     default: return "Done";
+  }
+}
+
+async function readResponsePayload(resp) {
+  const rawText = await resp.text();
+  if (!rawText) {
+    return {};
+  }
+  try {
+    return JSON.parse(rawText);
+  } catch {
+    return {
+      error: rawText.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 240) || `HTTP ${resp.status}`
+    };
   }
 }
 
@@ -285,7 +386,7 @@ document.getElementById("btnRun").addEventListener("click", async () => {
     setStepStatus(step.key, "running");
     try {
       const resp = await fetch(step.endpoint, { method: "POST" });
-      const data = await resp.json();
+      const data = await readResponsePayload(resp);
       if (resp.ok) {
         setStepStatus(step.key, "done", summariseResult(step.key, data));
       } else {
@@ -307,6 +408,7 @@ document.getElementById("btnRun").addEventListener("click", async () => {
     document.getElementById("btnFinalize").disabled = false;
     loadContracts();
     loadMatches();
+    loadItemMatches();
   }
   btn.disabled = false; btn.textContent = "Rerun Full Preprocess";
   llmToggle.disabled = false;
@@ -475,6 +577,30 @@ async function loadMatches() {
   updateSelectionButtons();
 }
 
+async function loadItemMatches() {
+  document.getElementById("itemMatchCard").style.display = "";
+  const resp = await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/item-matches`);
+  const rows = await resp.json();
+  document.getElementById("itemMatchCount").textContent = `${rows.length} rows`;
+
+  const tbody = document.getElementById("itemMatchBody");
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No item matching results yet</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = rows.map(r => `
+    <tr>
+      <td>${esc(r.input_item_id ?? '-')}</td>
+      <td>${esc(r.input_uom || '-')}</td>
+      <td>${esc(r.input_uom_to_match_infor || '-')}</td>
+      <td class="text-truncate" style="max-width:240px" title="${esc(r.input_description)}">${esc(r.input_description || '-')}</td>
+      <td>${esc(r.infor_item_number || '-')}</td>
+      <td class="text-truncate" style="max-width:240px" title="${esc(r.item_description)}">${esc(r.item_description || '-')}</td>
+    </tr>
+  `).join("");
+}
+
 function clearMatchFilters() {
   document.getElementById("filterBucket").value = "";
   document.getElementById("filterSource").value = "";
@@ -556,6 +682,7 @@ document.getElementById("btnFinalize").addEventListener("click", async () => {
   if (contracts.length) {
     loadContracts();
     loadMatches();
+    loadItemMatches();
     document.getElementById("btnRun").textContent = "Rerun Full Preprocess";
     document.getElementById("btnFinalize").disabled = false;
   }

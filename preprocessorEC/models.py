@@ -71,6 +71,7 @@ class Task(Base):
     items = relationship("TaskItem", back_populates="task", cascade="all, delete-orphan")
     errors = relationship("PreCheckError", back_populates="task", cascade="all, delete-orphan")
     matches = relationship("MatchResult", back_populates="task", cascade="all, delete-orphan")
+    item_match_candidates = relationship("ItemMatchCandidate", back_populates="task", cascade="all, delete-orphan")
     status_log = relationship("TaskStatusLog", back_populates="task", cascade="all, delete-orphan")
 
     def to_dict(self) -> dict:
@@ -133,7 +134,7 @@ class TaskItem(Base):
 
     # Data source & linkage
     source_dataset = Column(String(10), nullable=False, default="INPUT")  # INPUT | CCX | INFOR
-    infor_item_number = Column(String(50), nullable=True)
+    infor_item_number = Column(String(255), nullable=True)
     contract_line_infor_item_number = Column(String(50), nullable=True)
     infor_sync_flag = Column(String(20), nullable=True)  # SYNCED | UNSYNCED
 
@@ -149,11 +150,11 @@ class TaskItem(Base):
     input_reference = Column(Integer, nullable=True)  # FK to originating INPUT item_id
     vendor_id_short = Column(String(10), nullable=True)  # left(7) of ERPVendorID or VendorID
     uom_to_match_infor = Column(String(10), nullable=True)  # EDI-translated UOM
-    infor_item_1 = Column(String(20), nullable=True)  # Item# from MDM_ITEM (Mfg+MfgNum)
+    infor_item_1 = Column(String(255), nullable=True)  # Item# from MDM_ITEM (Mfg+MfgNum)
     infor_item_1_active = Column(String(5), nullable=True)
-    infor_item_2 = Column(String(20), nullable=True)  # Item# from MDM_VENDORITEM (Vendor+VendorItem)
+    infor_item_2 = Column(String(255), nullable=True)  # Item# from MDM_VENDORITEM (Vendor+VendorItem)
     infor_item_2_active = Column(String(5), nullable=True)
-    infor_item_3 = Column(String(100), nullable=True)  # Item# from TP Infor CL match
+    infor_item_3 = Column(String(255), nullable=True)  # Item# from TP Infor CL match
     infor_item_3_active = Column(String(30), nullable=True)
     infor_buy_uom_options = Column(String(500), nullable=True)  # e.g. "BX*5, PK*10"
     ccx_pkid = Column(Integer, nullable=True)
@@ -174,6 +175,7 @@ class TaskItem(Base):
     updated_at = Column(DateTime, default=ny_now, onupdate=ny_now)
 
     task = relationship("Task", back_populates="items")
+    item_match_candidates = relationship("ItemMatchCandidate", back_populates="item", cascade="all, delete-orphan")
 
     def to_dict(self) -> dict:
         return {
@@ -367,6 +369,40 @@ class MatchResult(Base):
             "pair_type": self.pair_type,
             "vendor_item_score": self.vendor_item_score,
             "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+# ---------------------------------------------------------------------------
+# ItemMatchCandidate — exploded 1-row-per-Infor-item match candidates
+# ---------------------------------------------------------------------------
+class ItemMatchCandidate(Base):
+    __tablename__ = "PreprocessorItemMatching"
+    __table_args__ = (
+        Index("ix_itemmatch_task_id", "task_id"),
+        Index("ix_itemmatch_item_id", "item_id"),
+        {"schema": SCHEMA},
+    )
+
+    match_item_id = Column(Integer, primary_key=True, autoincrement=True)
+    task_id = Column(String(4), ForeignKey(f"{SCHEMA}.PreprocessorTask.task_id"), nullable=False)
+    item_id = Column(Integer, ForeignKey(f"{SCHEMA}.PreprocessorTaskItem.item_id"), nullable=False)
+    infor_item_number = Column(String(20), nullable=False)
+    item_description = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=ny_now)
+    updated_at = Column(DateTime, default=ny_now, onupdate=ny_now)
+
+    task = relationship("Task", back_populates="item_match_candidates")
+    item = relationship("TaskItem", back_populates="item_match_candidates")
+
+    def to_dict(self) -> dict:
+        return {
+            "match_item_id": self.match_item_id,
+            "task_id": self.task_id,
+            "item_id": self.item_id,
+            "infor_item_number": self.infor_item_number,
+            "item_description": self.item_description,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
 
 

@@ -236,6 +236,14 @@ def api_item_labeling(task_id: str):
     return jsonify(result)
 
 
+@preprocess_bp.route("/api/preprocess/<task_id>/buy-uom", methods=["POST"])
+@login_required
+def api_buy_uom(task_id: str):
+    """Run Buy UOM aggregation for labeled item candidates."""
+    result = preprocess_service.run_buy_uom_check(task_id, _sm())
+    return jsonify(result)
+
+
 @preprocess_bp.route("/api/preprocess/<task_id>/llm-review", methods=["POST"])
 @login_required
 def api_llm_review(task_id: str):
@@ -382,6 +390,29 @@ def api_get_matches(task_id: str):
     return jsonify(results)
 
 
+@preprocess_bp.route("/api/preprocess/<task_id>/item-matches", methods=["GET"])
+@login_required
+def api_get_item_matches(task_id: str):
+    """Return exploded item matching results enriched with input item fields."""
+    input_items = task_repo.get_items_by_source(task_id, "INPUT")
+    item_by_id = {it.item_id: it for it in input_items}
+    rows = []
+    for match in task_repo.get_item_matches(task_id):
+        input_item = item_by_id.get(match.item_id)
+        rows.append(
+            {
+                "match_item_id": match.match_item_id,
+                "input_item_id": match.item_id,
+                "input_uom": input_item.uom if input_item else None,
+                "input_uom_to_match_infor": input_item.uom_to_match_infor if input_item else None,
+                "input_description": input_item.description if input_item else None,
+                "infor_item_number": match.infor_item_number,
+                "item_description": match.item_description,
+            }
+        )
+    return jsonify(rows)
+
+
 @preprocess_bp.route("/api/preprocess/<task_id>/update-false-positives", methods=["POST"])
 @login_required
 def api_update_false_positives(task_id: str):
@@ -483,4 +514,4 @@ def preprocess_page(task_id: str):
     task = task_repo.get_task(task_id)
     if not task:
         abort(404)
-    return render_template("preprocess.html", task_id=task_id)
+    return render_template("preprocess.html", task_id=task_id, task=task.to_dict())
