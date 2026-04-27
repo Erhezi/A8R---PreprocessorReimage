@@ -1,9 +1,319 @@
 {% extends "base.html" %}
 {% block title %}Dedup — Task #{{ task_id }}{% endblock %}
+
+{% block head %}
+<style>
+  .dedup-meta-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 0.9rem 1.25rem;
+  }
+
+  .dedup-meta-label {
+    font-size: 0.72rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #6c757d;
+    margin-bottom: 0.2rem;
+  }
+
+  .dedup-meta-value {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: #1f2937;
+    word-break: break-word;
+  }
+
+  .dedup-table-wrap {
+    max-height: 600px;
+    overflow-y: auto;
+  }
+
+  .dedup-table-wrap thead th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: #f8f9fa;
+  }
+
+  .dedup-toolbar-counts {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+
+  .dedup-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+  }
+
+  .dedup-toolbar-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+
+  .dedup-table-wrap .table td,
+  .dedup-table-wrap .table th {
+    white-space: nowrap;
+  }
+</style>
+{% endblock %}
+
 {% block content %}
-<div class="container-fluid mt-3">
+<div class="container-fluid mt-3" id="dedupPageRoot" data-task-id="{{ task_id }}" data-url-prefix="{{ url_prefix }}">
   <a href="{{ url_prefix }}/tasks/{{ task_id }}" class="text-decoration-none">&larr; Task #{{ task_id }}</a>
-  <h4 class="mt-1">Phase 4: Dedup &amp; Integrity</h4>
-  <p class="text-muted">Stub — implementation in Phase D.</p>
+  <h4 class="mt-1">Phase 4: Dedup Review</h4>
+  <p class="text-muted mb-3">Review accepted CCX matches only and assign bulk dedup decisions.</p>
+
+  <div class="card mb-3">
+    <div class="card-header">Current Task</div>
+    <div class="card-body">
+      <div class="dedup-meta-grid">
+        <div>
+          <div class="dedup-meta-label">Contract ID</div>
+          <div class="dedup-meta-value">{{ task.contract_number or '—' }}</div>
+        </div>
+        <div>
+          <div class="dedup-meta-label">Task Phase</div>
+          <div class="dedup-meta-value">{{ task.phase or '—' }}</div>
+        </div>
+        <div>
+          <div class="dedup-meta-label">Task Status</div>
+          <div class="dedup-meta-value">{{ task.status or '—' }}</div>
+        </div>
+        <div>
+          <div class="dedup-meta-label">Type</div>
+          <div class="dedup-meta-value">{{ (task.process_type or '—') ~ (' / ' ~ task.source_type if task.source_type else '') }}</div>
+        </div>
+        <div>
+          <div class="dedup-meta-label">Organization</div>
+          <div class="dedup-meta-value">{{ task.organization or '—' }}</div>
+        </div>
+        <div>
+          <div class="dedup-meta-label">Vendor</div>
+          <div class="dedup-meta-value">{{ ((task.vendor_id or '—') ~ ' - ' ~ (task.erp_vendor_name or '—')) if (task.vendor_id or task.erp_vendor_name) else '—' }}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header dedup-toolbar">
+      <div>
+        <strong>Accepted CCX Match Results</strong>
+        <div class="text-muted small">Rejected rows and INFOR_CL rows are excluded from this review.</div>
+      </div>
+      <div class="dedup-toolbar-actions">
+        <button class="btn btn-sm btn-outline-success" id="btnDecisionUpload" disabled>Upload</button>
+        <button class="btn btn-sm btn-outline-danger" id="btnDecisionExpire" disabled>Expire</button>
+        <button class="btn btn-sm btn-outline-secondary" id="btnDecisionKeep" disabled>Keep As Is</button>
+      </div>
+    </div>
+    <div class="card-body p-0">
+      <div id="dedupAlert" class="alert alert-danger rounded-0 border-0 border-bottom mb-0 d-none"></div>
+      <div class="d-flex justify-content-between align-items-center px-3 py-2 border-bottom bg-light">
+        <div class="dedup-toolbar-counts">
+          <span id="dedupCountBadge" class="small text-muted">0 matches</span>
+          <span id="dedupSelectedBadge" class="small text-muted">0 selected</span>
+        </div>
+      </div>
+      <div class="dedup-table-wrap table-responsive">
+        <table class="table table-sm table-hover mb-0">
+          <thead class="table-light">
+            <tr>
+              <th><input type="checkbox" id="toggleAllRows"></th>
+              <th>Input ID</th><th>Input MFN</th><th>Matched MFN</th>
+              <th>Input VPN</th><th>Matched VPN</th>
+              <th>Input UOM</th><th>Matched UOM</th><th>Input QOE</th><th>Matched QOE</th>
+              <th>Input Price</th><th>Matched Price</th>
+              <th>Input EA Price</th><th>Matched EA Price</th>
+              <th>Bucket</th>
+              <th>Score</th>
+              <th>Status</th>
+              <th>Source</th>
+              <th>Input Desc.</th><th>Matched Desc.</th><th>Contract</th><th>Organization</th><th>Match Type</th><th>Pair Type</th>
+            </tr>
+          </thead>
+          <tbody id="dedupTableBody">
+            <tr>
+              <td colspan="24" class="text-center text-muted py-4">Loading accepted CCX rows...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
 </div>
+
+<script>
+const dedupPageRoot = document.getElementById("dedupPageRoot");
+const TASK_ID = dedupPageRoot.dataset.taskId || "";
+const PREFIX = dedupPageRoot.dataset.urlPrefix || "";
+
+let dedupRows = [];
+let selectedMatchIds = new Set();
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function percent(value) {
+  return value != null ? `${Number(value).toFixed(1)}%` : "-";
+}
+
+function currency(value) {
+  return value != null ? `$${Number(value).toFixed(2)}` : "-";
+}
+
+function currencyTitle(value) {
+  return value != null ? `$${Number(value).toFixed(4)}` : "";
+}
+
+function bucketColor(bucket) {
+  return bucket === "HIGH" ? "success" : bucket === "MED" ? "warning" : "secondary";
+}
+
+function statusColor(status) {
+  if (status === "ACCEPTED") {
+    return "success";
+  }
+  if (status === "REJECTED") {
+    return "danger";
+  }
+  return "warning";
+}
+
+function updateToolbarState() {
+  const selectedCount = selectedMatchIds.size;
+  document.getElementById("dedupCountBadge").textContent = `${dedupRows.length} matches`;
+  document.getElementById("dedupSelectedBadge").textContent = `${selectedCount} selected`;
+  document.getElementById("btnDecisionUpload").disabled = selectedCount === 0;
+  document.getElementById("btnDecisionExpire").disabled = selectedCount === 0;
+  document.getElementById("btnDecisionKeep").disabled = selectedCount === 0;
+  document.getElementById("toggleAllRows").checked = dedupRows.length > 0 && selectedCount === dedupRows.length;
+}
+
+function renderRows() {
+  const body = document.getElementById("dedupTableBody");
+  if (!dedupRows.length) {
+    body.innerHTML = '<tr><td colspan="24" class="text-center text-muted py-4">No accepted CCX rows found for dedup review.</td></tr>';
+    updateToolbarState();
+    return;
+  }
+
+  body.innerHTML = dedupRows.map((row) => `
+    <tr>
+      <td><input type="checkbox" class="dedup-row-checkbox" value="${row.match_id}" ${selectedMatchIds.has(row.match_id) ? "checked" : ""}></td>
+      <td>${escapeHtml(row.input_item_id ?? "-")}</td>
+      <td class="text-truncate" style="max-width:120px" title="${escapeHtml(row.input_mfg_catalog_num || "")}">${escapeHtml(row.input_mfg_catalog_num || "-")}</td>
+      <td class="text-truncate" style="max-width:120px" title="${escapeHtml(row.manufacturer_number_matched || "")}">${escapeHtml(row.manufacturer_number_matched || "-")}</td>
+      <td class="text-truncate" style="max-width:120px" title="${escapeHtml(row.input_vendor_catalog_num || "")}">${escapeHtml(row.input_vendor_catalog_num || "-")}</td>
+      <td class="text-truncate" style="max-width:120px" title="${escapeHtml(row.vendor_item_matched || "")}">${escapeHtml(row.vendor_item_matched || "-")}</td>
+      <td>${escapeHtml(row.input_uom || "-")}</td>
+      <td>${escapeHtml(row.uom_matched || "-")}</td>
+      <td>${escapeHtml(row.input_qoe ?? "-")}</td>
+      <td>${escapeHtml(row.qoe_matched ?? "-")}</td>
+      <td title="${currencyTitle(row.input_unit_price)}">${currency(row.input_unit_price)}</td>
+      <td title="${currencyTitle(row.contract_price_matched)}">${currency(row.contract_price_matched)}</td>
+      <td title="${currencyTitle(row.input_ea_price)}">${currency(row.input_ea_price)}</td>
+      <td title="${currencyTitle(row.match_ea_price)}">${currency(row.match_ea_price)}</td>
+      <td><span class="badge bg-${bucketColor(row.similarity_bucket)}">${escapeHtml(row.similarity_bucket || "-")}</span></td>
+      <td>${percent(row.similarity_score)}</td>
+      <td><span class="badge bg-${statusColor(row.match_status)}">${escapeHtml(row.match_status || "-")}</span></td>
+      <td><span class="badge bg-info">${escapeHtml(row.matched_source || "-")}</span></td>
+      <td class="text-truncate" style="max-width:220px" title="${escapeHtml(row.input_description || "")}">${escapeHtml(row.input_description || "-")}</td>
+      <td class="text-truncate" style="max-width:220px" title="${escapeHtml(row.item_desc_matched || "")}">${escapeHtml(row.item_desc_matched || "-")}</td>
+      <td class="text-truncate" style="max-width:160px" title="${escapeHtml(row.contract_number || "")}">${escapeHtml(row.contract_number || "-")}</td>
+      <td class="text-truncate" style="max-width:180px" title="${escapeHtml(row.organization_matched || "")}">${escapeHtml(row.organization_matched || "-")}</td>
+      <td>${escapeHtml(row.match_type || "-")}</td>
+      <td>${escapeHtml(row.pair_type || "-")}</td>
+    </tr>
+  `).join("");
+
+  document.querySelectorAll(".dedup-row-checkbox").forEach((checkbox) => {
+    checkbox.addEventListener("change", (event) => {
+      const matchId = Number(event.target.value);
+      if (event.target.checked) {
+        selectedMatchIds.add(matchId);
+      } else {
+        selectedMatchIds.delete(matchId);
+      }
+      updateToolbarState();
+    });
+  });
+
+  updateToolbarState();
+}
+
+function setAlert(message) {
+  const alert = document.getElementById("dedupAlert");
+  if (!message) {
+    alert.classList.add("d-none");
+    alert.textContent = "";
+    return;
+  }
+  alert.textContent = message;
+  alert.classList.remove("d-none");
+}
+
+async function loadRows() {
+  setAlert("");
+  const response = await fetch(`${PREFIX}/api/dedup/${TASK_ID}/matches`);
+  if (!response.ok) {
+    document.getElementById("dedupTableBody").innerHTML = '<tr><td colspan="24" class="text-center text-danger py-4">Unable to load dedup rows.</td></tr>';
+    updateToolbarState();
+    return;
+  }
+  dedupRows = await response.json();
+  selectedMatchIds = new Set([...selectedMatchIds].filter((id) => dedupRows.some((row) => row.match_id === id)));
+  renderRows();
+}
+
+async function applyDecision(decision) {
+  const matchIds = [...selectedMatchIds];
+  if (!matchIds.length) {
+    return;
+  }
+
+  const response = await fetch(`${PREFIX}/api/dedup/${TASK_ID}/decisions`, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({match_ids: matchIds, decision})
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    setAlert(payload.error || "Unable to save dedup decision.");
+    return;
+  }
+
+  selectedMatchIds = new Set();
+  await loadRows();
+}
+
+document.getElementById("toggleAllRows").addEventListener("change", (event) => {
+  if (event.target.checked) {
+    selectedMatchIds = new Set(dedupRows.map((row) => row.match_id));
+  } else {
+    selectedMatchIds = new Set();
+  }
+  renderRows();
+});
+
+document.getElementById("btnDecisionUpload").addEventListener("click", () => applyDecision("UPLOAD"));
+document.getElementById("btnDecisionExpire").addEventListener("click", () => applyDecision("EXPIRE"));
+document.getElementById("btnDecisionKeep").addEventListener("click", () => applyDecision("KEEP_AS_IS"));
+
+loadRows();
+</script>
 {% endblock %}

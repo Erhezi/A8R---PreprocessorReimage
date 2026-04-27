@@ -1,0 +1,291 @@
+<script>
+// Preprocess task-detail JS — counterpart of intake_task_detail_scripts.html
+// Renders items, errors, warnings, and the accepted-matches drill-down panel.
+
+let currentIssues = [];
+
+function preprocessStatusBadge(status) {
+  if (!status) return '<span class="badge bg-secondary">—</span>';
+  if (status === "BUY_UOM_ERROR" || status === "MULTI_ITEM_ERROR") {
+    return `<span class="badge bg-danger">${status}</span>`;
+  }
+  if (status === "BUY_UOM_WARN") {
+    return `<span class="badge" style="background-color:#ffc107;color:#000">${status}</span>`;
+  }
+  if (status === "ITEM_PREPROCESSED" || status === "ITEM_LABELED") {
+    return `<span class="badge bg-success">${status}</span>`;
+  }
+  return `<span class="badge bg-secondary">${status}</span>`;
+}
+
+function renderItemsTable() {
+  const body = document.getElementById("itemsBody");
+  if (!currentItems.length) {
+    body.innerHTML = '<tr><td colspan="9" class="text-center text-muted">No items yet</td></tr>';
+    return;
+  }
+
+  let visible;
+  if (focusedItemIds.size > 0) {
+    visible = currentItems.filter(item => focusedItemIds.has(item.item_id));
+  } else if (activeItemFilter === "error") {
+    visible = currentItems.filter(item => isErrorStatus(item.status));
+  } else if (activeItemFilter === "warn") {
+    visible = currentItems.filter(item => isWarnStatus(item.status));
+  } else if (activeItemFilter === "issue") {
+    visible = currentItems.filter(item => isErrorStatus(item.status) || isWarnStatus(item.status));
+  } else {
+    visible = currentItems;
+  }
+
+  if (!visible.length) {
+    body.innerHTML = '<tr><td colspan="9" class="text-center text-muted">No matching items</td></tr>';
+  } else {
+    body.innerHTML = visible.map(item => {
+      const rowHighlight = focusedItemIds.has(item.item_id) ? ' class="table-info"' : '';
+      return `
+        <tr data-item-id="${item.item_id}"${rowHighlight}>
+          <td>${item.file_row || "—"}</td>
+          <td>${item.mfg_catalog_num || "—"}</td>
+          <td>${item.vendor_catalog_num || "—"}</td>
+          <td class="text-truncate" style="max-width:250px" title="${(item.description || '').replace(/"/g, '&quot;')}">${item.description || "—"}</td>
+          <td>${item.uom || "—"}</td>
+          <td>${item.qoe != null ? item.qoe : "—"}</td>
+          <td>${item.infor_item_number || "—"}</td>
+          <td class="text-truncate" style="max-width:200px" title="${(item.infor_buy_uom_options || '').replace(/"/g, '&quot;')}">${item.infor_buy_uom_options || "—"}</td>
+          <td>${preprocessStatusBadge(item.status)}</td>
+        </tr>`;
+    }).join("");
+  }
+
+  const countEl = document.getElementById("itemCount");
+  countEl.textContent = visible.length < currentItems.length
+    ? `${visible.length} / ${currentItems.length}`
+    : currentItems.length;
+
+  const filterDefs = [
+    { id: "filterAll", key: "all", active: "btn-secondary", inactive: "btn-outline-secondary" },
+    { id: "filterError", key: "error", active: "btn-danger", inactive: "btn-outline-danger" },
+    { id: "filterWarn", key: "warn", active: "btn-warning", inactive: "btn-outline-warning" },
+    { id: "filterIssue", key: "issue", active: "btn-dark", inactive: "btn-outline-dark" },
+  ];
+  filterDefs.forEach(({ id, key, active, inactive }) => {
+    const btn = document.getElementById(id);
+    if (!btn) return;
+    const isActive = focusedItemIds.size === 0 && activeItemFilter === key;
+    btn.className = `btn btn-sm ${isActive ? active : inactive}`;
+  });
+}
+
+function isErrorStatus(status) {
+  return status === "BUY_UOM_ERROR" || status === "MULTI_ITEM_ERROR";
+}
+
+function isWarnStatus(status) {
+  return status === "BUY_UOM_WARN";
+}
+
+function parseIssueDetail(issue) {
+  if (!issue || !issue.detail) return {};
+  try { return JSON.parse(issue.detail); } catch (e) { return {}; }
+}
+
+function describeIssue(issue) {
+  const detail = parseIssueDetail(issue);
+  if (issue.issue_type === "MULTI_ITEM_ERROR") {
+    const candidates = (detail.candidates || []).join(", ");
+    return `Multiple Infor item numbers proposed: ${candidates || '—'}`;
+  }
+  if (issue.issue_type === "BUY_UOM_ERROR") {
+    const expected = detail.expected || '—';
+    const available = (detail.available || []).join(", ") || '—';
+    const itemNumber = detail.infor_item_number || '—';
+    return `Expected buy UOM <code>${expected}</code> not in <code>${available}</code> for item ${itemNumber}`;
+  }
+  return issue.issue_type;
+}
+
+function actionsForIssue(issue, item) {
+  if (issue.resolved) {
+    return `<span class="text-muted small">Resolved by ${issue.resolved_by} (${issue.resolution_action})</span>`;
+  }
+  if (issue.issue_type === "MULTI_ITEM_ERROR") {
+    return `<button class="btn btn-sm btn-outline-primary" onclick="event.stopPropagation();openPickItemModal(${issue.issue_id})">Pick item…</button>`;
+  }
+  if (issue.issue_type === "BUY_UOM_ERROR") {
+    const intention = ((item && item.intention) || (currentTask && currentTask.intention) || "").toUpperCase();
+    if (issue.severity === "WARN" && intention === "EXPIRE") {
+      return `<button class="btn btn-sm btn-outline-secondary" onclick="event.stopPropagation();ignoreBuyUom(${issue.issue_id})">Ignore</button>`;
+    }
+    return [
+      `<button class="btn btn-sm btn-outline-warning me-1" onclick="event.stopPropagation();noteBuyUom(${issue.issue_id})" title="Demote to warning, carry forward">Note</button>`,
+      `<button class="btn btn-sm btn-outline-info" onclick="event.stopPropagation();recheckBuyUom(${issue.issue_id})" title="Re-query Infor for buy UOM">Re-check</button>`,
+    ].join("");
+  }
+  return "";
+}
+
+function renderIssueRow(issue) {
+  const item = currentItems.find(it => it.item_id === issue.item_id) || {};
+  const rowLabel = item.file_row || `#${issue.item_id}`;
+  const focusAttr = ` style="cursor:pointer" title="Click to focus and view accepted matches" onclick="focusItemAndShowMatches(${issue.item_id})"`;
+  return `
+    <tr${focusAttr}>
+      <td>${rowLabel}</td>
+      <td>${issue.issue_type}</td>
+      <td>${describeIssue(issue)}</td>
+      <td>${actionsForIssue(issue, item)}</td>
+    </tr>`;
+}
+
+function renderPreprocessIssues() {
+  const errors = currentIssues.filter(i => !i.resolved && i.severity === "ERROR");
+  const warns  = currentIssues.filter(i => !i.resolved && i.severity === "WARN");
+  const errorsCard = document.getElementById("errorsCard");
+  const warningsCard = document.getElementById("warningsCard");
+
+  if (errors.length) {
+    errorsCard.style.display = "";
+    document.getElementById("errorsBody").innerHTML = errors.map(renderIssueRow).join("");
+  } else {
+    errorsCard.style.display = "none";
+  }
+  if (warns.length) {
+    warningsCard.style.display = "";
+    document.getElementById("warningsBody").innerHTML = warns.map(renderIssueRow).join("");
+  } else {
+    warningsCard.style.display = "none";
+  }
+}
+
+function setItemFilter(filterKey) {
+  activeItemFilter = filterKey;
+  focusedItemIds = new Set();
+  document.getElementById("clearFocusBtn").style.display = "none";
+  closeAcceptedMatches();
+  renderItemsTable();
+}
+
+function focusItems(ids) {
+  focusedItemIds = new Set(ids.filter(id => id !== null && id !== undefined));
+  if (focusedItemIds.size === 0) return;
+  document.getElementById("clearFocusBtn").style.display = "";
+  renderItemsTable();
+  document.getElementById("itemsBody").closest(".table-responsive").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function clearFocus() {
+  focusedItemIds = new Set();
+  document.getElementById("clearFocusBtn").style.display = "none";
+  closeAcceptedMatches();
+  renderItemsTable();
+}
+
+async function focusItemAndShowMatches(itemId) {
+  focusItems([itemId]);
+  const item = currentItems.find(it => it.item_id === itemId);
+  document.getElementById("acceptedMatchesItemRow").textContent = item ? `(File row ${item.file_row || "—"})` : "";
+  const card = document.getElementById("acceptedMatchesCard");
+  card.style.display = "";
+  const body = document.getElementById("acceptedMatchesBody");
+  body.innerHTML = '<tr><td colspan="8" class="text-center text-muted">Loading…</td></tr>';
+  const resp = await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/items/${itemId}/accepted-matches`);
+  if (!resp.ok) {
+    body.innerHTML = '<tr><td colspan="8" class="text-center text-danger">Failed to load matches</td></tr>';
+    return;
+  }
+  const matches = await resp.json();
+  if (!matches.length) {
+    body.innerHTML = '<tr><td colspan="8" class="text-center text-muted">No accepted matches for this row</td></tr>';
+    return;
+  }
+  body.innerHTML = matches.map(m => `
+    <tr>
+      <td><span class="badge ${m.matched_source === 'CCX' ? 'bg-info' : 'bg-primary'}">${m.matched_source}</span></td>
+      <td>${m.contract_number || "—"}</td>
+      <td>${m.manufacturer_number_matched || "—"}</td>
+      <td>${m.vendor_item_matched || "—"}</td>
+      <td>${m.uom_matched || "—"}</td>
+      <td>${m.qoe_matched != null ? m.qoe_matched : "—"}</td>
+      <td>${m.contract_price_matched != null ? m.contract_price_matched : "—"}</td>
+      <td class="text-truncate" style="max-width:280px" title="${(m.item_desc_matched || '').replace(/"/g, '&quot;')}">${m.item_desc_matched || "—"}</td>
+    </tr>
+  `).join("");
+}
+
+function closeAcceptedMatches() {
+  document.getElementById("acceptedMatchesCard").style.display = "none";
+}
+
+// ---- Issue resolution actions -------------------------------------------
+
+function openPickItemModal(issueId) {
+  const issue = currentIssues.find(i => i.issue_id === issueId);
+  if (!issue) return;
+  const detail = parseIssueDetail(issue);
+  const candidates = detail.candidates || [];
+  document.getElementById("pickItemIssueId").value = issueId;
+  document.getElementById("pickItemCandidates").innerHTML = candidates.map((cand, idx) => `
+    <div class="form-check">
+      <input class="form-check-input pick-item-radio" type="radio" name="pickItemChoice" id="pickItem_${idx}" value="${cand}"${idx === 0 ? " checked" : ""}>
+      <label class="form-check-label" for="pickItem_${idx}">${cand}</label>
+    </div>
+  `).join("") || '<p class="text-muted small">No candidates recorded.</p>';
+  new bootstrap.Modal(document.getElementById("pickItemModal")).show();
+}
+
+document.getElementById("btnSubmitPickItem").addEventListener("click", async () => {
+  const issueId = document.getElementById("pickItemIssueId").value;
+  const radio = document.querySelector("input.pick-item-radio:checked");
+  if (!radio) { alert("Pick one item first"); return; }
+  const resp = await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/issues/${issueId}/select-infor-item`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ infor_item_number: radio.value }),
+  });
+  const data = await resp.json();
+  if (!resp.ok) { alert("Pick failed: " + (data.error || "unknown")); return; }
+  bootstrap.Modal.getInstance(document.getElementById("pickItemModal")).hide();
+  loadTask();
+});
+
+async function noteBuyUom(issueId) {
+  if (!confirm("Demote this BUY_UOM_ERROR to a warning and carry forward?")) return;
+  const resp = await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/issues/${issueId}/note`, { method: "POST" });
+  const data = await resp.json();
+  if (!resp.ok) { alert("Note failed: " + (data.error || "unknown")); return; }
+  loadTask();
+}
+
+async function recheckBuyUom(issueId) {
+  const resp = await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/issues/${issueId}/recheck`, { method: "POST" });
+  const data = await resp.json();
+  if (!resp.ok) { alert("Re-check failed: " + (data.error || "unknown")); return; }
+  if (data.passed) {
+    alert("Buy UOM is now valid — issue resolved.");
+  } else {
+    alert(`Buy UOM still missing. Recorded attempt #${data.attempts}.`);
+  }
+  loadTask();
+}
+
+async function ignoreBuyUom(issueId) {
+  if (!confirm("Ignore this warning and mark the item preprocessed? (EXPIRE intent only.)")) return;
+  const resp = await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/issues/${issueId}/ignore`, { method: "POST" });
+  const data = await resp.json();
+  if (!resp.ok) { alert("Ignore failed: " + (data.error || "unknown")); return; }
+  loadTask();
+}
+
+// Hook into the task_detail loadTask() flow: after items are fetched,
+// also fetch issues and render the errors/warnings cards.
+async function loadPreprocessIssues() {
+  const resp = await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/issues`);
+  if (!resp.ok) {
+    currentIssues = [];
+  } else {
+    currentIssues = await resp.json();
+  }
+  renderPreprocessIssues();
+}
+</script>

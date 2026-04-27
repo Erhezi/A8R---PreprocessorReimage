@@ -535,3 +535,74 @@ def preprocess_page(task_id: str):
     if not task:
         abort(404)
     return render_template("preprocess.html", task_id=task_id, task=task.to_dict())
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 issue review (post-finalize, on task detail page)
+# ---------------------------------------------------------------------------
+@preprocess_bp.route("/api/preprocess/<task_id>/issues", methods=["GET"])
+@login_required
+def api_get_issues(task_id: str):
+    """All preprocess issues for a task (resolved + unresolved)."""
+    issues = task_repo.get_preprocess_issues(task_id, include_resolved=True)
+    return jsonify([issue.to_dict() for issue in issues])
+
+
+@preprocess_bp.route("/api/preprocess/<task_id>/items/<int:item_id>/accepted-matches", methods=["GET"])
+@login_required
+def api_get_accepted_matches(task_id: str, item_id: int):
+    """ACCEPTED CCX + INFOR_CL matches for one input item — drill-down panel."""
+    matches = preprocess_service.get_accepted_matches_for_item(task_id, item_id)
+    return jsonify(matches)
+
+
+@preprocess_bp.route("/api/preprocess/<task_id>/issues/<int:issue_id>/select-infor-item", methods=["POST"])
+@login_required
+def api_select_infor_item(task_id: str, issue_id: int):
+    """Resolve MULTI_ITEM_ERROR by picking exactly one Infor item#."""
+    data = request.get_json(force=True) or {}
+    picked = data.get("infor_item_number")
+    if not picked:
+        return jsonify({"error": "infor_item_number required"}), 400
+    user = current_user.username if current_user.is_authenticated else "system"
+    try:
+        result = preprocess_service.resolve_multi_item_pick(task_id, issue_id, picked, user)
+        return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@preprocess_bp.route("/api/preprocess/<task_id>/issues/<int:issue_id>/note", methods=["POST"])
+@login_required
+def api_note_buy_uom(task_id: str, issue_id: int):
+    """Demote BUY_UOM_ERROR to WARN; carry forward."""
+    user = current_user.username if current_user.is_authenticated else "system"
+    try:
+        result = preprocess_service.resolve_buy_uom_note(task_id, issue_id, user)
+        return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@preprocess_bp.route("/api/preprocess/<task_id>/issues/<int:issue_id>/recheck", methods=["POST"])
+@login_required
+def api_recheck_buy_uom(task_id: str, issue_id: int):
+    """Re-query Infor UOM for the item; resolve if buy UOM is now present."""
+    user = current_user.username if current_user.is_authenticated else "system"
+    try:
+        result = preprocess_service.resolve_buy_uom_recheck(task_id, issue_id, user)
+        return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@preprocess_bp.route("/api/preprocess/<task_id>/issues/<int:issue_id>/ignore", methods=["POST"])
+@login_required
+def api_ignore_buy_uom(task_id: str, issue_id: int):
+    """EXPIRE-intent only: dismiss WARN, advance item to ITEM_PREPROCESSED."""
+    user = current_user.username if current_user.is_authenticated else "system"
+    try:
+        result = preprocess_service.resolve_buy_uom_ignore(task_id, issue_id, user)
+        return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400

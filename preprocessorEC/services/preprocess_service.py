@@ -9,6 +9,7 @@ Pipeline:  SKU match -> similarity -> review -> Infor cascade ->
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Optional
 
@@ -17,7 +18,7 @@ from sqlalchemy.orm import Session
 from ..db import task_repo, workstate_repo
 from ..db.engine import get_sqlserver_engine
 from ..db.sql_loader import load_query
-from ..common.utils import reduce_catalog_number
+from ..common.utils import reduce_catalog_number, ny_now
 from ..state import TaskStateMachine, Phase, Status
 from .scoring import (
     calculate_confidence_score,
@@ -712,6 +713,8 @@ def run_item_labeling(task_id: str, state_machine: TaskStateMachine) -> dict:
 
     task = task_repo.get_task(task_id)
     input_items = task_repo.get_items_by_source(task_id, "INPUT")
+    # Clear unresolved labeling issues — pipeline reruns rebuild from scratch.
+    task_repo.delete_unresolved_preprocess_issues(task_id, ["MULTI_ITEM_ERROR"])
     if not input_items:
         task_repo.delete_item_matches_for_task(task_id)
         return {"labeled": 0}
@@ -823,7 +826,21 @@ def run_item_labeling(task_id: str, state_machine: TaskStateMachine) -> dict:
                 update["status"] = Status.ITEM_LABELED
             else:
                 update["infor_item_number"] = ", ".join(sorted(items_found))
-                update["status"] = Status.BUY_UOM_ERROR
+                update["status"] = Status.MULTI_ITEM_ERROR
+                task_repo.upsert_preprocess_issue(
+                    task_id=task_id,
+                    item_id=item.item_id,
+                    issue_type="MULTI_ITEM_ERROR",
+                    severity="ERROR",
+                    detail=json.dumps({
+                        "candidates": sorted(items_found),
+                        "sources": {
+                            "mdm_item":        update.get("infor_item_1"),
+                            "mdm_vendoritem":  update.get("infor_item_2"),
+                            "infor_cl":        update.get("infor_item_3"),
+                        },
+                    }),
+                )
 
             final_items = _split_multi_value_items(update.get("infor_item_number"))
             for final_item in final_items:
@@ -867,8 +884,13 @@ def run_buy_uom_check(task_id: str, state_machine: TaskStateMachine) -> dict:
     task_repo.update_task_phase(task_id, Phase.PREPROCESS, Status.BUY_UOM_CHECKING)
 
     input_items = task_repo.get_items_by_source(task_id, "INPUT")
+    # Clear unresolved buy-UOM issues — pipeline reruns rebuild from scratch.
+    task_repo.delete_unresolved_preprocess_issues(task_id, ["BUY_UOM_ERROR"])
     if not input_items:
         return {"checked": 0, "matched_items": 0}
+
+    task = task_repo.get_task(task_id)
+    task_intention = (getattr(task, "intention", None) or "").upper()
 
     q_uom = load_query("preprocess", "item_matching", query="item_uom_options")
     q_inactive_gtin = load_query("preprocess", "item_matching", query="inactive_gtin_items")
@@ -937,10 +959,26 @@ def run_buy_uom_check(task_id: str, state_machine: TaskStateMachine) -> dict:
         if not has_item_number:
             update_map[item.item_id]["status"] = Status.ITEM_PREPROCESSED
             continue
-        if current_status == Status.BUY_UOM_ERROR:
+        if current_status == Status.MULTI_ITEM_ERROR:
             continue
         if expected_option and expected_option not in option_values:
-            update_map[item.item_id]["status"] = Status.BUY_UOM_ERROR
+            item_intention = (getattr(item, "intention", None) or task_intention).upper()
+            is_expire = item_intention == "EXPIRE"
+            new_status = Status.BUY_UOM_WARN if is_expire else Status.BUY_UOM_ERROR
+            severity = "WARN" if is_expire else "ERROR"
+            update_map[item.item_id]["status"] = new_status
+            task_repo.upsert_preprocess_issue(
+                task_id=task_id,
+                item_id=item.item_id,
+                issue_type="BUY_UOM_ERROR",
+                severity=severity,
+                detail=json.dumps({
+                    "expected": expected_option,
+                    "available": sorted(option_values),
+                    "infor_item_number": getattr(item, "infor_item_number", None),
+                    "intention": item_intention,
+                }),
+            )
 
     if updates:
         task_repo.update_items_bulk(updates)
@@ -1056,8 +1094,273 @@ def submit_item_decision(
     return {"match_id": match_id, "decision": decision}
 
 
+# ---------------------------------------------------------------------------
+# Issue resolution helpers (per-item UI actions on task detail page)
+# ---------------------------------------------------------------------------
+def _query_buy_uom_options(sess: Session, infor_item_number: str) -> list[str]:
+    q = load_query("preprocess", "item_matching", query="item_uom_options")
+    rows = sess.execute(q, {"item_number": infor_item_number}).mappings().all()
+    return sorted(
+        {
+            option
+            for row in rows
+            for option in [_build_buy_uom_option(row.get("UOM"), row.get("UOMConversion"))]
+            if option
+        }
+    )
+
+
+def _intention_for_item(item, task) -> str:
+    return (getattr(item, "intention", None) or getattr(task, "intention", None) or "").upper()
+
+
+def get_accepted_matches_for_item(task_id: str, item_id: int) -> list[dict]:
+    """Return ACCEPTED CCX + INFOR_CL matches for one input item."""
+    matches = task_repo.get_match_results(task_id)
+    return [
+        m.to_dict() for m in matches
+        if m.input_item_id == item_id
+        and (m.match_status or "").upper() == "ACCEPTED"
+        and (m.matched_source or "") in ("CCX", "INFOR_CL")
+    ]
+
+
+def resolve_multi_item_pick(task_id: str, issue_id: int, infor_item_number: str, decided_by: str) -> dict:
+    """User picks exactly one Infor item# to resolve a MULTI_ITEM_ERROR.
+
+    Updates TaskItem.infor_item_number, prunes ItemMatchCandidate rows to the
+    picked one, re-runs buy-UOM check for this item, raising a fresh
+    BUY_UOM_ERROR/WARN issue if needed.
+    """
+    issue = task_repo.get_preprocess_issue(issue_id)
+    if not issue or issue.task_id != task_id:
+        raise ValueError("Issue not found")
+    if issue.issue_type != "MULTI_ITEM_ERROR" or issue.resolved:
+        raise ValueError("Issue not eligible for PICK_ITEM resolution")
+
+    picked = _normalize_infor_item_number(infor_item_number)
+    if not picked:
+        raise ValueError("infor_item_number must be a 6-digit Infor item")
+
+    # Validate the pick is one of the original candidates.
+    try:
+        detail = json.loads(issue.detail or "{}")
+    except (TypeError, ValueError):
+        detail = {}
+    candidates = set(detail.get("candidates") or [])
+    if candidates and picked not in candidates:
+        raise ValueError(f"{picked} is not one of the candidates {sorted(candidates)}")
+
+    # Prune ItemMatchCandidate rows to the picked one.
+    surviving_match_item_id = None
+    item_desc = None
+    candidate_rows = task_repo.get_item_matches(task_id)
+    to_delete = []
+    for cand in candidate_rows:
+        if cand.item_id != issue.item_id:
+            continue
+        if cand.infor_item_number == picked:
+            surviving_match_item_id = cand.match_item_id
+            item_desc = cand.item_description
+        else:
+            to_delete.append(cand.match_item_id)
+    if to_delete:
+        task_repo.delete_item_matches_by_ids(to_delete)
+    if surviving_match_item_id is None:
+        # Pick wasn't materialised earlier — insert a new candidate row.
+        with _sql_session() as sess:
+            q_item_desc = load_query("preprocess", "item_matching", query="item_description_by_item_number")
+            rows = sess.execute(q_item_desc, {"item_number": picked}).mappings().all()
+            item_desc = rows[0]["item_description"] if rows else None
+        task_repo.add_item_matches_bulk([{
+            "task_id": task_id,
+            "item_id": issue.item_id,
+            "infor_item_number": picked,
+            "item_description": item_desc,
+        }])
+
+    # Recompute buy-UOM for just this item.
+    task = task_repo.get_task(task_id)
+    item = task_repo.get_task_item(issue.item_id)
+    expected_option = _expected_buy_uom_option(item) if item else None
+    intention = _intention_for_item(item, task) if item else ""
+    is_expire = intention == "EXPIRE"
+
+    with _sql_session() as sess:
+        option_values = _query_buy_uom_options(sess, picked)
+
+    options_str = ", ".join(option_values) if option_values else None
+    item_status = Status.ITEM_PREPROCESSED
+    new_buy_uom_issue = None
+    if expected_option and expected_option not in set(option_values):
+        item_status = Status.BUY_UOM_WARN if is_expire else Status.BUY_UOM_ERROR
+        new_buy_uom_issue = task_repo.upsert_preprocess_issue(
+            task_id=task_id,
+            item_id=issue.item_id,
+            issue_type="BUY_UOM_ERROR",
+            severity="WARN" if is_expire else "ERROR",
+            detail=json.dumps({
+                "expected": expected_option,
+                "available": option_values,
+                "infor_item_number": picked,
+                "intention": intention,
+                "raised_after": "PICK_ITEM",
+            }),
+        )
+
+    task_repo.update_items_bulk([{
+        "item_id": issue.item_id,
+        "infor_item_number": picked,
+        "infor_buy_uom_options": options_str,
+        "status": item_status,
+    }])
+
+    task_repo.resolve_preprocess_issue(
+        issue_id=issue_id,
+        resolution_action="PICK_ITEM",
+        resolved_by=decided_by,
+        detail=json.dumps({**detail, "picked": picked}),
+    )
+
+    return {
+        "issue_id": issue_id,
+        "picked": picked,
+        "item_status": item_status,
+        "buy_uom_issue_id": new_buy_uom_issue.issue_id if new_buy_uom_issue else None,
+    }
+
+
+def resolve_buy_uom_note(task_id: str, issue_id: int, decided_by: str) -> dict:
+    """Demote BUY_UOM_ERROR to WARN and carry forward to next phase."""
+    issue = task_repo.get_preprocess_issue(issue_id)
+    if not issue or issue.task_id != task_id:
+        raise ValueError("Issue not found")
+    if issue.issue_type != "BUY_UOM_ERROR" or issue.resolved or issue.severity != "ERROR":
+        raise ValueError("Issue not eligible for NOTE resolution")
+
+    task_repo.update_items_bulk([{"item_id": issue.item_id, "status": Status.BUY_UOM_WARN}])
+    task_repo.resolve_preprocess_issue(
+        issue_id=issue_id,
+        resolution_action="NOTE",
+        resolved_by=decided_by,
+    )
+    # Persist the demoted severity on the (now resolved) row for clearer audit.
+    task_repo.update_preprocess_issue(issue_id=issue_id, severity="WARN")
+    return {"issue_id": issue_id, "item_status": Status.BUY_UOM_WARN}
+
+
+def resolve_buy_uom_recheck(task_id: str, issue_id: int, decided_by: str) -> dict:
+    """Re-query Infor UOM options. If expected option now present, mark resolved."""
+    issue = task_repo.get_preprocess_issue(issue_id)
+    if not issue or issue.task_id != task_id:
+        raise ValueError("Issue not found")
+    if issue.issue_type != "BUY_UOM_ERROR" or issue.resolved:
+        raise ValueError("Issue not eligible for RECHECK")
+
+    item = task_repo.get_task_item(issue.item_id)
+    if not item or not item.infor_item_number:
+        raise ValueError("Item has no Infor item number to recheck")
+
+    expected_option = _expected_buy_uom_option(item)
+    item_numbers = _split_multi_value_items(item.infor_item_number)
+
+    with _sql_session() as sess:
+        options_by_item = {n: _query_buy_uom_options(sess, n) for n in item_numbers}
+
+    aggregate_options: set[str] = set()
+    for opts in options_by_item.values():
+        aggregate_options.update(opts)
+    passed = bool(expected_option) and expected_option in aggregate_options
+
+    # Append attempt to detail log.
+    try:
+        detail = json.loads(issue.detail or "{}")
+    except (TypeError, ValueError):
+        detail = {}
+    attempts = detail.get("recheck_attempts") or []
+    attempts.append({
+        "checked_at": ny_now().isoformat(),
+        "checked_by": decided_by,
+        "expected": expected_option,
+        "available": sorted(aggregate_options),
+        "passed": passed,
+    })
+    detail["recheck_attempts"] = attempts
+    detail["available"] = sorted(aggregate_options)
+
+    options_str = ", ".join(sorted(aggregate_options)) if aggregate_options else None
+
+    if passed:
+        task_repo.update_items_bulk([{
+            "item_id": issue.item_id,
+            "infor_buy_uom_options": options_str,
+            "status": Status.ITEM_PREPROCESSED,
+        }])
+        task_repo.resolve_preprocess_issue(
+            issue_id=issue_id,
+            resolution_action="RECHECK_PASSED",
+            resolved_by=decided_by,
+            detail=json.dumps(detail),
+        )
+        return {"issue_id": issue_id, "passed": True, "item_status": Status.ITEM_PREPROCESSED}
+
+    # Still failing — keep open, just log the attempt.
+    task_repo.update_items_bulk([{
+        "item_id": issue.item_id,
+        "infor_buy_uom_options": options_str,
+    }])
+    task_repo.update_preprocess_issue(issue_id=issue_id, detail=json.dumps(detail))
+    return {"issue_id": issue_id, "passed": False, "attempts": len(attempts)}
+
+
+def resolve_buy_uom_ignore(task_id: str, issue_id: int, decided_by: str) -> dict:
+    """EXPIRE-intent only: dismiss the warning and advance item to ITEM_PREPROCESSED."""
+    issue = task_repo.get_preprocess_issue(issue_id)
+    if not issue or issue.task_id != task_id:
+        raise ValueError("Issue not found")
+    if issue.issue_type != "BUY_UOM_ERROR" or issue.resolved:
+        raise ValueError("Issue not eligible for IGNORE")
+
+    item = task_repo.get_task_item(issue.item_id)
+    task = task_repo.get_task(task_id)
+    if not item or _intention_for_item(item, task) != "EXPIRE":
+        raise ValueError("IGNORE is only available for EXPIRE-intent items")
+
+    task_repo.update_items_bulk([{"item_id": issue.item_id, "status": Status.ITEM_PREPROCESSED}])
+    task_repo.resolve_preprocess_issue(
+        issue_id=issue_id,
+        resolution_action="IGNORE_EXPIRE",
+        resolved_by=decided_by,
+    )
+    return {"issue_id": issue_id, "item_status": Status.ITEM_PREPROCESSED}
+
+
 def finalize_preprocess(task_id: str, state_machine: TaskStateMachine, user: str) -> dict:
-    """Mark preprocess complete and advance to DEDUP phase."""
+    """Mark preprocess complete and advance to DEDUP phase.
+
+    Blocks if any unresolved ERROR-severity preprocess issues remain. WARN
+    issues carry forward into DEDUP.
+    """
+    pending_matches = [
+        m for m in task_repo.get_match_results(task_id)
+        if (m.match_status or "").upper() == "PENDING"
+    ]
+    if pending_matches:
+        raise ValueError(
+            "Cannot finalize: {n} match(es) still PENDING — accept or reject every match before advancing".format(
+                n=len(pending_matches)
+            )
+        )
+
+    unresolved_errors = task_repo.get_unresolved_error_issues(task_id)
+    if unresolved_errors:
+        raise ValueError(
+            "Cannot finalize: {n} unresolved ERROR issue(s) on items {items}".format(
+                n=len(unresolved_errors),
+                items=sorted({issue.item_id for issue in unresolved_errors}),
+            )
+        )
+
     input_items = task_repo.get_items_by_source(task_id, "INPUT")
     finalize_updates = [
         {"item_id": item.item_id, "status": Status.ITEM_PREPROCESSED}

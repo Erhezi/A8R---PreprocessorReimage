@@ -287,6 +287,9 @@ class MatchResult(Base):
     reviewed_at = Column(DateTime, nullable=True)
     llm_confidence = Column(Integer, nullable=True)
     llm_reason = Column(Text, nullable=True)
+    dedup_decision = Column(String(20), nullable=True)  # UPLOAD | EXPIRE | KEEP_AS_IS
+    dedup_decided_by = Column(String(120), nullable=True)
+    dedup_decided_at = Column(DateTime, nullable=True)
 
     # Phase 3 — contract grouping and match details
     contract_number = Column(String(100), nullable=True)
@@ -339,6 +342,9 @@ class MatchResult(Base):
             "reviewed_at": self.reviewed_at.isoformat() if self.reviewed_at else None,
             "llm_confidence": self.llm_confidence,
             "llm_reason": self.llm_reason,
+            "dedup_decision": self.dedup_decision,
+            "dedup_decided_by": self.dedup_decided_by,
+            "dedup_decided_at": self.dedup_decided_at.isoformat() if self.dedup_decided_at else None,
             "contract_number": self.contract_number,
             "match_type": self.match_type,
             "ccx_pkid": self.ccx_pkid,
@@ -405,6 +411,50 @@ class ItemMatchCandidate(Base):
             "item_description": self.item_description,
             "infor_buy_uom_options": self.infor_buy_uom_options,
             "active_gtin": self.active_gtin,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+# ---------------------------------------------------------------------------
+# PreprocessIssue — per-item issues raised in Phase 3 (BUY_UOM, MULTI_ITEM)
+# ---------------------------------------------------------------------------
+class PreprocessIssue(Base):
+    __tablename__ = "PreprocessorPreprocessIssue"
+    __table_args__ = (
+        Index("ix_preprocissue_task_id", "task_id"),
+        Index("ix_preprocissue_item_id", "item_id"),
+        {"schema": SCHEMA},
+    )
+
+    issue_id = Column(Integer, primary_key=True, autoincrement=True)
+    task_id = Column(String(4), ForeignKey(f"{SCHEMA}.PreprocessorTask.task_id"), nullable=False)
+    item_id = Column(Integer, ForeignKey(f"{SCHEMA}.PreprocessorTaskItem.item_id"), nullable=False)
+
+    issue_type = Column(String(40), nullable=False)   # BUY_UOM_ERROR | MULTI_ITEM_ERROR
+    severity = Column(String(10), nullable=False)     # ERROR | WARN
+    detail = Column(Text, nullable=True)              # JSON payload
+
+    resolved = Column(Boolean, default=False, nullable=False)
+    resolved_by = Column(String(120), nullable=True)
+    resolved_at = Column(DateTime, nullable=True)
+    resolution_action = Column(String(40), nullable=True)  # PICK_ITEM | NOTE | RECHECK_PASSED | IGNORE_EXPIRE
+
+    created_at = Column(DateTime, default=ny_now)
+    updated_at = Column(DateTime, default=ny_now, onupdate=ny_now)
+
+    def to_dict(self) -> dict:
+        return {
+            "issue_id": self.issue_id,
+            "task_id": self.task_id,
+            "item_id": self.item_id,
+            "issue_type": self.issue_type,
+            "severity": self.severity,
+            "detail": self.detail,
+            "resolved": self.resolved,
+            "resolved_by": self.resolved_by,
+            "resolved_at": self.resolved_at.isoformat() if self.resolved_at else None,
+            "resolution_action": self.resolution_action,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

@@ -1,0 +1,122 @@
+  <!-- Items summary (preprocess) -->
+  <div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+      <span>Items <span class="badge bg-secondary ms-1" id="itemCount">0</span></span>
+      <div class="d-flex align-items-center gap-2">
+        <div id="itemFilterBtns" style="display:none">
+          <div class="btn-group btn-group-sm" role="group">
+            <button id="filterAll" class="btn btn-secondary" onclick="setItemFilter('all')">All</button>
+            <button id="filterError" class="btn btn-outline-danger" onclick="setItemFilter('error')">Errors</button>
+            <button id="filterWarn" class="btn btn-outline-warning" onclick="setItemFilter('warn')">Warnings</button>
+            <button id="filterIssue" class="btn btn-outline-dark" onclick="setItemFilter('issue')">Issues</button>
+          </div>
+          <button id="clearFocusBtn" class="btn btn-sm btn-outline-info ms-2" style="display:none" onclick="clearFocus()"><i class="bi bi-x-circle"></i> Clear focus</button>
+        </div>
+        <div id="itemActions"></div>
+      </div>
+    </div>
+    <div class="card-body p-0">
+      <div class="table-responsive" style="max-height:500px; overflow-y:auto">
+        <table class="table table-sm table-hover mb-0">
+          <thead class="table-light sticky-top">
+            <tr>
+              <th>File Row</th>
+              <th>Mfg Cat #</th>
+              <th>Vendor Cat #</th>
+              <th>Description</th>
+              <th>UOM</th>
+              <th>QOE</th>
+              <th>Infor Item #</th>
+              <th>Buy UOM Options</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody id="itemsBody">
+            <tr><td colspan="9" class="text-center text-muted">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Errors (preprocess) -->
+  <div class="card mb-4" id="errorsCard" style="display:none">
+    <div class="card-header text-danger d-flex justify-content-between align-items-center">
+      <span>Preprocess Errors</span>
+      <small class="fw-normal" style="font-size:0.75rem;opacity:0.75">Click a row to focus the item and view its accepted matches</small>
+    </div>
+    <div class="card-body p-0">
+      <table class="table table-sm mb-0">
+        <thead class="table-light">
+          <tr><th style="width:8%">Row</th><th style="width:18%">Type</th><th>Detail</th><th style="width:25%">Action</th></tr>
+        </thead>
+        <tbody id="errorsBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Warnings (preprocess) -->
+  <div class="card mb-4" id="warningsCard" style="display:none">
+    <div class="card-header d-flex justify-content-between align-items-center" style="color:#856404; background-color:#fff3cd; border-color:#ffc107">
+      <span>Preprocess Warnings</span>
+      <small class="fw-normal" style="font-size:0.75rem;opacity:0.75">Click a row to focus the item and view its accepted matches</small>
+    </div>
+    <div class="card-body p-0">
+      <table class="table table-sm mb-0">
+        <thead class="table-light">
+          <tr><th style="width:8%">Row</th><th style="width:18%">Type</th><th>Detail</th><th style="width:25%">Action</th></tr>
+        </thead>
+        <tbody id="warningsBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Inline drill-down panel: ACCEPTED matches for a focused item -->
+  <div class="card mb-4" id="acceptedMatchesCard" style="display:none">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span>Accepted Matches — Item <span id="acceptedMatchesItemRow" class="text-muted small"></span></span>
+      <button class="btn btn-sm btn-outline-secondary" onclick="closeAcceptedMatches()"><i class="bi bi-x-lg"></i> Close</button>
+    </div>
+    <div class="card-body p-0">
+      <div class="table-responsive">
+        <table class="table table-sm mb-0">
+          <thead class="table-light">
+            <tr>
+              <th>Source</th>
+              <th>Contract #</th>
+              <th>Mfg #</th>
+              <th>Vendor #</th>
+              <th>UOM</th>
+              <th>QOE</th>
+              <th>Price</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody id="acceptedMatchesBody">
+            <tr><td colspan="8" class="text-center text-muted">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Pick-Item modal (resolve MULTI_ITEM_ERROR) -->
+  <div class="modal fade" id="pickItemModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title">Pick One Infor Item</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body">
+          <input type="hidden" id="pickItemIssueId">
+          <p class="small text-muted mb-2">Multiple Infor item numbers were proposed by the labeling sources. Pick exactly one to use for this row.</p>
+          <div id="pickItemCandidates"></div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-primary btn-sm" id="btnSubmitPickItem">Use Selected Item</button>
+        </div>
+      </div>
+    </div>
+  </div>

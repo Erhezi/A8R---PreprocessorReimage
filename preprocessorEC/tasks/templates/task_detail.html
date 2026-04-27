@@ -27,7 +27,11 @@
     </div>
   </div>
 
-{% include "intake_task_detail_content.html" %}
+{% if task and task.phase in ["INTAKE", "IDENTITY"] %}
+  {% include "intake_task_detail_content.html" %}
+{% else %}
+  {% include "preprocess_task_detail_content.html" %}
+{% endif %}
 
   <div class="card mb-4">
     <div class="card-header">Status History</div>
@@ -114,13 +118,16 @@ function renderPhaseBar(task) {
 
 function renderTaskActions(task, issues) {
   const actions = document.getElementById("taskActions");
-  let buttons = renderIntakeActionButtons(task, issues);
+  let buttons = (typeof renderIntakeActionButtons === "function") ? renderIntakeActionButtons(task, issues) : "";
 
   if (task.phase === "IDENTITY") {
     buttons += `<a href="${PREFIX}/identity/${TASK_ID}" class="btn btn-sm btn-outline-primary d-block mb-1">Identity</a>`;
   }
   if (task.phase === "PREPROCESS") {
     buttons += `<a href="${PREFIX}/preprocess/${TASK_ID}" class="btn btn-sm btn-outline-primary d-block mb-1">Preprocess</a>`;
+  }
+  if (task.phase === "DEDUP") {
+    buttons += `<a href="${PREFIX}/dedup/${TASK_ID}" class="btn btn-sm btn-outline-primary d-block mb-1">Dedup</a>`;
   }
 
   actions.innerHTML = buttons || '<p class="text-muted small mb-0">No actions available</p>';
@@ -144,7 +151,11 @@ function renderStatusLog(log) {
   `).join("");
 }
 </script>
-{% include "intake_task_detail_scripts.html" %}
+{% if task and task.phase in ["INTAKE", "IDENTITY"] %}
+  {% include "intake_task_detail_scripts.html" %}
+{% else %}
+  {% include "preprocess_task_detail_scripts.html" %}
+{% endif %}
 <script>
 async function loadTask() {
   const resp = await fetch(`${PREFIX}/api/tasks/${TASK_ID}`);
@@ -157,6 +168,7 @@ async function loadTask() {
   currentTask = data.task;
   currentItems = data.items || [];
   const inIntake = currentTask.phase === "INTAKE";
+  const inIntakeOrIdentity = inIntake || currentTask.phase === "IDENTITY";
 
   currentDupGroups = [];
   if (inIntake) {
@@ -176,7 +188,11 @@ async function loadTask() {
   document.getElementById("itemFilterBtns").style.display = currentItems.length ? "" : "none";
   document.getElementById("clearFocusBtn").style.display = "none";
   renderItemsTable();
-  renderIntakeIssues((data.errors || []).filter(issue => !issue.resolved));
+  if (inIntakeOrIdentity && typeof renderIntakeIssues === "function") {
+    renderIntakeIssues((data.errors || []).filter(issue => !issue.resolved));
+  } else if (typeof loadPreprocessIssues === "function") {
+    await loadPreprocessIssues();
+  }
   renderStatusLog(data.status_log || []);
 }
 

@@ -5,19 +5,51 @@ Uses the SQL Server engine. Framework-agnostic (no Flask imports).
 
 from __future__ import annotations
 
+from functools import lru_cache
 import uuid
 from typing import Optional
 
-from sqlalchemy import text
+from sqlalchemy import MetaData, Table, inspect, text
 from sqlalchemy.orm import Session
 
-from ..models import Task, TaskItem, PreCheckError, MatchResult, TaskStatusLog, ItemMatchCandidate
+from ..models import Task, TaskItem, PreCheckError, MatchResult, TaskStatusLog, ItemMatchCandidate, PreprocessIssue
 from ..common.utils import ny_now
 from .engine import get_sqlserver_engine
 
 
 def _session() -> Session:
     return Session(get_sqlserver_engine())
+
+
+@lru_cache(maxsize=1)
+def _get_match_result_columns() -> set[str]:
+    return {
+        column["name"]
+        for column in inspect(get_sqlserver_engine()).get_columns(
+            "PreprocessorMatchResult",
+            schema="Preprocessor",
+        )
+    }
+
+
+@lru_cache(maxsize=1)
+def _get_match_result_table() -> Table:
+    metadata = MetaData()
+    return Table(
+        "PreprocessorMatchResult",
+        metadata,
+        schema="Preprocessor",
+        autoload_with=get_sqlserver_engine(),
+    )
+
+
+def match_result_has_dedup_columns() -> bool:
+    columns = _get_match_result_columns()
+    return {
+        "dedup_decision",
+        "dedup_decided_by",
+        "dedup_decided_at",
+    }.issubset(columns)
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +110,14 @@ def get_task(task_id: str) -> Optional[Task]:
         if task:
             s.expunge(task)
         return task
+
+
+def get_task_item(item_id: int) -> Optional[TaskItem]:
+    with _session() as s:
+        item = s.get(TaskItem, item_id)
+        if item:
+            s.expunge(item)
+        return item
 
 
 def list_tasks(
@@ -272,6 +312,19 @@ def delete_item_matches_for_task(task_id: str) -> int:
         return count
 
 
+def delete_item_matches_by_ids(match_item_ids: list[int]) -> int:
+    if not match_item_ids:
+        return 0
+    with _session() as s:
+        count = (
+            s.query(ItemMatchCandidate)
+            .filter(ItemMatchCandidate.match_item_id.in_(match_item_ids))
+            .delete(synchronize_session=False)
+        )
+        s.commit()
+        return count
+
+
 def add_item_matches_bulk(matches: list[dict]) -> list[ItemMatchCandidate]:
     with _session() as s:
         db_matches = []
@@ -406,6 +459,24 @@ def add_match_result(
 
 def add_match_results_bulk(task_id: str, matches: list[dict]) -> list[MatchResult]:
     """Bulk insert match results for a task. Each dict should have MatchResult columns."""
+    if not matches:
+        return []
+
+    if not match_result_has_dedup_columns():
+        insertable_columns = _get_match_result_columns()
+        rows_to_insert = [
+            {
+                key: value
+                for key, value in {"task_id": task_id, **match}.items()
+                if key in insertable_columns
+            }
+            for match in matches
+        ]
+        with _session() as s:
+            s.execute(_get_match_result_table().insert(), rows_to_insert)
+            s.commit()
+        return []
+
     with _session() as s:
         db_matches = []
         for m in matches:
@@ -427,6 +498,78 @@ def get_match_results(task_id: str, matched_source: Optional[str] = None) -> lis
         results = q.all()
         for r in results:
             s.expunge(r)
+        return results
+
+
+def get_dedup_candidates(task_id: str) -> list[dict]:
+    select_columns = [
+        "match_id",
+        "task_id",
+        "input_item_id",
+        "matched_source",
+        "matched_item_ref",
+        "similarity_score",
+        "similarity_bucket",
+        "match_status",
+        "reviewed_by",
+        "reviewed_at",
+        "llm_confidence",
+        "llm_reason",
+        "contract_number",
+        "match_type",
+        "ccx_pkid",
+        "ccx_pkids_matched",
+        "infor_pkids_matched",
+        "infor_pkid",
+        "contract_id_matched",
+        "organization_eid_matched",
+        "organization_matched",
+        "manufacturer_number_matched",
+        "uom_matched",
+        "erp_vendor_id_matched",
+        "vendor_item_matched",
+        "uom_to_match_infor_matched",
+        "qoe_matched",
+        "contract_price_matched",
+        "item_desc_matched",
+        "mfn_score",
+        "mfn_complexity",
+        "uom_score",
+        "qoe_score",
+        "price_score",
+        "price_diff_pct",
+        "desc_score",
+        "weighted_score",
+        "match_ea_price",
+        "input_ea_price",
+        "pair_type",
+        "vendor_item_score",
+        "created_at",
+    ]
+    if match_result_has_dedup_columns():
+        select_columns.extend(["dedup_decision", "dedup_decided_by", "dedup_decided_at"])
+
+    column_sql = ",\n                ".join(f"[{column}]" for column in select_columns)
+    stmt = text(
+        f"""
+        SELECT
+                {column_sql}
+        FROM [Preprocessor].[PreprocessorMatchResult]
+        WHERE [task_id] = :task_id
+          AND [matched_source] = 'CCX'
+          AND [match_status] = 'ACCEPTED'
+        ORDER BY [input_item_id] ASC, [match_id] ASC
+        """
+    )
+
+    with _session() as s:
+        rows = s.execute(stmt, {"task_id": task_id}).mappings().all()
+        results = [dict(row) for row in rows]
+        if not match_result_has_dedup_columns():
+            for row in results:
+                row["dedup_decision"] = None
+                row["dedup_decided_by"] = None
+                row["dedup_decided_at"] = None
         return results
 
 
@@ -584,6 +727,183 @@ def update_match_decision(
                     linked.reviewed_by = reviewed_by
                     linked.reviewed_at = mr.reviewed_at
             s.commit()
+
+
+def update_dedup_decisions(match_ids: list[int], decision: str, decided_by: str) -> int:
+    if not match_ids:
+        return 0
+    if not match_result_has_dedup_columns():
+        raise ValueError("Dedup decision columns are not available yet. Apply migration 018_add_dedup_decision_to_match_result.sql first.")
+
+    with _session() as s:
+        now = ny_now()
+        count = (
+            s.query(MatchResult)
+            .filter(MatchResult.match_id.in_(match_ids))
+            .update(
+                {
+                    MatchResult.dedup_decision: decision,
+                    MatchResult.dedup_decided_by: decided_by,
+                    MatchResult.dedup_decided_at: now,
+                },
+                synchronize_session=False,
+            )
+        )
+        s.commit()
+        return count
+
+
+# ---------------------------------------------------------------------------
+# PreprocessIssue — per-item Phase 3 issues (BUY_UOM_ERROR, MULTI_ITEM_ERROR)
+# ---------------------------------------------------------------------------
+def upsert_preprocess_issue(
+    task_id: str,
+    item_id: int,
+    issue_type: str,
+    severity: str,
+    detail: Optional[str] = None,
+) -> PreprocessIssue:
+    """Create or refresh an unresolved issue of (task_id, item_id, issue_type).
+
+    If an unresolved row already exists, severity/detail are overwritten and
+    updated_at bumped. Resolved rows are left alone (so the audit trail of
+    past resolutions is preserved) and a new row is inserted.
+    """
+    with _session() as s:
+        existing = (
+            s.query(PreprocessIssue)
+            .filter(
+                PreprocessIssue.task_id == task_id,
+                PreprocessIssue.item_id == item_id,
+                PreprocessIssue.issue_type == issue_type,
+                PreprocessIssue.resolved == False,  # noqa: E712
+            )
+            .first()
+        )
+        if existing:
+            existing.severity = severity
+            existing.detail = detail
+            existing.updated_at = ny_now()
+            issue = existing
+        else:
+            issue = PreprocessIssue(
+                task_id=task_id,
+                item_id=item_id,
+                issue_type=issue_type,
+                severity=severity,
+                detail=detail,
+            )
+            s.add(issue)
+        s.commit()
+        s.refresh(issue)
+        s.expunge(issue)
+        return issue
+
+
+def get_preprocess_issues(task_id: str, include_resolved: bool = True) -> list[PreprocessIssue]:
+    with _session() as s:
+        query = s.query(PreprocessIssue).filter(PreprocessIssue.task_id == task_id)
+        if not include_resolved:
+            query = query.filter(PreprocessIssue.resolved == False)  # noqa: E712
+        rows = query.order_by(PreprocessIssue.item_id, PreprocessIssue.created_at).all()
+        for row in rows:
+            s.expunge(row)
+        return rows
+
+
+def get_unresolved_error_issues(task_id: str) -> list[PreprocessIssue]:
+    with _session() as s:
+        rows = (
+            s.query(PreprocessIssue)
+            .filter(
+                PreprocessIssue.task_id == task_id,
+                PreprocessIssue.resolved == False,  # noqa: E712
+                PreprocessIssue.severity == "ERROR",
+            )
+            .all()
+        )
+        for row in rows:
+            s.expunge(row)
+        return rows
+
+
+def get_preprocess_issue(issue_id: int) -> Optional[PreprocessIssue]:
+    with _session() as s:
+        issue = s.get(PreprocessIssue, issue_id)
+        if issue:
+            s.expunge(issue)
+        return issue
+
+
+def update_preprocess_issue(
+    issue_id: int,
+    severity: Optional[str] = None,
+    detail: Optional[str] = None,
+) -> Optional[PreprocessIssue]:
+    with _session() as s:
+        issue = s.get(PreprocessIssue, issue_id)
+        if not issue:
+            return None
+        if severity is not None:
+            issue.severity = severity
+        if detail is not None:
+            issue.detail = detail
+        issue.updated_at = ny_now()
+        s.commit()
+        s.refresh(issue)
+        s.expunge(issue)
+        return issue
+
+
+def resolve_preprocess_issue(
+    issue_id: int,
+    resolution_action: str,
+    resolved_by: str,
+    detail: Optional[str] = None,
+) -> Optional[PreprocessIssue]:
+    with _session() as s:
+        issue = s.get(PreprocessIssue, issue_id)
+        if not issue:
+            return None
+        issue.resolved = True
+        issue.resolved_by = resolved_by
+        issue.resolved_at = ny_now()
+        issue.resolution_action = resolution_action
+        if detail is not None:
+            issue.detail = detail
+        issue.updated_at = ny_now()
+        s.commit()
+        s.refresh(issue)
+        s.expunge(issue)
+        return issue
+
+
+def delete_preprocess_issues_for_task(task_id: str) -> int:
+    with _session() as s:
+        count = (
+            s.query(PreprocessIssue)
+            .filter(PreprocessIssue.task_id == task_id)
+            .delete(synchronize_session=False)
+        )
+        s.commit()
+        return count
+
+
+def delete_unresolved_preprocess_issues(task_id: str, issue_types: list[str]) -> int:
+    if not issue_types:
+        return 0
+    with _session() as s:
+        count = (
+            s.query(PreprocessIssue)
+            .filter(
+                PreprocessIssue.task_id == task_id,
+                PreprocessIssue.issue_type.in_(issue_types),
+                PreprocessIssue.resolved == False,  # noqa: E712
+            )
+            .delete(synchronize_session=False)
+        )
+        s.commit()
+        return count
 
 
 # ---------------------------------------------------------------------------

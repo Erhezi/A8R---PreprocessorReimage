@@ -314,4 +314,4 @@ def task_detail(task_id: str):
     task = task_repo.get_task(task_id)
     if not task:
         abort(404)
-    return render_template("task_detail.html", task_id=task_id)
+    return render_template("task_detail.html", task_id=task_id, task=task.to_dict())
