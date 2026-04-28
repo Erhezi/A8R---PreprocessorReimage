@@ -11,7 +11,7 @@ function preprocessStatusBadge(status) {
 function renderItemsTable() {
   const body = document.getElementById("itemsBody");
   if (!currentItems.length) {
-    body.innerHTML = '<tr><td colspan="10" class="text-center text-muted">No items yet</td></tr>';
+    body.innerHTML = '<tr><td colspan="11" class="text-center text-muted">No items yet</td></tr>';
     return;
   }
 
@@ -29,7 +29,7 @@ function renderItemsTable() {
   }
 
   if (!visible.length) {
-    body.innerHTML = '<tr><td colspan="10" class="text-center text-muted">No matching items</td></tr>';
+    body.innerHTML = '<tr><td colspan="11" class="text-center text-muted">No matching items</td></tr>';
   } else {
     const openIssuesByItem = new Map();
     currentIssues.forEach(issue => {
@@ -53,6 +53,7 @@ function renderItemsTable() {
           <td>${item.vendor_catalog_num || "—"}</td>
           <td class="text-truncate" style="max-width:250px" title="${(item.description || '').replace(/"/g, '&quot;')}">${item.description || "—"}</td>
           <td>${item.uom || "—"}</td>
+          <td>${item.uom_to_match_infor || "—"}</td>
           <td>${item.qoe != null ? item.qoe : "—"}</td>
           <td>${item.infor_item_number || "—"}</td>
           <td class="text-truncate" style="max-width:200px" title="${(item.infor_buy_uom_options || '').replace(/"/g, '&quot;')}">${item.infor_buy_uom_options || "—"}</td>

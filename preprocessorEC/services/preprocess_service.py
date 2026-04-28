@@ -1478,15 +1478,99 @@ def resolve_buy_uom_ignore(task_id: str, issue_id: int, decided_by: str) -> dict
     return {"issue_id": issue_id, "item_status": Status.ITEM_PREPROCESSED}
 
 
+def _get_unresolved_preprocess_issues(task_id: str) -> list:
+    return [
+        issue
+        for issue in task_repo.get_preprocess_issues(task_id, include_resolved=False)
+        if (issue.severity or "").upper() in ("ERROR", "WARN")
+    ]
+
+
+def _summarize_issue_severities(issues: list) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for issue in issues:
+        severity = (issue.severity or "UNKNOWN").upper()
+        counts[severity] = counts.get(severity, 0) + 1
+    return counts
+
+
+def _mark_resolved_preprocess_items_complete(task_id: str, unresolved_item_ids: set[int] | None = None) -> None:
+    unresolved_item_ids = unresolved_item_ids or set()
+    input_items = task_repo.get_items_by_source(task_id, "INPUT")
+    updates = [
+        {"item_id": item.item_id, "status": Status.ITEM_PREPROCESSED}
+        for item in input_items
+        if item.item_id not in unresolved_item_ids
+        and "ERROR" not in str(getattr(item, "status", "")).upper()
+    ]
+    if updates:
+        task_repo.update_items_bulk(updates)
+
+
+def _complete_preprocess_and_advance(
+    task_id: str,
+    state_machine: TaskStateMachine,
+    user: str,
+    status_notes: str,
+) -> dict:
+    task = task_repo.get_task(task_id)
+    if not task or task.phase != Phase.PREPROCESS:
+        state = state_machine.get_state(task_id)
+        return {"phase": state.get("phase"), "status": state.get("status"), "advanced": False}
+
+    state = state_machine.get_state(task_id)
+    if state.get("phase") != Phase.PREPROCESS:
+        state["phase"] = Phase.PREPROCESS
+        state_machine.save_state(task_id, state)
+
+    if state.get("status") != Status.PREPROCESSED:
+        state_machine.update_status(
+            task_id,
+            Status.PREPROCESSED,
+            changed_by=user,
+            notes=status_notes,
+        )
+
+    new_state = state_machine.advance(
+        task_id,
+        Phase.DEDUP,
+        changed_by=user,
+        notes="Preprocess complete, advancing to Dedup",
+    )
+    return {"phase": new_state["phase"], "status": new_state["status"], "advanced": True}
+
+
+def maybe_auto_advance_preprocess(task_id: str, state_machine: TaskStateMachine, user: str) -> dict | None:
+    """Advance to Dedup after the last preprocess issue is cleared."""
+    task = task_repo.get_task(task_id)
+    if not task or task.phase != Phase.PREPROCESS:
+        return None
+
+    task_repo.reaggregate_cascade_statuses(task_id)
+    pending_matches = [
+        m for m in task_repo.get_match_results(task_id)
+        if (m.match_status or "").upper() == "PENDING"
+    ]
+    if pending_matches or _get_unresolved_preprocess_issues(task_id):
+        return None
+
+    _mark_resolved_preprocess_items_complete(task_id)
+    return _complete_preprocess_and_advance(
+        task_id,
+        state_machine,
+        user,
+        "All preprocess issues resolved",
+    )
+
+
 def finalize_preprocess(task_id: str, state_machine: TaskStateMachine, user: str) -> dict:
     """Mark preprocess complete.
 
     PENDING match decisions still hard-block (the user must accept or reject
-    every match first). Unresolved ERROR-severity item issues, however, leave
-    the task in ON_HOLD_PREPROCESS — still in PREPROCESS phase — so the
+    every match first). Unresolved ERROR/WARN item issues, however, leave
+    the task in ON_HOLD_PREPROCESS - still in PREPROCESS phase - so the
     user can navigate to /tasks/<task_id> and resolve them. Calling finalize
-    again after they're cleared advances the phase to DEDUP. WARN issues
-    carry forward.
+    again after they're cleared advances the phase to DEDUP.
     """
     # Self-heal: cascade rows are aggregated from their CCX sources at creation;
     # if those sources were decided afterwards the rollup may be stale. Re-run
@@ -1504,36 +1588,32 @@ def finalize_preprocess(task_id: str, state_machine: TaskStateMachine, user: str
             )
         )
 
-    input_items = task_repo.get_items_by_source(task_id, "INPUT")
-    finalize_updates = [
-        {"item_id": item.item_id, "status": Status.ITEM_PREPROCESSED}
-        for item in input_items
-        if "ERROR" not in str(getattr(item, "status", "")).upper()
-    ]
-    if finalize_updates:
-        task_repo.update_items_bulk(finalize_updates)
+    unresolved_issues = _get_unresolved_preprocess_issues(task_id)
+    unresolved_item_ids = {issue.item_id for issue in unresolved_issues}
+    _mark_resolved_preprocess_items_complete(task_id, unresolved_item_ids)
 
-    unresolved_errors = task_repo.get_unresolved_error_issues(task_id)
-    if unresolved_errors:
-        unresolved_item_ids = sorted({issue.item_id for issue in unresolved_errors})
+    if unresolved_issues:
+        severity_counts = _summarize_issue_severities(unresolved_issues)
+        severity_summary = ", ".join(
+            f"{count} {severity}" for severity, count in sorted(severity_counts.items())
+        )
         state_machine.update_status(
             task_id,
             Status.ON_HOLD_PREPROCESS,
             changed_by=user,
-            notes=f"Preprocess complete with {len(unresolved_errors)} unresolved ERROR issue(s)",
+            notes=f"Preprocess complete with {len(unresolved_issues)} unresolved issue(s): {severity_summary}",
         )
         return {
             "phase": Phase.PREPROCESS,
             "status": Status.ON_HOLD_PREPROCESS,
-            "unresolved_count": len(unresolved_errors),
-            "item_ids": unresolved_item_ids,
+            "unresolved_count": len(unresolved_issues),
+            "unresolved_by_severity": severity_counts,
+            "item_ids": sorted(unresolved_item_ids),
         }
 
-    state = state_machine.get_state(task_id)
-    state["status"] = Status.PREPROCESSED
-    state_machine.save_state(task_id, state)
-
-    new_state = state_machine.advance(
-        task_id, Phase.DEDUP, changed_by=user, notes="Preprocess complete, advancing to Dedup"
+    return _complete_preprocess_and_advance(
+        task_id,
+        state_machine,
+        user,
+        "Preprocess complete",
     )
-    return {"phase": new_state["phase"], "status": new_state["status"]}

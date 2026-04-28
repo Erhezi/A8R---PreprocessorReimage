@@ -32,6 +32,13 @@ def _sm() -> TaskStateMachine:
     return TaskStateMachine(task_repo, workstate_repo)
 
 
+def _with_auto_advance(task_id: str, result: dict, user: str) -> dict:
+    task_state = preprocess_service.maybe_auto_advance_preprocess(task_id, _sm(), user)
+    if task_state:
+        result["task_state"] = task_state
+    return result
+
+
 def _normalize_scope_value(value: str | None) -> str:
     return (value or "").strip().upper()
 
@@ -567,7 +574,7 @@ def api_select_infor_item(task_id: str, issue_id: int):
     user = current_user.username if current_user.is_authenticated else "system"
     try:
         result = preprocess_service.resolve_multi_item_pick(task_id, issue_id, picked, user)
-        return jsonify(result)
+        return jsonify(_with_auto_advance(task_id, result, user))
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -579,7 +586,7 @@ def api_note_buy_uom(task_id: str, issue_id: int):
     user = current_user.username if current_user.is_authenticated else "system"
     try:
         result = preprocess_service.resolve_buy_uom_note(task_id, issue_id, user)
-        return jsonify(result)
+        return jsonify(_with_auto_advance(task_id, result, user))
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -591,7 +598,7 @@ def api_recheck_buy_uom(task_id: str, issue_id: int):
     user = current_user.username if current_user.is_authenticated else "system"
     try:
         result = preprocess_service.resolve_buy_uom_recheck(task_id, issue_id, user)
-        return jsonify(result)
+        return jsonify(_with_auto_advance(task_id, result, user))
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -613,7 +620,7 @@ def api_edit_buy_uom(task_id: str, issue_id: int):
         result = preprocess_service.resolve_buy_uom_edit(
             task_id, issue_id, new_uom, new_qoe, user
         )
-        return jsonify(result)
+        return jsonify(_with_auto_advance(task_id, result, user))
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -625,6 +632,6 @@ def api_ignore_buy_uom(task_id: str, issue_id: int):
     user = current_user.username if current_user.is_authenticated else "system"
     try:
         result = preprocess_service.resolve_buy_uom_ignore(task_id, issue_id, user)
-        return jsonify(result)
+        return jsonify(_with_auto_advance(task_id, result, user))
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400

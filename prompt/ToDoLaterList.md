@@ -44,3 +44,12 @@ to_do:
 
 # not belong to module
 on data model, for preprocessor.CCXInforSyncedContractHeader, I think we should change the vendor_id column to erp_vendor_id since it is actually storing the VendorID-Bxxx version. This will make it more clear what is what.
+
+
+
+# documentation
+- uom usage:
+  - table pre-join uom is functioning on UOM (Infor) between CCX and Infor dataset
+  - pre-check is functioning on UOM (Infor) if pre-check mode specifically called on UOM
+  - preprocess match scoring is specifically functioning on input UOM, not the Infor version (this is because we are mostly trying to resolve matching between input and CCX, and at that moment UOM is not yet in Infor format)
+  - preprocess buy UOM checking is functioning on UOM (Infor) because by the time the item is loaded to Infor that triggers UOM issue, the UOM should have already been converted to Infor format

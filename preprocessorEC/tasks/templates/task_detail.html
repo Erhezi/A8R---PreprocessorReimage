@@ -156,7 +156,11 @@ function renderTaskActions(task, issues) {
     buttons += `<a href="${PREFIX}/identity/${TASK_ID}" class="btn btn-sm btn-outline-primary d-block mb-1">Identity</a>`;
   }
   if (task.phase === "PREPROCESS") {
-    buttons += `<a href="${PREFIX}/preprocess/${TASK_ID}" class="btn btn-sm btn-outline-primary d-block mb-1">Preprocess</a>`;
+    const preprocessStatus = String(task.status || "").toUpperCase();
+    const preprocessLabel = ["BUY_UOM_CHECKING", "ON_HOLD_PREPROCESS", "PREPROCESSED"].includes(preprocessStatus)
+      ? "Re-Preprocess"
+      : "Preprocess";
+    buttons += `<a href="${PREFIX}/preprocess/${TASK_ID}" class="btn btn-sm btn-outline-primary d-block mb-1">${preprocessLabel}</a>`;
   }
   if (task.phase === "DEDUP") {
     buttons += `<a href="${PREFIX}/dedup/${TASK_ID}" class="btn btn-sm btn-outline-primary d-block mb-1">Dedup</a>`;
