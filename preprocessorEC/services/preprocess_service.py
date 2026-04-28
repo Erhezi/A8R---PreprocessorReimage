@@ -1313,6 +1313,149 @@ def resolve_buy_uom_recheck(task_id: str, issue_id: int, decided_by: str) -> dic
     return {"issue_id": issue_id, "passed": False, "attempts": len(attempts)}
 
 
+def resolve_buy_uom_edit(
+    task_id: str,
+    issue_id: int,
+    new_uom: str,
+    new_qoe,
+    decided_by: str,
+) -> dict:
+    """Edit the input UOM/QOE to resolve a BUY_UOM_ERROR/BUY_UOM_WARN issue.
+
+    Validation mirrors PC1: standardize the UOM, translate to its Lawson form,
+    check it against the valid-UOM reference, parse QOE as a positive int, and
+    enforce the same UOM/QOE compatibility rules. On success, updates the
+    PreprocessorTaskItem (uom, uom_to_match_infor, qoe), refreshes
+    input_ea_price on every related PreprocessorMatchResult row (it depends on
+    QOE), then re-runs the buy-UOM check for this item alone. The issue is
+    resolved when the new UOM*QOE combination matches an Infor option.
+    """
+    from . import intake_service  # local import to avoid circular dependency
+    issue = task_repo.get_preprocess_issue(issue_id)
+    if not issue or issue.task_id != task_id:
+        raise ValueError("Issue not found")
+    if issue.issue_type != "BUY_UOM_ERROR" or issue.resolved:
+        raise ValueError("Issue not eligible for EDIT_UOM_QOE")
+
+    raw_uom = (new_uom or "").strip()
+    if not raw_uom:
+        raise ValueError("UOM is required")
+    std_uom, _ = intake_service._standardize_uom(raw_uom)
+    uom_map = intake_service._load_uom_to_match_infor_map()
+    uom_to_match_infor = intake_service._translate_uom_to_match_infor(std_uom, uom_map)
+    validated_uom = uom_to_match_infor or std_uom
+    valid_uoms = intake_service._load_valid_uoms()
+    if not validated_uom or validated_uom not in valid_uoms:
+        raise ValueError(f"UOM '{validated_uom or raw_uom}' is not in the valid UOM reference")
+
+    try:
+        qoe_val = int(new_qoe)
+    except (TypeError, ValueError):
+        raise ValueError("QOE must be an integer")
+    if qoe_val <= 0:
+        raise ValueError("QOE must be positive")
+
+    compat_errors = [
+        detail
+        for _etype, detail, severity in intake_service._check_qoe_uom_compat(validated_uom, qoe_val)
+        if severity == "ERROR"
+    ]
+    if compat_errors:
+        raise ValueError("; ".join(compat_errors))
+
+    item = task_repo.get_task_item(issue.item_id)
+    if not item:
+        raise ValueError("Item not found")
+
+    task_repo.update_items_bulk([{
+        "item_id": issue.item_id,
+        "uom": std_uom,
+        "uom_to_match_infor": uom_to_match_infor or None,
+        "qoe": qoe_val,
+    }])
+
+    # input_ea_price on related match rows is derived from input price and qoe.
+    new_input_ea = None
+    if item.unit_price is not None and qoe_val:
+        try:
+            new_input_ea = round(float(item.unit_price) / qoe_val, 4)
+        except (TypeError, ValueError, ZeroDivisionError):
+            new_input_ea = None
+    task_repo.update_match_input_ea_price(task_id, issue.item_id, new_input_ea)
+
+    expected_option = f"{validated_uom}*{qoe_val}"
+    item_numbers = _split_multi_value_items(item.infor_item_number)
+    aggregate_options: set[str] = set()
+    with _sql_session() as sess:
+        for n in item_numbers:
+            aggregate_options.update(_query_buy_uom_options(sess, n))
+    options_str = ", ".join(sorted(aggregate_options)) if aggregate_options else None
+
+    task = task_repo.get_task(task_id)
+    intention = _intention_for_item(item, task)
+    is_expire = intention == "EXPIRE"
+
+    try:
+        detail = json.loads(issue.detail or "{}")
+    except (TypeError, ValueError):
+        detail = {}
+    edits = detail.get("edit_attempts") or []
+    edits.append({
+        "edited_at": ny_now().isoformat(),
+        "edited_by": decided_by,
+        "uom": std_uom,
+        "uom_to_match_infor": uom_to_match_infor or None,
+        "qoe": qoe_val,
+        "expected": expected_option,
+        "passed": expected_option in aggregate_options,
+    })
+    detail["edit_attempts"] = edits
+    detail["expected"] = expected_option
+    detail["available"] = sorted(aggregate_options)
+
+    if expected_option in aggregate_options:
+        task_repo.update_items_bulk([{
+            "item_id": issue.item_id,
+            "infor_buy_uom_options": options_str,
+            "status": Status.ITEM_PREPROCESSED,
+        }])
+        task_repo.resolve_preprocess_issue(
+            issue_id=issue_id,
+            resolution_action="EDIT_UOM_QOE",
+            resolved_by=decided_by,
+            detail=json.dumps(detail),
+        )
+        return {
+            "issue_id": issue_id,
+            "passed": True,
+            "item_status": Status.ITEM_PREPROCESSED,
+            "uom": std_uom,
+            "uom_to_match_infor": uom_to_match_infor or None,
+            "qoe": qoe_val,
+        }
+
+    new_status = Status.BUY_UOM_WARN if is_expire else Status.BUY_UOM_ERROR
+    severity = "WARN" if is_expire else "ERROR"
+    task_repo.update_items_bulk([{
+        "item_id": issue.item_id,
+        "infor_buy_uom_options": options_str,
+        "status": new_status,
+    }])
+    task_repo.update_preprocess_issue(
+        issue_id=issue_id,
+        severity=severity,
+        detail=json.dumps(detail),
+    )
+    return {
+        "issue_id": issue_id,
+        "passed": False,
+        "item_status": new_status,
+        "uom": std_uom,
+        "uom_to_match_infor": uom_to_match_infor or None,
+        "qoe": qoe_val,
+    }
+
+
 def resolve_buy_uom_ignore(task_id: str, issue_id: int, decided_by: str) -> dict:
     """EXPIRE-intent only: dismiss the warning and advance item to ITEM_PREPROCESSED."""
     issue = task_repo.get_preprocess_issue(issue_id)
@@ -1336,11 +1479,20 @@ def resolve_buy_uom_ignore(task_id: str, issue_id: int, decided_by: str) -> dict
 
 
 def finalize_preprocess(task_id: str, state_machine: TaskStateMachine, user: str) -> dict:
-    """Mark preprocess complete and advance to DEDUP phase.
+    """Mark preprocess complete.
 
-    Blocks if any unresolved ERROR-severity preprocess issues remain. WARN
-    issues carry forward into DEDUP.
+    PENDING match decisions still hard-block (the user must accept or reject
+    every match first). Unresolved ERROR-severity item issues, however, leave
+    the task in ON_HOLD_PREPROCESS — still in PREPROCESS phase — so the
+    user can navigate to /tasks/<task_id> and resolve them. Calling finalize
+    again after they're cleared advances the phase to DEDUP. WARN issues
+    carry forward.
     """
+    # Self-heal: cascade rows are aggregated from their CCX sources at creation;
+    # if those sources were decided afterwards the rollup may be stale. Re-run
+    # before checking PENDING so we don't block on aggregation lag.
+    task_repo.reaggregate_cascade_statuses(task_id)
+
     pending_matches = [
         m for m in task_repo.get_match_results(task_id)
         if (m.match_status or "").upper() == "PENDING"
@@ -1352,15 +1504,6 @@ def finalize_preprocess(task_id: str, state_machine: TaskStateMachine, user: str
             )
         )
 
-    unresolved_errors = task_repo.get_unresolved_error_issues(task_id)
-    if unresolved_errors:
-        raise ValueError(
-            "Cannot finalize: {n} unresolved ERROR issue(s) on items {items}".format(
-                n=len(unresolved_errors),
-                items=sorted({issue.item_id for issue in unresolved_errors}),
-            )
-        )
-
     input_items = task_repo.get_items_by_source(task_id, "INPUT")
     finalize_updates = [
         {"item_id": item.item_id, "status": Status.ITEM_PREPROCESSED}
@@ -1369,6 +1512,22 @@ def finalize_preprocess(task_id: str, state_machine: TaskStateMachine, user: str
     ]
     if finalize_updates:
         task_repo.update_items_bulk(finalize_updates)
+
+    unresolved_errors = task_repo.get_unresolved_error_issues(task_id)
+    if unresolved_errors:
+        unresolved_item_ids = sorted({issue.item_id for issue in unresolved_errors})
+        state_machine.update_status(
+            task_id,
+            Status.ON_HOLD_PREPROCESS,
+            changed_by=user,
+            notes=f"Preprocess complete with {len(unresolved_errors)} unresolved ERROR issue(s)",
+        )
+        return {
+            "phase": Phase.PREPROCESS,
+            "status": Status.ON_HOLD_PREPROCESS,
+            "unresolved_count": len(unresolved_errors),
+            "item_ids": unresolved_item_ids,
+        }
 
     state = state_machine.get_state(task_id)
     state["status"] = Status.PREPROCESSED

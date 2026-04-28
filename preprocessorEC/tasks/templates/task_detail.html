@@ -61,12 +61,44 @@ let currentDupGroups = [];
 let activeItemFilter = "all";
 let focusedItemIds = new Set();
 
+function getStatusCategory(status) {
+  const value = String(status || "").toUpperCase();
+  if (!value) return "unknown";
+  if (value.includes("DELETED")) return "deleted";
+  if (value.includes("ERROR")) return "error";
+  if (value.includes("WARN")) return "warning";
+  if (
+    value.includes("PASSED") ||
+    value.includes("PREPROCESSED") ||
+    value.includes("PROCESSED") ||
+    ["ITEM_LABELED", "MATCHED", "MATCH_CONFIRMED", "DEDUP_COMPLETE", "EXPORTED", "COMPLETED"].includes(value)
+  ) {
+    return "success";
+  }
+  if (
+    value.includes("PENDING") ||
+    value.includes("REVIEW") ||
+    value.includes("MATCHING") ||
+    value.includes("CHECKING") ||
+    value.includes("PROCESSING") ||
+    ["UPLOADED", "DRAFT", "ITEM_FETCHED", "ITEM_LABELING", "SIMULATING", "EXPORTING", "MONITORING_ACTIVE"].includes(value)
+  ) {
+    return "info";
+  }
+  if (value.includes("HOLD") || value.includes("HELP") || value.includes("CANCELLED")) return "attention";
+  return "neutral";
+}
+
 function statusBadge(status) {
-  if (status === "DELETED_PC1") return `<span class="badge" style="background-color:#111;color:#f8f9fa">${status}</span>`;
-  if ((status || "").includes("ERROR")) return `<span class="badge bg-danger">${status}</span>`;
-  if (status === "WARN_PC1") return `<span class="badge" style="background-color:#ffc107;color:#000">${status}</span>`;
-  if ((status || "").includes("PASSED")) return `<span class="badge bg-success">${status}</span>`;
-  return `<span class="badge bg-secondary">${status}</span>`;
+  const label = status || "-";
+  const category = getStatusCategory(status);
+  if (category === "deleted") return `<span class="badge" style="background-color:#111;color:#f8f9fa">${label}</span>`;
+  if (category === "error") return `<span class="badge bg-danger">${label}</span>`;
+  if (category === "warning") return `<span class="badge bg-warning text-dark">${label}</span>`;
+  if (category === "success") return `<span class="badge bg-success">${label}</span>`;
+  if (category === "info") return `<span class="badge bg-info text-dark">${label}</span>`;
+  if (category === "attention") return `<span class="badge bg-dark">${label}</span>`;
+  return `<span class="badge bg-secondary">${label}</span>`;
 }
 
 function getIssueSortRow(issue) {

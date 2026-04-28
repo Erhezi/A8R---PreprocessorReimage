@@ -57,3 +57,6 @@ htmlcov/
 
 # Notebook / misc
 .ipynb_checkpoints/
+
+# .claude local state
+.claude/

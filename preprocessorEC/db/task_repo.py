@@ -173,10 +173,12 @@ def delete_task(task_id: str) -> bool:
         # Delete children with raw SQL to avoid ORM lazy-loading relationships
         # (some child tables may have columns not yet in DB; raw DELETE is safe
         # because it never SELECTs — it just removes rows if they exist).
+        # Order matters for item-linked child rows that enforce FKs to TaskItem.
         child_tables = [
             "[Preprocessor].PreprocessorItemMatching",
             "[Preprocessor].PreprocessorMatchResult",
             "[Preprocessor].PreprocessorPreCheckError",
+            "[Preprocessor].PreprocessorPreprocessIssue",
             "[Preprocessor].PreprocessorTaskStatusLog",
             "[Preprocessor].PreprocessorTaskItem",
         ]
@@ -207,14 +209,15 @@ def add_items(task_id: str, items: list[dict]) -> list[TaskItem]:
 def delete_items_for_task(task_id: str) -> int:
     """Delete all items for a task. Returns count of deleted rows.
 
-    Pre-check errors reference task items via a FK on item_id, so errors
-    must be deleted first (child before parent) to avoid a FK constraint
-    violation from SQL Server.
+    Item-linked child rows reference task items via item_id FKs, so those
+    children must be deleted first (child before parent) to avoid SQL Server
+    constraint violations.
     """
     with _session() as s:
         s.query(ItemMatchCandidate).filter(ItemMatchCandidate.task_id == task_id).delete()
-        # 1. Child table first — errors reference item_id
+        # 1. Child tables first — both tables reference item_id
         s.query(PreCheckError).filter(PreCheckError.task_id == task_id).delete()
+        s.query(PreprocessIssue).filter(PreprocessIssue.task_id == task_id).delete()
         # 2. Parent table second
         count = s.query(TaskItem).filter(TaskItem.task_id == task_id).delete()
         s.commit()
@@ -223,12 +226,13 @@ def delete_items_for_task(task_id: str) -> int:
 def delete_item(item_id: int) -> bool:
     """Delete a single item and its associated pre-check errors.
 
-    Deletes child errors first to avoid FK constraint violations.
+    Deletes item-linked child rows first to avoid FK constraint violations.
     Returns True if the item existed and was deleted.
     """
     with _session() as s:
         s.query(ItemMatchCandidate).filter(ItemMatchCandidate.item_id == item_id).delete()
         s.query(PreCheckError).filter(PreCheckError.item_id == item_id).delete()
+        s.query(PreprocessIssue).filter(PreprocessIssue.item_id == item_id).delete()
         count = s.query(TaskItem).filter(TaskItem.item_id == item_id).delete()
         s.commit()
         return count > 0
@@ -640,11 +644,68 @@ def _parse_ccx_pkid_list(value: Optional[str]) -> list[int]:
 
 
 def _aggregate_cascade_status(source_matches: list[MatchResult]) -> str:
+    """Roll up the CCX source decisions for an INFOR_CL cascade row.
+
+    A cascade row says "this input item has a CL link to this Infor item".
+    The link is valid as long as at least one of its CCX sources confirms
+    the input/Infor pairing. So:
+
+    - any source still PENDING → cascade is PENDING (review still needed)
+    - any source ACCEPTED       → cascade is ACCEPTED (link confirmed)
+    - all sources REJECTED      → cascade is REJECTED
+    """
     if not source_matches:
         return "PENDING"
-    if len(source_matches) > 1:
+    statuses = {(m.match_status or "PENDING").upper() for m in source_matches}
+    if "PENDING" in statuses or "LLM_REVIEW" in statuses:
         return "PENDING"
-    return (source_matches[0].match_status or "PENDING").upper()
+    if "ACCEPTED" in statuses:
+        return "ACCEPTED"
+    return "REJECTED"
+
+
+def reaggregate_cascade_statuses(task_id: str) -> int:
+    """Re-aggregate INFOR_CL CASCADE rows from their source CCX matches.
+
+    Use to self-heal stale cascade aggregations. Returns the number of rows
+    whose status or bucket changed.
+    """
+    with _session() as s:
+        cascade_rows = (
+            s.query(MatchResult)
+            .filter(
+                MatchResult.task_id == task_id,
+                MatchResult.matched_source == "INFOR_CL",
+                MatchResult.match_type == "CASCADE",
+            )
+            .all()
+        )
+        updated = 0
+        for cascade in cascade_rows:
+            lineage_pkids = _parse_ccx_pkid_list(cascade.ccx_pkids_matched)
+            effective_pkids = set(
+                lineage_pkids or ([] if cascade.ccx_pkid is None else [cascade.ccx_pkid])
+            )
+            if not effective_pkids:
+                continue
+            source_rows = (
+                s.query(MatchResult)
+                .filter(
+                    MatchResult.task_id == task_id,
+                    MatchResult.input_item_id == cascade.input_item_id,
+                    MatchResult.matched_source == "CCX",
+                    MatchResult.ccx_pkid.in_(sorted(effective_pkids)),
+                )
+                .all()
+            )
+            new_status = _aggregate_cascade_status(source_rows)
+            new_bucket = _aggregate_cascade_bucket(source_rows)
+            if cascade.match_status != new_status or cascade.similarity_bucket != new_bucket:
+                cascade.match_status = new_status
+                cascade.similarity_bucket = new_bucket
+                updated += 1
+        s.commit()
+        return updated
 
 
 def _aggregate_cascade_bucket(source_matches: list[MatchResult]) -> Optional[str]:
@@ -727,6 +788,25 @@ def update_match_decision(
                     linked.reviewed_by = reviewed_by
                     linked.reviewed_at = mr.reviewed_at
             s.commit()
+
+
+def update_match_input_ea_price(task_id: str, input_item_id: int, input_ea_price: Optional[float]) -> int:
+    """Refresh input_ea_price on every MatchResult row for an input item.
+
+    Called after the input QOE/price changes so the stored EA price stays
+    consistent with the input it was derived from.
+    """
+    with _session() as s:
+        count = (
+            s.query(MatchResult)
+            .filter(
+                MatchResult.task_id == task_id,
+                MatchResult.input_item_id == input_item_id,
+            )
+            .update({MatchResult.input_ea_price: input_ea_price}, synchronize_session=False)
+        )
+        s.commit()
+        return count
 
 
 def update_dedup_decisions(match_ids: list[int], decision: str, decided_by: str) -> int:

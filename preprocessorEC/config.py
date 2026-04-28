@@ -1,12 +1,23 @@
 import os
+from pathlib import Path
 from datetime import timedelta
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 
-load_dotenv()
+_ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
+_ENV_FILE_VALUES = dotenv_values(_ENV_PATH)
+
+load_dotenv(_ENV_PATH)
+
+
+def _config_env(name: str, default: str = "") -> str:
+    value = _ENV_FILE_VALUES.get(name)
+    if value is not None:
+        return value
+    return os.environ.get(name, default)
 
 
 def _env_flag(name: str, default: str = "false") -> bool:
-    return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
+    return _config_env(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
 class Config:
@@ -44,18 +55,18 @@ class Config:
     MODEL_NAME = "all-MiniLM-L6-v2"
 
     # ── LLM / OpenAI ───────────────────────────────────────────────
-    OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
-    OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
-    OPENAI_BASE_URL = os.environ.get("OPENAI_BASE_URL", "").strip().rstrip("/")
-    OPENAI_TIMEOUT_SECONDS = float(os.environ.get("OPENAI_TIMEOUT_SECONDS", "30"))
-    OPENAI_MAX_RETRIES = int(os.environ.get("OPENAI_MAX_RETRIES", "2"))
+    OPENAI_API_KEY = _config_env("OPENAI_API_KEY", "")
+    OPENAI_MODEL = _config_env("OPENAI_MODEL", "gpt-5.4-mini")
+    OPENAI_BASE_URL = _config_env("OPENAI_BASE_URL", "").strip().rstrip("/")
+    OPENAI_TIMEOUT_SECONDS = float(_config_env("OPENAI_TIMEOUT_SECONDS", "30"))
+    OPENAI_MAX_RETRIES = int(_config_env("OPENAI_MAX_RETRIES", "2"))
     OPENAI_DISABLE_SSL_VERIFY = _env_flag("OPENAI_DISABLE_SSL_VERIFY")
-    OPENAI_ORGANIZATION = os.environ.get("OPENAI_ORGANIZATION", "").strip()
-    OPENAI_PROJECT = os.environ.get("OPENAI_PROJECT", "").strip()
-    AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip().rstrip("/")
-    AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION", "").strip()
-    LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "1024"))
-    LLM_TEMPERATURE = float(os.environ.get("LLM_TEMPERATURE", "0.0"))
+    OPENAI_ORGANIZATION = _config_env("OPENAI_ORGANIZATION", "").strip()
+    OPENAI_PROJECT = _config_env("OPENAI_PROJECT", "").strip()
+    AZURE_OPENAI_ENDPOINT = _config_env("AZURE_OPENAI_ENDPOINT", "").strip().rstrip("/")
+    AZURE_OPENAI_API_VERSION = _config_env("AZURE_OPENAI_API_VERSION", "").strip()
+    LLM_MAX_TOKENS = int(_config_env("LLM_MAX_TOKENS", "1024"))
+    LLM_TEMPERATURE = float(_config_env("LLM_TEMPERATURE", "0.0"))
 
     # ── URL Prefix ─────────────────────────────────────────────────
     URL_PREFIX = os.environ.get("URL_PREFIX", "")

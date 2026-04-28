@@ -5,23 +5,13 @@
 let currentIssues = [];
 
 function preprocessStatusBadge(status) {
-  if (!status) return '<span class="badge bg-secondary">—</span>';
-  if (status === "BUY_UOM_ERROR" || status === "MULTI_ITEM_ERROR") {
-    return `<span class="badge bg-danger">${status}</span>`;
-  }
-  if (status === "BUY_UOM_WARN") {
-    return `<span class="badge" style="background-color:#ffc107;color:#000">${status}</span>`;
-  }
-  if (status === "ITEM_PREPROCESSED" || status === "ITEM_LABELED") {
-    return `<span class="badge bg-success">${status}</span>`;
-  }
-  return `<span class="badge bg-secondary">${status}</span>`;
+  return statusBadge(status);
 }
 
 function renderItemsTable() {
   const body = document.getElementById("itemsBody");
   if (!currentItems.length) {
-    body.innerHTML = '<tr><td colspan="9" class="text-center text-muted">No items yet</td></tr>';
+    body.innerHTML = '<tr><td colspan="10" class="text-center text-muted">No items yet</td></tr>';
     return;
   }
 
@@ -39,10 +29,23 @@ function renderItemsTable() {
   }
 
   if (!visible.length) {
-    body.innerHTML = '<tr><td colspan="9" class="text-center text-muted">No matching items</td></tr>';
+    body.innerHTML = '<tr><td colspan="10" class="text-center text-muted">No matching items</td></tr>';
   } else {
+    const openIssuesByItem = new Map();
+    currentIssues.forEach(issue => {
+      if (issue.resolved) return;
+      if (issue.item_id == null) return;
+      if (!openIssuesByItem.has(issue.item_id)) openIssuesByItem.set(issue.item_id, []);
+      openIssuesByItem.get(issue.item_id).push(issue);
+    });
+
     body.innerHTML = visible.map(item => {
       const rowHighlight = focusedItemIds.has(item.item_id) ? ' class="table-info"' : '';
+      const itemIssues = openIssuesByItem.get(item.item_id) || [];
+      const actionButtons = itemIssues
+        .map(issue => actionsForIssue(issue, item))
+        .filter(Boolean)
+        .join(" ");
       return `
         <tr data-item-id="${item.item_id}"${rowHighlight}>
           <td>${item.file_row || "—"}</td>
@@ -54,6 +57,7 @@ function renderItemsTable() {
           <td>${item.infor_item_number || "—"}</td>
           <td class="text-truncate" style="max-width:200px" title="${(item.infor_buy_uom_options || '').replace(/"/g, '&quot;')}">${item.infor_buy_uom_options || "—"}</td>
           <td>${preprocessStatusBadge(item.status)}</td>
+          <td>${actionButtons}</td>
         </tr>`;
     }).join("");
   }
@@ -78,11 +82,11 @@ function renderItemsTable() {
 }
 
 function isErrorStatus(status) {
-  return status === "BUY_UOM_ERROR" || status === "MULTI_ITEM_ERROR";
+  return getStatusCategory(status) === "error";
 }
 
 function isWarnStatus(status) {
-  return status === "BUY_UOM_WARN";
+  return getStatusCategory(status) === "warning";
 }
 
 function parseIssueDetail(issue) {
@@ -107,19 +111,20 @@ function describeIssue(issue) {
 
 function actionsForIssue(issue, item) {
   if (issue.resolved) {
-    return `<span class="text-muted small">Resolved by ${issue.resolved_by} (${issue.resolution_action})</span>`;
+    return "";
   }
   if (issue.issue_type === "MULTI_ITEM_ERROR") {
-    return `<button class="btn btn-sm btn-outline-primary" onclick="event.stopPropagation();openPickItemModal(${issue.issue_id})">Pick item…</button>`;
+    return `<button class="btn btn-sm btn-outline-primary py-0 px-1" onclick="event.stopPropagation();openPickItemModal(${issue.issue_id})">Pick item…</button>`;
   }
   if (issue.issue_type === "BUY_UOM_ERROR") {
     const intention = ((item && item.intention) || (currentTask && currentTask.intention) || "").toUpperCase();
     if (issue.severity === "WARN" && intention === "EXPIRE") {
-      return `<button class="btn btn-sm btn-outline-secondary" onclick="event.stopPropagation();ignoreBuyUom(${issue.issue_id})">Ignore</button>`;
+      return `<button class="btn btn-sm btn-outline-secondary py-0 px-1" onclick="event.stopPropagation();ignoreBuyUom(${issue.issue_id})">Ignore</button>`;
     }
     return [
-      `<button class="btn btn-sm btn-outline-warning me-1" onclick="event.stopPropagation();noteBuyUom(${issue.issue_id})" title="Demote to warning, carry forward">Note</button>`,
-      `<button class="btn btn-sm btn-outline-info" onclick="event.stopPropagation();recheckBuyUom(${issue.issue_id})" title="Re-query Infor for buy UOM">Re-check</button>`,
+      `<button class="btn btn-sm btn-outline-primary py-0 px-1 me-1" onclick="event.stopPropagation();openEditBuyUomModal(${issue.issue_id})" title="Edit input UOM and QOE"><i class="bi bi-pencil-square"></i> Edit</button>`,
+      `<button class="btn btn-sm btn-outline-warning py-0 px-1 me-1" onclick="event.stopPropagation();noteBuyUom(${issue.issue_id})" title="Demote to warning, carry forward">Note</button>`,
+      `<button class="btn btn-sm btn-outline-info py-0 px-1" onclick="event.stopPropagation();recheckBuyUom(${issue.issue_id})" title="Re-query Infor for buy UOM">Re-check</button>`,
     ].join("");
   }
   return "";
@@ -134,7 +139,6 @@ function renderIssueRow(issue) {
       <td>${rowLabel}</td>
       <td>${issue.issue_type}</td>
       <td>${describeIssue(issue)}</td>
-      <td>${actionsForIssue(issue, item)}</td>
     </tr>`;
 }
 
@@ -269,6 +273,50 @@ async function recheckBuyUom(issueId) {
   loadTask();
 }
 
+function openEditBuyUomModal(issueId) {
+  const issue = currentIssues.find(i => i.issue_id === issueId);
+  if (!issue) return;
+  const item = currentItems.find(it => it.item_id === issue.item_id) || {};
+  const detail = parseIssueDetail(issue);
+  document.getElementById("editBuyUomIssueId").value = issueId;
+  document.getElementById("editBuyUomCurrentUom").textContent = item.uom || "—";
+  document.getElementById("editBuyUomCurrentQoe").textContent = item.qoe != null ? item.qoe : "—";
+  document.getElementById("editBuyUomCurrentInforUom").textContent = item.uom_to_match_infor || "—";
+  document.getElementById("editBuyUomCurrentExpected").textContent = detail.expected || "—";
+  document.getElementById("editBuyUomCurrentAvailable").textContent = (detail.available || []).join(", ") || "—";
+  document.getElementById("editBuyUomNewUom").value = item.uom || "";
+  document.getElementById("editBuyUomNewQoe").value = item.qoe != null ? item.qoe : "";
+  new bootstrap.Modal(document.getElementById("editBuyUomModal")).show();
+}
+
+document.getElementById("btnSubmitEditBuyUom").addEventListener("click", async () => {
+  const issueId = document.getElementById("editBuyUomIssueId").value;
+  const uom = document.getElementById("editBuyUomNewUom").value.trim();
+  const qoeRaw = document.getElementById("editBuyUomNewQoe").value;
+  if (!uom) { alert("UOM is required"); return; }
+  const qoe = parseInt(qoeRaw, 10);
+  if (!Number.isFinite(qoe) || qoe <= 0) { alert("QOE must be a positive integer"); return; }
+  const btn = document.getElementById("btnSubmitEditBuyUom");
+  btn.disabled = true;
+  btn.textContent = "Saving…";
+  const resp = await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/issues/${issueId}/edit-uom-qoe`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ uom, qoe }),
+  });
+  const data = await resp.json();
+  btn.disabled = false;
+  btn.textContent = "Save & Re-check";
+  if (!resp.ok) { alert("Edit failed: " + (data.error || "unknown")); return; }
+  bootstrap.Modal.getInstance(document.getElementById("editBuyUomModal")).hide();
+  if (data.passed) {
+    alert("UOM/QOE updated — buy UOM is now valid and the issue is resolved.");
+  } else {
+    alert("UOM/QOE updated but the buy UOM is still missing. The issue remains open.");
+  }
+  loadTask();
+});
+
 async function ignoreBuyUom(issueId) {
   if (!confirm("Ignore this warning and mark the item preprocessed? (EXPIRE intent only.)")) return;
   const resp = await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/issues/${issueId}/ignore`, { method: "POST" });
@@ -278,7 +326,8 @@ async function ignoreBuyUom(issueId) {
 }
 
 // Hook into the task_detail loadTask() flow: after items are fetched,
-// also fetch issues and render the errors/warnings cards.
+// also fetch issues and render the errors/warnings cards. The items table
+// also depends on currentIssues (action column), so re-render it here.
 async function loadPreprocessIssues() {
   const resp = await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/issues`);
   if (!resp.ok) {
@@ -287,5 +336,6 @@ async function loadPreprocessIssues() {
     currentIssues = await resp.json();
   }
   renderPreprocessIssues();
+  renderItemsTable();
 }
 </script>

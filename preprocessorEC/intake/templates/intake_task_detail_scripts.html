@@ -86,11 +86,11 @@ function renderItemsTable() {
   if (focusedItemIds.size > 0) {
     visible = currentItems.filter(item => focusedItemIds.has(item.item_id));
   } else if (activeItemFilter === "error") {
-    visible = currentItems.filter(item => item.status === "ERROR_PC1");
+    visible = currentItems.filter(item => getStatusCategory(item.status) === "error");
   } else if (activeItemFilter === "warn") {
-    visible = currentItems.filter(item => item.status === "WARN_PC1");
+    visible = currentItems.filter(item => getStatusCategory(item.status) === "warning");
   } else if (activeItemFilter === "issue") {
-    visible = currentItems.filter(item => item.status === "ERROR_PC1" || item.status === "WARN_PC1");
+    visible = currentItems.filter(item => ["error", "warning"].includes(getStatusCategory(item.status)));
   } else {
     visible = currentItems;
   }
@@ -149,7 +149,7 @@ function renderItemsTable() {
 }
 
 function renderIntakeIssues(issues) {
-  const errorItems = currentItems.filter(item => item.status === "ERROR_PC1").map(item => item.item_id);
+  const errorItems = currentItems.filter(item => getStatusCategory(item.status) === "error").map(item => item.item_id);
   const errorIssues = issues.filter(issue =>
     issue.item_id === null || issue.item_id === undefined || errorItems.includes(issue.item_id)
   ).sort((left, right) => getIssueSortRow(left) - getIssueSortRow(right));
@@ -180,7 +180,7 @@ function renderIntakeIssues(issues) {
     document.getElementById("errorsCard").style.display = "none";
   }
 
-  const warnItems = currentItems.filter(item => item.status === "WARN_PC1").map(item => item.item_id);
+  const warnItems = currentItems.filter(item => getStatusCategory(item.status) === "warning").map(item => item.item_id);
   const warnIssues = issues
     .filter(issue => warnItems.includes(issue.item_id))
     .sort((left, right) => getIssueSortRow(left) - getIssueSortRow(right));

@@ -596,6 +596,28 @@ def api_recheck_buy_uom(task_id: str, issue_id: int):
         return jsonify({"error": str(exc)}), 400
 
 
+@preprocess_bp.route("/api/preprocess/<task_id>/issues/<int:issue_id>/edit-uom-qoe", methods=["POST"])
+@login_required
+def api_edit_buy_uom(task_id: str, issue_id: int):
+    """Edit input UOM/QOE on a BUY_UOM_ERROR item.
+
+    Body: {"uom": "BX", "qoe": 5}
+    """
+    data = request.get_json(force=True) or {}
+    new_uom = data.get("uom")
+    new_qoe = data.get("qoe")
+    if new_uom is None or new_qoe is None:
+        return jsonify({"error": "uom and qoe required"}), 400
+    user = current_user.username if current_user.is_authenticated else "system"
+    try:
+        result = preprocess_service.resolve_buy_uom_edit(
+            task_id, issue_id, new_uom, new_qoe, user
+        )
+        return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
 @preprocess_bp.route("/api/preprocess/<task_id>/issues/<int:issue_id>/ignore", methods=["POST"])
 @login_required
 def api_ignore_buy_uom(task_id: str, issue_id: int):
