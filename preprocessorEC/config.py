@@ -60,6 +60,11 @@ class Config:
     OPENAI_BASE_URL = _config_env("OPENAI_BASE_URL", "").strip().rstrip("/")
     OPENAI_TIMEOUT_SECONDS = float(_config_env("OPENAI_TIMEOUT_SECONDS", "30"))
     OPENAI_MAX_RETRIES = int(_config_env("OPENAI_MAX_RETRIES", "2"))
+    OPENAI_CA_BUNDLE = _config_env("OPENAI_CA_BUNDLE", "").strip()
+    OPENAI_USE_SYSTEM_CA_STORE = _env_flag(
+        "OPENAI_USE_SYSTEM_CA_STORE",
+        "true" if os.name == "nt" else "false",
+    )
     OPENAI_DISABLE_SSL_VERIFY = _env_flag("OPENAI_DISABLE_SSL_VERIFY")
     OPENAI_ORGANIZATION = _config_env("OPENAI_ORGANIZATION", "").strip()
     OPENAI_PROJECT = _config_env("OPENAI_PROJECT", "").strip()

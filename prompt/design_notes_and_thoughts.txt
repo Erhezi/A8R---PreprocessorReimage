@@ -211,7 +211,9 @@ Phase 3 -- Preprocess Core (Find Dups, Find Item Number, Remove False Positive M
     - Infor Item 3 - take the 'true-positive' match between INPUT and Infor, if under the same matched item group (same input record reference), populate the item group with the Item Number get from Infor Contract Line
 
 
-
+-- before going into phase 3
+  - the end product of phase 3 is not exactly as planned, but except that on PreprocessorTaskItem table we have a couple ccx columns added which are not necessary and to be cleansed, other part are mostly okay.
+  - I might like to have a separarate table PreprocessorTaskItemForDescision
 Phase 4 -- Dedup & Data Integrity Resolution
   -  Duplication Resolution
   -  Integratity Validation

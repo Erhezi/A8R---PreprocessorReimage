@@ -118,7 +118,7 @@ def _get_client():
 
         http_client = httpx.Client(
             timeout=timeout,
-            verify=not disable_ssl_verify,
+            verify=_build_ssl_verify(disable_ssl_verify),
         )
 
         if azure_endpoint:
@@ -152,6 +152,29 @@ def _get_client():
     except ImportError:
         logger.warning("openai package not installed; LLM review unavailable.")
         return None
+
+
+def _build_ssl_verify(disable_ssl_verify: bool):
+    if disable_ssl_verify:
+        return False
+
+    ca_bundle = current_app.config.get("OPENAI_CA_BUNDLE", "").strip()
+    if ca_bundle:
+        return ca_bundle
+
+    use_system_ca_store = bool(current_app.config.get("OPENAI_USE_SYSTEM_CA_STORE", False))
+    if not use_system_ca_store:
+        return True
+
+    try:
+        import importlib
+        import ssl
+
+        truststore = importlib.import_module("truststore")
+        return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    except ImportError:
+        logger.warning("truststore not installed; falling back to certifi CA bundle.")
+        return True
 
 
 def _parse_response(content: str) -> dict:

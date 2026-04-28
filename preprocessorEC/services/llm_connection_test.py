@@ -7,7 +7,7 @@ from urllib.parse import urljoin
 
 from flask import current_app
 
-from .llm_review import _get_client
+from .llm_review import _build_ssl_verify, _get_client
 
 
 def _describe_exception(exc: Exception) -> dict:
@@ -56,7 +56,7 @@ def test_openai_connection() -> dict:
 
         models_url = urljoin(f"{resolved_base_url}/", "models")
         probe_started = time.perf_counter()
-        with httpx.Client(timeout=timeout, verify=not disable_ssl_verify) as probe_client:
+        with httpx.Client(timeout=timeout, verify=_build_ssl_verify(disable_ssl_verify)) as probe_client:
             probe_response = probe_client.get(
                 models_url,
                 headers={"Authorization": f"Bearer {api_key}"},
