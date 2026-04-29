@@ -279,6 +279,18 @@ def run_sku_matching(task_id: str, state_machine: TaskStateMachine) -> dict:
                 bucket = scores["similarity_bucket"]
                 linked_infor_pkids = sorted(set(linked_infor_by_ccx_pkid.get(row.get("CCX_pkid"), [])))
 
+                # uom_nuance: same-contract (type A) match with identical QOE but
+                # a different UOM — flags UOM inconsistency for the same pack size.
+                uom_nuance = "No"
+                if pt == "A":
+                    same_qoe = str(item.qoe or "").strip() == str(row.get("qoe_ccx") or "").strip()
+                    diff_uom = (
+                        str(item.uom or "").strip().upper()
+                        != str(row.get("uom_ccx") or "").strip().upper()
+                    )
+                    if same_qoe and diff_uom:
+                        uom_nuance = "Yes"
+
                 all_matches.append({
                     "input_item_id": item.item_id,
                     "matched_source": "CCX",
@@ -302,6 +314,7 @@ def run_sku_matching(task_id: str, state_machine: TaskStateMachine) -> dict:
                     "match_ea_price": scores["match_ea_price"],
                     "input_ea_price": scores["input_ea_price"],
                     "vendor_item_score": scores["vendor_item_score"],
+                    "uom_nuance": uom_nuance,
                     **_build_matched_snapshot(row, "CCX"),
                 })
 
@@ -503,6 +516,11 @@ def run_infor_cascade(task_id: str, state_machine: TaskStateMachine) -> dict:
             else:
                 ref = f"{primary_row.get('mfg_catalog_num_infor', '')}|{primary_row.get('uom_infor', '')}"
 
+            cascaded_uom_nuance = (
+                "Yes"
+                if any((m.uom_nuance or "").strip().lower() == "yes" for m in source_matches)
+                else "No"
+            )
             infor_matches.append({
                 "input_item_id": input_item_id,
                 "matched_source": "INFOR_CL",
@@ -515,6 +533,7 @@ def run_infor_cascade(task_id: str, state_machine: TaskStateMachine) -> dict:
                 "match_status": task_repo._aggregate_cascade_status(source_matches),
                 "similarity_score": None,
                 "similarity_bucket": task_repo._aggregate_cascade_bucket(source_matches),
+                "uom_nuance": cascaded_uom_nuance,
                 **_build_matched_snapshot(primary_row, "INFOR_CL"),
             })
 
@@ -625,6 +644,7 @@ def run_infor_residue(task_id: str, state_machine: TaskStateMachine) -> dict:
                     "match_ea_price": scores["match_ea_price"],
                     "input_ea_price": scores["input_ea_price"],
                     "vendor_item_score": scores["vendor_item_score"],
+                    "uom_nuance": "No",
                     **_build_matched_snapshot(row, "INFOR_CL"),
                 })
 

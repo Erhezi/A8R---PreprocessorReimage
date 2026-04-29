@@ -105,7 +105,7 @@ function describeIssue(issue) {
     const expected = detail.expected || '—';
     const available = (detail.available || []).join(", ") || '—';
     const itemNumber = detail.infor_item_number || '—';
-    return `Expected buy UOM <code>${expected}</code> not in <code>${available}</code> for item ${itemNumber}`;
+    return `Input buy UOM <code>${expected}</code> not in <code>${available}</code> for matched item ${itemNumber}`;
   }
   return issue.issue_type;
 }
@@ -269,7 +269,7 @@ async function recheckBuyUom(issueId) {
   if (data.passed) {
     alert("Buy UOM is now valid — issue resolved.");
   } else {
-    alert(`Buy UOM still missing. Recorded attempt #${data.attempts}.`);
+    alert(`Buy UOM still invalid. Recorded attempt #${data.attempts}.`);
   }
   loadTask();
 }

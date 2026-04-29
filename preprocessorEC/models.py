@@ -323,6 +323,9 @@ class MatchResult(Base):
     input_ea_price = Column(Float, nullable=True)
     pair_type = Column(String(1), nullable=True)  # A | B | C | D
     vendor_item_score = Column(Float, nullable=True)
+    # 'Yes' when same-contract match has identical QOE but a different UOM
+    # (UOM inconsistency for the same pack size). Cascaded from CCX to INFOR_CL.
+    uom_nuance = Column(String(3), nullable=True)  # 'Yes' | 'No'
 
     created_at = Column(DateTime, default=ny_now)
 
@@ -374,6 +377,7 @@ class MatchResult(Base):
             "input_ea_price": self.input_ea_price,
             "pair_type": self.pair_type,
             "vendor_item_score": self.vendor_item_score,
+            "uom_nuance": self.uom_nuance,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 

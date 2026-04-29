@@ -98,6 +98,14 @@
     align-items: center;
     gap: 0.5rem;
   }
+
+  /* Highlight Input/Matched UOM cells when uom_nuance = 'Yes' (same contract,
+     same QOE, but different UOM). */
+  .uom-nuance-cell {
+    background-color: #fff3cd;
+    color: #664d03;
+    font-weight: 600;
+  }
 </style>
 {% endblock %}
 
@@ -258,6 +266,11 @@
           <option value="REJECTED">Rejected</option>
           <option value="PENDING">Pending</option>
         </select>
+        <select class="form-select form-select-sm" id="filterUomNuance" style="width:auto" title="Same-contract matches with identical QOE but different UOM">
+          <option value="">All UOM Nuance</option>
+          <option value="Yes">Nuance: Yes</option>
+          <option value="No">Nuance: No</option>
+        </select>
         <div class="dropdown match-filter-contract" id="filterContract" data-bs-auto-close="outside">
           <button class="btn btn-sm btn-outline-secondary dropdown-toggle w-100 text-start" type="button" id="filterContractButton" data-bs-toggle="dropdown" aria-expanded="false">
             All Contracts
@@ -287,11 +300,11 @@
               <th>Input Price</th><th>Matched Price</th>
               <th>Input EA Price</th><th>Matched EA Price</th>
               <th>Score</th><th>Bucket</th><th>Status</th><th>Source</th>
-              <th>Input Desc.</th><th>Matched Desc.</th><th>Contract</th><th>Organization</th><th>Match Type</th><th>Pair Type</th>
+              <th>Input Desc.</th><th>Matched Desc.</th><th>Contract</th><th>Organization</th><th>Match Type</th><th>Pair Type</th><th>UOM Nuance</th>
             </tr>
           </thead>
           <tbody id="matchBody">
-            <tr><td colspan="24" class="text-center text-muted">No results yet</td></tr>
+            <tr><td colspan="25" class="text-center text-muted">No results yet</td></tr>
           </tbody>
         </table>
       </div>
@@ -691,6 +704,7 @@ async function loadMatches() {
   const bucket   = document.getElementById("filterBucket").value;
   const source   = document.getElementById("filterSource").value;
   const status   = document.getElementById("filterStatus").value;
+  const uomNuance = document.getElementById("filterUomNuance").value;
   const contracts = getSelectedContractFilters();
   const contractScope = getActiveContractScope();
 
@@ -698,6 +712,7 @@ async function loadMatches() {
   if (bucket)   params.set("bucket", bucket);
   if (source)   params.set("source", source);
   if (status)   params.set("status", status);
+  if (uomNuance) params.set("uom_nuance", uomNuance);
   contracts.forEach(contract => params.append("contract", contract));
   if (contractScope) {
     params.set("organization_eid", contractScope.organizationEid);
@@ -759,7 +774,7 @@ async function loadMatches() {
 function renderMatchesPage() {
   const tbody = document.getElementById("matchBody");
   if (!matchResultsData.length) {
-    tbody.innerHTML = '<tr><td colspan="24" class="text-center text-muted">No matches</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="25" class="text-center text-muted">No matches</td></tr>';
     document.getElementById("matchPageInfo").textContent = "Page 0 of 0";
     document.getElementById("btnMatchPrevPage").disabled = true;
     document.getElementById("btnMatchNextPage").disabled = true;
@@ -775,7 +790,13 @@ function renderMatchesPage() {
   const startIndex = (matchCurrentPage - 1) * MATCH_PAGE_SIZE;
   const pageRows = matchResultsData.slice(startIndex, startIndex + MATCH_PAGE_SIZE);
 
-  tbody.innerHTML = pageRows.map(m => `
+  tbody.innerHTML = pageRows.map(m => {
+    const isUomNuance = String(m.uom_nuance || '').trim().toLowerCase() === 'yes';
+    const uomCellClass = isUomNuance ? 'uom-nuance-cell' : '';
+    const uomCellTitle = isUomNuance
+      ? 'UOM nuance: same contract, identical QOE, but different UOM'
+      : '';
+    return `
     <tr>
       <td><input type="checkbox" class="match-cb" value="${m.match_id}" ${selectedMatchIds.has(Number(m.match_id)) ? "checked" : ""}></td>
       <td>${m.input_item_id}</td>
@@ -783,8 +804,8 @@ function renderMatchesPage() {
       <td class="text-truncate" style="max-width:120px" title="${esc(m.manufacturer_number_matched)}">${esc(m.manufacturer_number_matched || '-')}</td>
       <td class="text-truncate" style="max-width:120px" title="${esc(m.input_vendor_catalog_num)}">${esc(m.input_vendor_catalog_num || '-')}</td>
       <td class="text-truncate" style="max-width:120px" title="${esc(m.vendor_item_matched)}">${esc(m.vendor_item_matched || '-')}</td>
-      <td>${esc(m.input_uom || '-')}</td>
-      <td>${esc(m.uom_matched || '-')}</td>
+      <td class="${uomCellClass}" title="${uomCellTitle}">${esc(m.input_uom || '-')}</td>
+      <td class="${uomCellClass}" title="${uomCellTitle}">${esc(m.uom_matched || '-')}</td>
       <td>${esc(m.input_qoe || '-')}</td>
       <td>${esc(m.qoe_matched || '-')}</td>
       <td title="${currencyTitle(m.input_unit_price)}">${currency(m.input_unit_price)}</td>
@@ -801,8 +822,10 @@ function renderMatchesPage() {
       <td class="text-truncate" style="max-width:180px" title="${esc(m.organization_matched)}">${esc(m.organization_matched || '-')}</td>
       <td>${esc(m.match_type || '-')}</td>
       <td>${esc(m.pair_type || '-')}</td>
+      <td>${esc(m.uom_nuance || '-')}</td>
     </tr>
-  `).join("");
+  `;
+  }).join("");
 
   document.getElementById("matchPageInfo").textContent = `Page ${matchCurrentPage} of ${totalPages}`;
   document.getElementById("btnMatchPrevPage").disabled = matchCurrentPage <= 1;
@@ -842,6 +865,7 @@ function clearMatchFilters() {
   document.getElementById("filterBucket").value = "";
   document.getElementById("filterSource").value = "";
   document.getElementById("filterStatus").value = "";
+  document.getElementById("filterUomNuance").value = "";
   setSelectedContractFilters([]);
   setSelectedContractScope(null);
   loadMatches();

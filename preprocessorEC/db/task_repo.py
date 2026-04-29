@@ -550,6 +550,9 @@ def get_dedup_candidates(task_id: str) -> list[dict]:
         "vendor_item_score",
         "created_at",
     ]
+    available_columns = _get_match_result_columns()
+    if "uom_nuance" in available_columns:
+        select_columns.append("uom_nuance")
     if match_result_has_dedup_columns():
         select_columns.extend(["dedup_decision", "dedup_decided_by", "dedup_decided_at"])
 
@@ -574,6 +577,9 @@ def get_dedup_candidates(task_id: str) -> list[dict]:
                 row["dedup_decision"] = None
                 row["dedup_decided_by"] = None
                 row["dedup_decided_at"] = None
+        if "uom_nuance" not in available_columns:
+            for row in results:
+                row["uom_nuance"] = None
         return results
 
 

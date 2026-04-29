@@ -364,6 +364,7 @@ def api_get_matches(task_id: str):
         if value and value.strip()
     }
     status_filter = request.args.get("status", "").upper()
+    uom_nuance_filter = request.args.get("uom_nuance", "").strip().lower()
     has_organization_filter = "organization_eid" in request.args
     has_vendor_filter = "erp_vendor_id" in request.args
     organization_filter = _normalize_scope_value(request.args.get("organization_eid"))
@@ -384,6 +385,8 @@ def api_get_matches(task_id: str):
         if has_vendor_filter and _normalize_scope_value(m.erp_vendor_id_matched) != vendor_filter:
             continue
         if status_filter and (m.match_status or "").upper() != status_filter:
+            continue
+        if uom_nuance_filter and (m.uom_nuance or "").strip().lower() != uom_nuance_filter:
             continue
 
         md = m.to_dict()
