@@ -740,17 +740,22 @@ async function loadTasks() {
       <td>${t.created_by}</td>
       <td>${t.updated_at ? new Date(t.updated_at).toLocaleDateString() : "—"}</td>
       <td onclick="event.stopPropagation()">
-        <button class="btn btn-outline-danger btn-sm py-0 px-1"
-                onclick="deleteTask('${t.task_id}')" title="Delete task">
-          <small>Delete</small>
-        </button>
+        ${t.parent_task_id
+          ? `<button class="btn btn-outline-secondary btn-sm py-0 px-1" disabled
+                title="Sub-task of ${t.parent_task_id} — delete the root task to remove this whole family.">
+              <small>Delete</small>
+            </button>`
+          : `<button class="btn btn-outline-danger btn-sm py-0 px-1"
+                onclick="deleteTask('${t.task_id}')" title="Delete task and any spawned sub-tasks">
+              <small>Delete</small>
+            </button>`}
       </td>
     </tr>
   `).join("");
 }
 
 async function deleteTask(taskId) {
-  if (!confirm(`Delete task ${taskId}? This cannot be undone.`)) return;
+  if (!confirm(`Delete task ${taskId}? Any sub-tasks spawned from it will also be removed. This cannot be undone.`)) return;
   const resp = await fetch(`${PREFIX}/api/tasks/${taskId}`, {method: "DELETE"});
   if (resp.ok) {
     loadTasks();

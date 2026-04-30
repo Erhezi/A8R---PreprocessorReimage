@@ -36,7 +36,9 @@ function renderIntakeActionButtons(task, issues) {
   const hasHeaderErrors = issues.some(issue => issue.item_id === null || issue.item_id === undefined);
 
   if (intakeStatuses.includes(task.status)) {
-    buttons += `<button class="btn btn-sm btn-outline-warning d-block mb-1 w-100" onclick="showReupload()">Re-upload Items</button>`;
+    if (!task.parent_task_id) {
+      buttons += `<button class="btn btn-sm btn-outline-warning d-block mb-1 w-100" onclick="showReupload()">Re-upload Items</button>`;
+    }
     if (allUploaded) {
       buttons += `<button class="btn btn-sm btn-primary d-block mb-1 w-100" onclick="runPrecheck()">Run Pre-check</button>`;
     }

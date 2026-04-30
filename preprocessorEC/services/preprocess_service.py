@@ -133,6 +133,51 @@ def _expected_buy_uom_option(item) -> Optional[str]:
     return _build_buy_uom_option(getattr(item, "uom_to_match_infor", None), getattr(item, "qoe", None))
 
 
+def _find_explicit_buy_uom_duplicates(
+    task_id: str,
+    edited_item_id: int,
+    mfg_catalog_num: Optional[str],
+    uom_to_match_infor: Optional[str],
+    qoe: Optional[int],
+) -> Optional[dict]:
+    """Look for INPUT items (other than the edited one) whose
+    (clean_mfg, uom_to_match_infor, qoe) matches the edited row.
+
+    Used only in `precheck_mode == "explicit"`. Returns ``None`` when no
+    collision is found, otherwise a dict ready to embed in issue detail:
+    ``{"key": "...", "rows": [{"item_id": ..., "file_row": ...}, ...]}``.
+    """
+    key_mfg = (mfg_catalog_num or "").strip().upper()
+    key_uom = (uom_to_match_infor or "").strip().upper()
+    if not key_mfg or not key_uom or qoe is None:
+        return None
+
+    matches: list[dict] = []
+    for other in task_repo.get_items_by_source(task_id, "INPUT"):
+        if other.item_id == edited_item_id:
+            continue
+        other_mfg = (other.mfg_catalog_num or "").strip().upper()
+        other_uom = (other.uom_to_match_infor or "").strip().upper()
+        if other_mfg != key_mfg or other_uom != key_uom:
+            continue
+        if other.qoe != qoe:
+            continue
+        matches.append({
+            "item_id": other.item_id,
+            "file_row": other.file_row,
+            "mfg_catalog_num": other.mfg_catalog_num,
+            "uom_to_match_infor": other.uom_to_match_infor,
+            "qoe": other.qoe,
+        })
+
+    if not matches:
+        return None
+    return {
+        "key": f"{key_mfg}|{key_uom}|{qoe}",
+        "rows": matches,
+    }
+
+
 def _build_matched_snapshot(row, matched_source: str) -> dict:
     if matched_source == "CCX":
         return {
@@ -1414,6 +1459,22 @@ def resolve_buy_uom_edit(
     task = task_repo.get_task(task_id)
     intention = _intention_for_item(item, task)
     is_expire = intention == "EXPIRE"
+    precheck_mode = (getattr(task, "precheck_mode", None) or "default").lower()
+
+    buy_uom_passed = expected_option in aggregate_options
+
+    # Explicit-mode duplicate check: in this mode the PC1 dup key is mfg + UOM,
+    # but the edit also moves QOE so we use (clean_mfg, uom_to_match_infor, qoe)
+    # to flag rows whose buy-UOM expectation now collides with another input row.
+    dup_payload = None
+    if precheck_mode == "explicit":
+        dup_payload = _find_explicit_buy_uom_duplicates(
+            task_id=task_id,
+            edited_item_id=issue.item_id,
+            mfg_catalog_num=item.mfg_catalog_num,
+            uom_to_match_infor=validated_uom,
+            qoe=qoe_val,
+        )
 
     try:
         detail = json.loads(issue.detail or "{}")
@@ -1427,13 +1488,15 @@ def resolve_buy_uom_edit(
         "uom_to_match_infor": uom_to_match_infor or None,
         "qoe": qoe_val,
         "expected": expected_option,
-        "passed": expected_option in aggregate_options,
+        "passed": buy_uom_passed,
+        "duplicate_check": dup_payload,
     })
     detail["edit_attempts"] = edits
     detail["expected"] = expected_option
     detail["available"] = sorted(aggregate_options)
+    detail["duplicate_check"] = dup_payload
 
-    if expected_option in aggregate_options:
+    if buy_uom_passed and not dup_payload:
         task_repo.update_items_bulk([{
             "item_id": issue.item_id,
             "infor_buy_uom_options": options_str,
@@ -1445,6 +1508,10 @@ def resolve_buy_uom_edit(
             resolved_by=decided_by,
             detail=json.dumps(detail),
         )
+        # Edit no longer collides — clear any prior dup error for this item.
+        task_repo.delete_unresolved_preprocess_issues_for_item(
+            task_id, issue.item_id, ["DUPLICATE_ITEM_ERROR"]
+        )
         return {
             "issue_id": issue_id,
             "passed": True,
@@ -1454,8 +1521,33 @@ def resolve_buy_uom_edit(
             "qoe": qoe_val,
         }
 
-    new_status = Status.BUY_UOM_WARN if is_expire else Status.BUY_UOM_ERROR
-    severity = "WARN" if is_expire else "ERROR"
+    if dup_payload:
+        # Collision in explicit mode: surface as a separate DUPLICATE_ITEM_ERROR
+        # so the user sees it in the error table; keep BUY_UOM_ERROR open so the
+        # existing Edit button stays available for re-editing.
+        task_repo.upsert_preprocess_issue(
+            task_id=task_id,
+            item_id=issue.item_id,
+            issue_type="DUPLICATE_ITEM_ERROR",
+            severity="ERROR",
+            detail=json.dumps({
+                "expected": expected_option,
+                "uom_to_match_infor": validated_uom,
+                "qoe": qoe_val,
+                "duplicates": dup_payload,
+                "raised_after": "EDIT_UOM_QOE",
+            }),
+        )
+        new_status = Status.DUPLICATE_ITEM_ERROR
+        severity = "ERROR"
+    else:
+        # No collision; still failing buy_uom — clear any prior dup error.
+        task_repo.delete_unresolved_preprocess_issues_for_item(
+            task_id, issue.item_id, ["DUPLICATE_ITEM_ERROR"]
+        )
+        new_status = Status.BUY_UOM_WARN if is_expire else Status.BUY_UOM_ERROR
+        severity = "WARN" if is_expire else "ERROR"
+
     task_repo.update_items_bulk([{
         "item_id": issue.item_id,
         "infor_buy_uom_options": options_str,
@@ -1473,6 +1565,7 @@ def resolve_buy_uom_edit(
         "uom": std_uom,
         "uom_to_match_infor": uom_to_match_infor or None,
         "qoe": qoe_val,
+        "duplicate": dup_payload,
     }
 
 

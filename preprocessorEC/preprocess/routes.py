@@ -398,7 +398,7 @@ def api_get_matches(task_id: str):
             md["input_description"] = inp.description
             md["input_uom"] = inp.uom
             md["input_qoe"] = inp.qoe
-            md["input_unit_price"] = float(inp.unit_price) if inp.unit_price else None
+            md["input_unit_price"] = float(inp.unit_price) if inp.unit_price is not None else None
         results.append(md)
 
     return jsonify(results)

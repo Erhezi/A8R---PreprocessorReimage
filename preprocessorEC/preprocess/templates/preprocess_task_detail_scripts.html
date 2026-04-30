@@ -103,9 +103,19 @@ function describeIssue(issue) {
   }
   if (issue.issue_type === "BUY_UOM_ERROR") {
     const expected = detail.expected || '—';
-    const available = (detail.available || []).join(", ") || '—';
+    const availableArr = detail.available || [];
+    const available = availableArr.join(", ") || '—';
     const itemNumber = detail.infor_item_number || '—';
+    if (detail.duplicate_check && Array.isArray(availableArr) && availableArr.includes(detail.expected)) {
+      return `Input buy UOM <code>${expected}</code> matches Infor, but the edit duplicates other input rows — re-edit to resolve`;
+    }
     return `Input buy UOM <code>${expected}</code> not in <code>${available}</code> for matched item ${itemNumber}`;
+  }
+  if (issue.issue_type === "DUPLICATE_ITEM_ERROR") {
+    const dupRows = (detail.duplicates && detail.duplicates.rows) || [];
+    const rowList = dupRows.map(r => r.file_row != null ? `#${r.file_row}` : `item ${r.item_id}`).join(", ") || '—';
+    const expected = detail.expected || '—';
+    return `Edited Mfg + UOM (Infor) + QOE <code>${expected}</code> duplicates rows ${rowList} (explicit precheck mode)`;
   }
   return issue.issue_type;
 }

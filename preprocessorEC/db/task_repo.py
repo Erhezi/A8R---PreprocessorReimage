@@ -217,38 +217,73 @@ def update_task_fields(task_id: str, **kwargs) -> None:
             s.commit()
 
 
+_TASK_CHILD_TABLES = [
+    "[Preprocessor].PreprocessorItemMatching",
+    "[Preprocessor].PreprocessorMatchResult",
+    "[Preprocessor].PreprocessorPreCheckError",
+    "[Preprocessor].PreprocessorPreprocessIssue",
+    "[Preprocessor].PreprocessorTaskStatusLog",
+    "[Preprocessor].PreprocessorTaskItem",
+]
+
+
+def _purge_task_rows(session, task_id: str) -> None:
+    """Delete all child rows then the Task row itself for a single task_id.
+
+    Raw SQL on purpose — it never SELECTs, so it tolerates schema columns the
+    ORM doesn't know about. Order is important: item-linked tables before
+    PreprocessorTaskItem, all task-children before the PreprocessorTask row.
+    """
+    for tbl in _TASK_CHILD_TABLES:
+        session.execute(text(f"DELETE FROM {tbl} WHERE task_id = :tid"), {"tid": task_id})
+    session.execute(
+        text("DELETE FROM [Preprocessor].PreprocessorTask WHERE task_id = :tid"),
+        {"tid": task_id},
+    )
+
+
 def delete_task(task_id: str) -> bool:
+    """Delete a root task and cascade-remove its entire sub-task family.
+
+    A task with a non-null parent_task_id is treated as a sub-task and cannot
+    be deleted on its own — callers must delete the root task to remove the
+    whole lineage. Raises ValueError when the constraint is violated.
+
+    Returns True if rows were removed, False if the task did not exist.
+    """
     with _session() as s:
-        # Check existence first
         task = s.get(Task, task_id)
         if not task:
             return False
-        # Delete children with raw SQL to avoid ORM lazy-loading relationships
-        # (some child tables may have columns not yet in DB; raw DELETE is safe
-        # because it never SELECTs — it just removes rows if they exist).
-        # Order matters for item-linked child rows that enforce FKs to TaskItem.
-        child_tables = [
-            "[Preprocessor].PreprocessorItemMatching",
-            "[Preprocessor].PreprocessorMatchResult",
-            "[Preprocessor].PreprocessorPreCheckError",
-            "[Preprocessor].PreprocessorPreprocessIssue",
-            "[Preprocessor].PreprocessorTaskStatusLog",
-            "[Preprocessor].PreprocessorTaskItem",
-        ]
-        for tbl in child_tables:
-            s.execute(text(f"DELETE FROM {tbl} WHERE task_id = :tid"), {"tid": task_id})
-        # Detach any sub-tasks so the FK from child.parent_task_id → this row
-        # doesn't block the delete. The sub-tasks themselves are kept (they
-        # carry independent work) but lose their lineage pointer.
-        s.execute(
-            text(
-                "UPDATE [Preprocessor].PreprocessorTask "
-                "SET parent_task_id = NULL "
-                "WHERE parent_task_id = :tid"
-            ),
-            {"tid": task_id},
-        )
-        s.execute(text("DELETE FROM [Preprocessor].PreprocessorTask WHERE task_id = :tid"), {"tid": task_id})
+        if task.parent_task_id:
+            raise ValueError(
+                f"Task {task_id} is a sub-task of {task.parent_task_id}. "
+                f"Sub-tasks can only be deleted by deleting their root task."
+            )
+
+        # BFS to collect every descendant; reversing yields deepest-first so
+        # the FK from child.parent_task_id to its parent is satisfied at each
+        # delete step.
+        descendants: list[str] = []
+        frontier = [task_id]
+        while frontier:
+            next_frontier: list[str] = []
+            for current in frontier:
+                rows = s.execute(
+                    text(
+                        "SELECT task_id FROM [Preprocessor].PreprocessorTask "
+                        "WHERE parent_task_id = :tid"
+                    ),
+                    {"tid": current},
+                ).fetchall()
+                for (child_id,) in rows:
+                    descendants.append(child_id)
+                    next_frontier.append(child_id)
+            frontier = next_frontier
+
+        for tid in reversed(descendants):
+            _purge_task_rows(s, tid)
+        _purge_task_rows(s, task_id)
         s.commit()
         return True
 
@@ -1047,6 +1082,26 @@ def delete_unresolved_preprocess_issues(task_id: str, issue_types: list[str]) ->
             s.query(PreprocessIssue)
             .filter(
                 PreprocessIssue.task_id == task_id,
+                PreprocessIssue.issue_type.in_(issue_types),
+                PreprocessIssue.resolved == False,  # noqa: E712
+            )
+            .delete(synchronize_session=False)
+        )
+        s.commit()
+        return count
+
+
+def delete_unresolved_preprocess_issues_for_item(
+    task_id: str, item_id: int, issue_types: list[str]
+) -> int:
+    if not issue_types:
+        return 0
+    with _session() as s:
+        count = (
+            s.query(PreprocessIssue)
+            .filter(
+                PreprocessIssue.task_id == task_id,
+                PreprocessIssue.item_id == item_id,
                 PreprocessIssue.issue_type.in_(issue_types),
                 PreprocessIssue.resolved == False,  # noqa: E712
             )

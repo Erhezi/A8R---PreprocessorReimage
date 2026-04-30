@@ -241,6 +241,17 @@ def api_reupload_items(task_id: str):
     if task.phase != "INTAKE":
         return jsonify({"error": "Re-upload is only allowed during the INTAKE phase"}), 400
 
+    # Sub-tasks inherit their item set from a parent split — re-uploading would
+    # break the link back to the original file shape, so it's disallowed.
+    if task.parent_task_id:
+        return jsonify({
+            "error": (
+                f"Re-upload is disabled for sub-tasks. Task {task_id} was spawned "
+                f"from {task.parent_task_id}; its items must stay in their original "
+                f"shape."
+            )
+        }), 400
+
     # Delete existing items + errors
     task_repo.delete_items_for_task(task_id)
 

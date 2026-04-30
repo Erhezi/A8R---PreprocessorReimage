@@ -28,7 +28,7 @@ def get_dedup_candidates(task_id: str) -> list[dict]:
             row["input_description"] = input_item.description
             row["input_uom"] = input_item.uom
             row["input_qoe"] = input_item.qoe
-            row["input_unit_price"] = float(input_item.unit_price) if input_item.unit_price else None
+            row["input_unit_price"] = float(input_item.unit_price) if input_item.unit_price is not None else None
         results.append(row)
     return results
 

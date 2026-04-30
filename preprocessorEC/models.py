@@ -197,7 +197,7 @@ class TaskItem(Base):
             "description": self.description,
             "standardized_description": self.standardized_description,
             "uom": self.uom,
-            "unit_price": float(self.unit_price) if self.unit_price else None,
+            "unit_price": float(self.unit_price) if self.unit_price is not None else None,
             "qoe": self.qoe,
             "intention": self.intention,
             "tier_description": self.tier_description,

@@ -47,9 +47,14 @@ on data model, for preprocessor.CCXInforSyncedContractHeader, I think we should 
 
 
 
-# documentation
+# documentations
 - uom usage:
   - table pre-join uom is functioning on UOM (Infor) between CCX and Infor dataset
   - pre-check is functioning on UOM (Infor) if pre-check mode specifically called on UOM
   - preprocess match scoring is specifically functioning on input UOM, not the Infor version (this is because we are mostly trying to resolve matching between input and CCX, and at that moment UOM is not yet in Infor format)
   - preprocess buy UOM checking is functioning on UOM (Infor) because by the time the item is loaded to Infor that triggers UOM issue, the UOM should have already been converted to Infor format
+
+- task split behavior:
+  - if task is split, the child task will inherit the header information and spun as a new task
+  - deletion of child task is not allowed, deletion need to be done on the parent task, then cascade to child task.
+  - split task will not be allowed to re-upload items, only the error items in original scopes will be allowed to be deleted or edited.

@@ -7,7 +7,7 @@
 IF COL_LENGTH('Preprocessor.PreprocessorTask', 'parent_task_id') IS NULL
 BEGIN
     ALTER TABLE [Preprocessor].[PreprocessorTask]
-        ADD [parent_task_id] VARCHAR(4) NULL;
+        ADD [parent_task_id] NCHAR(4) NULL;
 END;
 
 IF COL_LENGTH('Preprocessor.PreprocessorTask', 'spawn_reason') IS NULL

@@ -131,8 +131,16 @@ def api_create_task():
 @tasks_bp.route("/api/tasks/<task_id>", methods=["DELETE"])
 @login_required
 def api_delete_task(task_id: str):
-    """Permanently delete a task and all its child records."""
-    deleted = task_repo.delete_task(task_id)
+    """Permanently delete a task and cascade-remove its entire sub-task family.
+
+    A sub-task (parent_task_id != NULL) cannot be deleted on its own — the
+    request is rejected with 400 and the caller must target the root task
+    to remove the whole lineage.
+    """
+    try:
+        deleted = task_repo.delete_task(task_id)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     if not deleted:
         return jsonify({"error": "Task not found"}), 404
     return jsonify({"deleted": task_id}), 200
