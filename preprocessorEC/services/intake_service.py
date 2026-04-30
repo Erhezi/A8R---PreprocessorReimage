@@ -651,37 +651,123 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
     }
 
 
+def _spawn_error_pc1_subtask(parent_task, error_items: list, user: str) -> str:
+    """Create a sub-task for ERROR_PC1 items split off the parent at advance time.
+
+    Items keep their item_id and ERROR_PC1 status; their PC1 PreCheckError
+    rows are re-tasked alongside them so the new task surfaces the existing
+    diagnoses. The sub-task starts in INTAKE / ON_HOLD_PC1 so the user can fix
+    and re-run PC1 inside it.
+    """
+    parent_notes = parent_task.notes or ""
+    sub_notes = f"Split from {parent_task.task_id} due to PC1 errors at advance time."
+    if parent_notes:
+        sub_notes = sub_notes + "\n\n" + parent_notes
+
+    sub_task = task_repo.create_task(
+        intake_mode=parent_task.intake_mode,
+        contract_number=parent_task.contract_number,
+        vendor_id=parent_task.vendor_id,
+        purchase_from_loc=parent_task.purchase_from_loc,
+        erp_vendor_name=parent_task.erp_vendor_name,
+        purchase_from_loc_name=parent_task.purchase_from_loc_name,
+        process_type=parent_task.process_type,
+        source_type=parent_task.source_type,
+        organization=parent_task.organization,
+        oem_name=parent_task.oem_name,
+        intention=parent_task.intention,
+        mixed_intention=parent_task.mixed_intention,
+        contract_start_date=parent_task.contract_start_date,
+        contract_end_date=parent_task.contract_end_date,
+        notes=sub_notes,
+        wrike_id=parent_task.wrike_id,
+        created_by=user,
+        parent_task_id=parent_task.task_id,
+        spawn_reason="ERROR_PC1_SPLIT",
+        phase=Phase.INTAKE,
+        status=Status.ON_HOLD_PC1,
+    )
+
+    error_ids = [i.item_id for i in error_items]
+    task_repo.move_items_to_task(error_ids, sub_task.task_id, move_pc1_errors=True)
+
+    task_repo.add_status_log(
+        task_id=sub_task.task_id,
+        old_phase=None,
+        new_phase=Phase.INTAKE,
+        old_status=None,
+        new_status=Status.ON_HOLD_PC1,
+        changed_by=user,
+        notes=f"Spawned from {parent_task.task_id} carrying {len(error_ids)} ERROR_PC1 item(s).",
+    )
+    return sub_task.task_id
+
+
 def proceed_with_passing(task_id: str, state_machine: TaskStateMachine, user: str) -> dict:
     """User explicitly chooses to advance passing items to Phase 2.
 
-    LOCAL contracts: allowed to proceed even if some items failed/warned.
-    PREMIER contracts: blocked unless all items passed (no errors/warnings).
+    Rules:
+      - WARN_PC1 items must be resolved (manually pass or fix to PASSED_PC1)
+        before advance is allowed, regardless of contract source type.
+      - PREMIER contracts: blocked if any ERROR_PC1 items remain.
+      - LOCAL contracts: ERROR_PC1 items are split off into a new sub-task
+        (see _spawn_error_pc1_subtask). Only PASSED_PC1 items carry forward.
+
+    Items reaching IDENTITY are guaranteed to be in PASSED_PC1 status.
     """
     task = task_repo.get_task(task_id)
     if not task:
         raise ValueError("Task not found")
 
-    state = state_machine.get_state(task_id)
-    passed_count = len(state.get("clean_items", []))
-    if passed_count == 0:
+    all_items = task_repo.get_items(task_id)
+    passed_items = [i for i in all_items if i.status == "PASSED_PC1"]
+    error_items = [i for i in all_items if i.status == "ERROR_PC1"]
+    warn_items = [i for i in all_items if i.status == "WARN_PC1"]
+
+    if not passed_items:
         raise ValueError("No items passed PC1. Cannot proceed.")
 
-    # PREMIER contracts must have ALL items passed before advancing
-    source_type = (task.source_type or "").upper()
-    all_items = task_repo.get_items(task_id)
-    failed_or_warned = [i for i in all_items if i.status in ("ERROR_PC1", "WARN_PC1")]
-    if source_type == "PREMIER" and failed_or_warned:
+    if warn_items:
         raise ValueError(
-            f"PREMIER contracts require all items to pass PC1. "
-            f"{len(failed_or_warned)} item(s) still have errors or warnings."
+            f"{len(warn_items)} item(s) still in WARN_PC1. Resolve every warning "
+            f"(fix the item or manually pass it) before advancing to Identity."
         )
 
+    source_type = (task.source_type or "").upper()
+    if source_type == "PREMIER" and error_items:
+        raise ValueError(
+            f"PREMIER contracts require all items to pass PC1. "
+            f"{len(error_items)} item(s) still have errors."
+        )
+
+    sub_task_id = None
+    if error_items and source_type != "PREMIER":
+        sub_task_id = _spawn_error_pc1_subtask(task, error_items, user)
+
+    state = state_machine.get_state(task_id)
     state["pc1_passed"] = True
+    # Refresh clean_items so it reflects only items still on this task.
+    state["clean_items"] = [{"item_id": i.item_id} for i in passed_items]
     state_machine.save_state(task_id, state)
 
-    # Advance to IDENTITY phase
-    new_state = state_machine.advance(task_id, Phase.IDENTITY, changed_by=user, notes="PC1 passed, advancing to Identity")
-    return {"phase": new_state["phase"], "status": new_state["status"], "passed_count": passed_count}
+    new_state = state_machine.advance(
+        task_id,
+        Phase.IDENTITY,
+        changed_by=user,
+        notes=(
+            f"PC1 passed, advancing to Identity (split {len(error_items)} ERROR_PC1 "
+            f"item(s) into sub-task {sub_task_id})"
+            if sub_task_id
+            else "PC1 passed, advancing to Identity"
+        ),
+    )
+    return {
+        "phase": new_state["phase"],
+        "status": new_state["status"],
+        "passed_count": len(passed_items),
+        "split_count": len(error_items) if sub_task_id else 0,
+        "sub_task_id": sub_task_id,
+    }
 
 
 def recheck_items(task_id: str, item_ids: list[int], state_machine: TaskStateMachine) -> dict:

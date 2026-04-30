@@ -73,6 +73,10 @@ def create_task(
     notes: Optional[str] = None,
     wrike_id: Optional[str] = None,
     created_by: str = "",
+    parent_task_id: Optional[str] = None,
+    spawn_reason: Optional[str] = None,
+    phase: Optional[str] = None,
+    status: Optional[str] = None,
 ) -> Task:
     """Insert a new Task and return it with the generated task_id."""
     with _session() as s:
@@ -95,13 +99,62 @@ def create_task(
             notes=notes,
             wrike_id=wrike_id,
             created_by=created_by,
+            parent_task_id=parent_task_id,
+            spawn_reason=spawn_reason,
         )
+        if phase:
+            task.phase = phase
+        if status:
+            task.status = status
         s.add(task)
         s.commit()
         s.refresh(task)
         # Detach so caller can use outside session
         s.expunge(task)
         return task
+
+
+def list_subtasks(parent_task_id: str) -> list[Task]:
+    """Return tasks spawned from a given parent."""
+    with _session() as s:
+        tasks = (
+            s.query(Task)
+            .filter(Task.parent_task_id == parent_task_id)
+            .order_by(Task.created_at.asc())
+            .all()
+        )
+        for t in tasks:
+            s.expunge(t)
+        return tasks
+
+
+def move_items_to_task(
+    item_ids: list[int],
+    target_task_id: str,
+    move_pc1_errors: bool = True,
+) -> int:
+    """Re-assign TaskItem rows (and optionally their PC1 PreCheckError rows) to
+    *target_task_id*. Returns the number of items moved.
+
+    Used when splitting ERROR_PC1 items off into a sub-task: their item_id stays
+    stable but task_id flips to the new sub-task so downstream queries scoped by
+    task_id don't return stale rows.
+    """
+    if not item_ids:
+        return 0
+    with _session() as s:
+        moved = (
+            s.query(TaskItem)
+            .filter(TaskItem.item_id.in_(item_ids))
+            .update({TaskItem.task_id: target_task_id}, synchronize_session=False)
+        )
+        if move_pc1_errors:
+            s.query(PreCheckError).filter(
+                PreCheckError.item_id.in_(item_ids),
+                PreCheckError.phase == "PC1",
+            ).update({PreCheckError.task_id: target_task_id}, synchronize_session=False)
+        s.commit()
+        return moved
 
 
 def get_task(task_id: str) -> Optional[Task]:
@@ -184,6 +237,17 @@ def delete_task(task_id: str) -> bool:
         ]
         for tbl in child_tables:
             s.execute(text(f"DELETE FROM {tbl} WHERE task_id = :tid"), {"tid": task_id})
+        # Detach any sub-tasks so the FK from child.parent_task_id → this row
+        # doesn't block the delete. The sub-tasks themselves are kept (they
+        # carry independent work) but lose their lineage pointer.
+        s.execute(
+            text(
+                "UPDATE [Preprocessor].PreprocessorTask "
+                "SET parent_task_id = NULL "
+                "WHERE parent_task_id = :tid"
+            ),
+            {"tid": task_id},
+        )
         s.execute(text("DELETE FROM [Preprocessor].PreprocessorTask WHERE task_id = :tid"), {"tid": task_id})
         s.commit()
         return True

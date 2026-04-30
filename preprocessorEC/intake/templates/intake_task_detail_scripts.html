@@ -58,11 +58,14 @@ function renderIntakeActionButtons(task, issues) {
     const passedCount = currentItems.filter(item => item.status === "PASSED_PC1").length;
     if (passedCount > 0) {
       const isPremier = (task.source_type || "").toUpperCase() === "PREMIER";
-      const failedOrWarned = currentItems.filter(item => item.status === "ERROR_PC1" || item.status === "WARN_PC1").length;
-      if (isPremier && failedOrWarned > 0) {
+      const errorCount = currentItems.filter(item => item.status === "ERROR_PC1").length;
+      const warnCount = currentItems.filter(item => item.status === "WARN_PC1").length;
+      if (warnCount > 0) {
+        buttons += `<button class="btn btn-sm btn-outline-secondary d-block mb-1 w-100" disabled title="Resolve every WARN_PC1 item (fix or manually pass) before advancing">Proceed (blocked — ${warnCount} warning${warnCount === 1 ? '' : 's'})</button>`;
+      } else if (isPremier && errorCount > 0) {
         buttons += `<button class="btn btn-sm btn-outline-secondary d-block mb-1 w-100" disabled title="PREMIER contracts require all items to pass">Proceed (blocked — PREMIER)</button>`;
-      } else if (failedOrWarned > 0) {
-        buttons += `<button class="btn btn-sm btn-success d-block mb-1 w-100" onclick="proceedWithPassing()">Proceed with ${passedCount} Passing Items (LOCAL)</button>`;
+      } else if (errorCount > 0) {
+        buttons += `<button class="btn btn-sm btn-success d-block mb-1 w-100" onclick="proceedWithPassing()">Advance ${passedCount} & Split ${errorCount} Error(s)</button>`;
       } else {
         buttons += `<button class="btn btn-sm btn-success d-block mb-1 w-100" onclick="proceedWithPassing()">Advance to Identity</button>`;
       }
@@ -496,22 +499,41 @@ async function recheckAll() {
   loadTask();
 }
 
-async function proceedWithPassing() {
+function proceedWithPassing() {
   const passed = currentItems.filter(item => item.status === "PASSED_PC1").length;
-  const total = currentItems.length;
-  const msg = passed < total
-    ? `Only ${passed} of ${total} items passed. Proceed with passing items to Identity phase? (LOCAL contracts only)`
-    : `All ${total} items passed. Advance to Identity phase?`;
-  if (!confirm(msg)) return;
+  const errorCount = currentItems.filter(item => item.status === "ERROR_PC1").length;
+  const willSplit = errorCount > 0;
+
+  document.getElementById("proceedPassedCount").textContent = passed;
+  document.getElementById("proceedSplitCount").textContent = errorCount;
+  document.getElementById("proceedSplitLine").style.display = willSplit ? "" : "none";
+  document.getElementById("proceedSplitHelp").style.display = willSplit ? "" : "none";
+  document.getElementById("proceedConfirmTitle").textContent = willSplit ? "Advance & Split Errors" : "Advance to Identity";
+  const btn = document.getElementById("btnConfirmProceed");
+  btn.textContent = willSplit ? "Advance & Split" : "Advance";
+  btn.disabled = false;
+
+  new bootstrap.Modal(document.getElementById("proceedConfirmModal")).show();
+}
+
+document.getElementById("btnConfirmProceed").addEventListener("click", async () => {
+  const btn = document.getElementById("btnConfirmProceed");
+  btn.disabled = true;
+  btn.textContent = "Advancing…";
 
   const resp = await fetch(`${PREFIX}/api/intake/${TASK_ID}/proceed`, {method: "POST"});
+  const result = await resp.json().catch(() => ({}));
+  bootstrap.Modal.getInstance(document.getElementById("proceedConfirmModal")).hide();
+
   if (resp.ok) {
+    if (result.sub_task_id) {
+      alert(`Advanced to Identity. ${result.split_count} item(s) moved into sub-task ${result.sub_task_id} (linked via parent_task_id = ${TASK_ID}).`);
+    }
     loadTask();
   } else {
-    const err = await resp.json();
-    alert("Proceed failed: " + (err.error || "Unknown error"));
+    alert("Proceed failed: " + (result.error || "Unknown error"));
   }
-}
+});
 
 function openEditVendorModal() {
   document.getElementById("editVendorSearchInput").value = "";

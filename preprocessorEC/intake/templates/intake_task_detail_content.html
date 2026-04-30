@@ -182,3 +182,33 @@
       </table>
     </div>
   </div>
+
+  <!-- Proceed / Split Confirmation Modal -->
+  <div class="modal fade" id="proceedConfirmModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="proceedConfirmTitle">Advance to Identity</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body" id="proceedConfirmBody">
+          <p class="mb-2">Confirm advancing this task to the Identity phase.</p>
+          <ul class="list-unstyled small mb-2">
+            <li><span class="badge bg-success me-1">Passed</span> <span id="proceedPassedCount">0</span> item(s) will move forward</li>
+            <li id="proceedSplitLine" style="display:none">
+              <span class="badge bg-warning text-dark me-1">Split</span>
+              <span id="proceedSplitCount">0</span> ERROR_PC1 item(s) will be moved into a new sub-task linked to this one
+            </li>
+          </ul>
+          <p class="small text-muted mb-0" id="proceedSplitHelp" style="display:none">
+            The sub-task starts in INTAKE / ON_HOLD_PC1 with the existing PC1 errors carried over so you can fix them and re-run pre-check separately.
+            You can find it later via the parent_task_id link.
+          </p>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-success btn-sm" id="btnConfirmProceed">Advance</button>
+        </div>
+      </div>
+    </div>
+  </div>

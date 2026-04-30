@@ -212,9 +212,12 @@ Phase 3 -- Preprocess Core (Find Dups, Find Item Number, Remove False Positive M
 
 
 -- before going into phase 3
-  - the end product of phase 3 is not exactly as planned, but except that on PreprocessorTaskItem table we have a couple ccx columns added which are not necessary and to be cleansed, other part are mostly okay.
-  - I might like to have a separarate table PreprocessorTaskItemForDescision
+  - the end product of phase 3 is not exactly as planned, but except that on PreprocessorTaskItem table we have a couple ccx columns added which are not necessary and to be cleansed, other part are mostly very good
+  - I might like to have a separarate table PreprocessorTaskItemForDescision so we can move things out from PreprocessorMatchResults 
+  - when advance to phase 4, we will only take the ACCEPTED matched results
+
 Phase 4 -- Dedup & Data Integrity Resolution
+  - 
   -  Duplication Resolution
   -  Integratity Validation
 

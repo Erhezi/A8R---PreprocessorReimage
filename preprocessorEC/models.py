@@ -62,6 +62,15 @@ class Task(Base):
     phase = Column(String(30), nullable=False, default="INTAKE")
     status = Column(String(50), nullable=False, default="DRAFT")
 
+    # Sub-task lineage — populated when this task was spawned off another
+    # (e.g. ERROR_PC1 items split off a parent task at PC1 advance time).
+    parent_task_id = Column(
+        String(4),
+        ForeignKey(f"{SCHEMA}.PreprocessorTask.task_id"),
+        nullable=True,
+    )
+    spawn_reason = Column(String(50), nullable=True)  # e.g. ERROR_PC1_SPLIT
+
     # Audit
     created_by = Column(String(120), nullable=False)
     created_at = Column(DateTime, default=ny_now)
@@ -98,6 +107,8 @@ class Task(Base):
             "precheck_mode": self.precheck_mode,
             "phase": self.phase,
             "status": self.status,
+            "parent_task_id": self.parent_task_id,
+            "spawn_reason": self.spawn_reason,
             "created_by": self.created_by,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
