@@ -120,7 +120,10 @@ def _fetch_contract_lookup(conn, matched_source: str, organization_eid: str, con
 def api_run_preprocess(task_id: str):
     data = request.get_json(silent=True) or {}
     enable_llm = data.get("enable_llm", True)
-    result = preprocess_service.run_full_preprocess(task_id, _sm(), enable_llm=bool(enable_llm))
+    try:
+        result = preprocess_service.run_full_preprocess(task_id, _sm(), enable_llm=bool(enable_llm))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     return jsonify(result)
 
 
@@ -544,6 +547,13 @@ def preprocess_page(task_id: str):
     task = task_repo.get_task(task_id)
     if not task:
         abort(404)
+    # Refresh explicit-mode duplicate state on page entry so the gate-keeper
+    # surfaces any new collisions caused by edits since last view.
+    if (task.precheck_mode or "").lower() == "explicit":
+        try:
+            preprocess_service._recompute_explicit_duplicates(task_id)
+        except Exception:  # noqa: BLE001 — safety net, don't break page render
+            pass
     return render_template("preprocess.html", task_id=task_id, task=task.to_dict())
 
 
@@ -635,6 +645,22 @@ def api_ignore_buy_uom(task_id: str, issue_id: int):
     user = current_user.username if current_user.is_authenticated else "system"
     try:
         result = preprocess_service.resolve_buy_uom_ignore(task_id, issue_id, user)
+        return jsonify(_with_auto_advance(task_id, result, user))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@preprocess_bp.route("/api/preprocess/<task_id>/items/<int:item_id>", methods=["DELETE"])
+@login_required
+def api_soft_delete_preprocess_item(task_id: str, item_id: int):
+    """Soft-delete an input item from Phase 3 (mark DELETED_PREPROCESS).
+
+    Used to resolve a DUPLICATE_ITEM_ERROR when the user wants to drop one
+    of the colliding rows rather than re-edit it.
+    """
+    user = current_user.username if current_user.is_authenticated else "system"
+    try:
+        result = preprocess_service.soft_delete_preprocess_item(task_id, item_id, user)
         return jsonify(_with_auto_advance(task_id, result, user))
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400

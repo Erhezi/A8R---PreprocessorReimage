@@ -133,48 +133,137 @@ def _expected_buy_uom_option(item) -> Optional[str]:
     return _build_buy_uom_option(getattr(item, "uom_to_match_infor", None), getattr(item, "qoe", None))
 
 
-def _find_explicit_buy_uom_duplicates(
-    task_id: str,
-    edited_item_id: int,
-    mfg_catalog_num: Optional[str],
-    uom_to_match_infor: Optional[str],
-    qoe: Optional[int],
-) -> Optional[dict]:
-    """Look for INPUT items (other than the edited one) whose
-    (clean_mfg, uom_to_match_infor, qoe) matches the edited row.
+def _live_input_items(task_id: str) -> list:
+    """INPUT items minus soft-deleted rows.
 
-    Used only in `precheck_mode == "explicit"`. Returns ``None`` when no
-    collision is found, otherwise a dict ready to embed in issue detail:
-    ``{"key": "...", "rows": [{"item_id": ..., "file_row": ...}, ...]}``.
+    Single chokepoint for pipeline steps that drive matching, labeling, or
+    bulk status updates — keeps DELETED_PC1 / DELETED_PREPROCESS rows from
+    being resurrected or re-matched on a rerun.
     """
-    key_mfg = (mfg_catalog_num or "").strip().upper()
-    key_uom = (uom_to_match_infor or "").strip().upper()
-    if not key_mfg or not key_uom or qoe is None:
-        return None
+    return [
+        item for item in task_repo.get_items_by_source(task_id, "INPUT")
+        if (item.status or "") not in Status.DELETED_STATUSES
+    ]
 
-    matches: list[dict] = []
-    for other in task_repo.get_items_by_source(task_id, "INPUT"):
-        if other.item_id == edited_item_id:
-            continue
-        other_mfg = (other.mfg_catalog_num or "").strip().upper()
-        other_uom = (other.uom_to_match_infor or "").strip().upper()
-        if other_mfg != key_mfg or other_uom != key_uom:
-            continue
-        if other.qoe != qoe:
-            continue
-        matches.append({
-            "item_id": other.item_id,
-            "file_row": other.file_row,
-            "mfg_catalog_num": other.mfg_catalog_num,
-            "uom_to_match_infor": other.uom_to_match_infor,
-            "qoe": other.qoe,
-        })
 
-    if not matches:
-        return None
+def _derive_item_status(types_open: set[str], buy_uom_severity: str) -> str:
+    """Status priority: MULTI > BUY_UOM > DUPLICATE > PREPROCESSED."""
+    if "MULTI_ITEM_ERROR" in types_open:
+        return Status.MULTI_ITEM_ERROR
+    if "BUY_UOM_ERROR" in types_open:
+        return Status.BUY_UOM_WARN if buy_uom_severity == "WARN" else Status.BUY_UOM_ERROR
+    if "DUPLICATE_ITEM_ERROR" in types_open:
+        return Status.DUPLICATE_ITEM_ERROR
+    return Status.ITEM_PREPROCESSED
+
+
+def _recompute_explicit_duplicates(
+    task_id: str,
+    force_item_ids: Optional[set[int]] = None,
+) -> dict:
+    """Re-run explicit-mode duplicate detection across all live INPUT items.
+
+    Mirrors PC1's explicit-mode key — ``clean_mfg + uom_to_match_infor`` — so
+    that downstream phases see the same collision semantics. For each group
+    of size >= 2 a ``DUPLICATE_ITEM_ERROR`` issue is upserted on every
+    member, with detail listing partner rows. Items previously flagged but
+    no longer in a dup group have their issue auto-resolved.
+
+    Item statuses for everything touched are reconciled via
+    ``_derive_item_status`` so the badge + filters stay consistent with the
+    open-issue set.
+    """
+    items_by_id = {i.item_id: i for i in _live_input_items(task_id)}
+
+    groups: dict[tuple[str, str], list] = {}
+    for item in items_by_id.values():
+        mfg = (item.mfg_catalog_num or "").strip().upper()
+        uom = (item.uom_to_match_infor or "").strip().upper()
+        if not mfg or not uom:
+            continue
+        groups.setdefault((mfg, uom), []).append(item)
+    dup_groups = {k: v for k, v in groups.items() if len(v) >= 2}
+    in_dup_item_ids = {i.item_id for v in dup_groups.values() for i in v}
+
+    open_issues = [
+        i for i in task_repo.get_preprocess_issues(task_id, include_resolved=False)
+        if not i.resolved
+    ]
+    dup_issue_by_item: dict[int, object] = {
+        iss.item_id: iss for iss in open_issues
+        if iss.issue_type == "DUPLICATE_ITEM_ERROR"
+    }
+
+    # Upsert dup issues for items currently in a group.
+    for (mfg, uom), members in dup_groups.items():
+        member_summaries = [
+            {"item_id": m.item_id, "file_row": m.file_row, "uom": m.uom, "qoe": m.qoe}
+            for m in members
+        ]
+        for member in members:
+            partners = [s for s in member_summaries if s["item_id"] != member.item_id]
+            task_repo.upsert_preprocess_issue(
+                task_id=task_id,
+                item_id=member.item_id,
+                issue_type="DUPLICATE_ITEM_ERROR",
+                severity="ERROR",
+                detail=json.dumps({
+                    "key": f"{mfg}|{uom}",
+                    "key_mfg": mfg,
+                    "key_uom_to_match_infor": uom,
+                    "qoe": member.qoe,
+                    "partners": partners,
+                }),
+            )
+
+    # Auto-resolve dup issues for items no longer in any group.
+    for item_id, dup_iss in dup_issue_by_item.items():
+        if item_id in in_dup_item_ids:
+            continue
+        task_repo.resolve_preprocess_issue(
+            issue_id=dup_iss.issue_id,
+            resolution_action="DUP_RESOLVED_AUTO",
+            resolved_by="system",
+        )
+
+    # Recompute statuses for every item that has any open issue OR is now in
+    # a dup group OR was passed in via force_item_ids (typically the just-
+    # edited row).
+    affected_ids = (
+        {iss.item_id for iss in open_issues}
+        | in_dup_item_ids
+        | (force_item_ids or set())
+    )
+
+    open_issues_now = [
+        i for i in task_repo.get_preprocess_issues(task_id, include_resolved=False)
+        if not i.resolved
+    ]
+    types_by_item: dict[int, set[str]] = {}
+    severity_by_item_type: dict[tuple[int, str], str] = {}
+    for iss in open_issues_now:
+        types_by_item.setdefault(iss.item_id, set()).add(iss.issue_type)
+        severity_by_item_type[(iss.item_id, iss.issue_type)] = (iss.severity or "ERROR").upper()
+
+    status_updates = []
+    for item_id in affected_ids:
+        item = items_by_id.get(item_id)
+        if not item:
+            continue
+        types = types_by_item.get(item_id, set())
+        buy_uom_sev = severity_by_item_type.get((item_id, "BUY_UOM_ERROR"), "ERROR")
+        new_status = _derive_item_status(types, buy_uom_sev)
+        if (item.status or "") != new_status:
+            status_updates.append({"item_id": item_id, "status": new_status})
+
+    if status_updates:
+        task_repo.update_items_bulk(status_updates)
+
     return {
-        "key": f"{key_mfg}|{key_uom}|{qoe}",
-        "rows": matches,
+        "dup_groups": [
+            {"key": f"{k[0]}|{k[1]}", "item_ids": [m.item_id for m in members]}
+            for k, members in dup_groups.items()
+        ],
     }
 
 
@@ -227,7 +316,7 @@ def run_sku_matching(task_id: str, state_machine: TaskStateMachine) -> dict:
     # Delete previous results for a clean rerun
     task_repo.delete_match_results(task_id)
 
-    input_items = task_repo.get_items_by_source(task_id, "INPUT")
+    input_items = _live_input_items(task_id)
     if not input_items:
         return {"matched_count": 0, "total_items": 0}
 
@@ -608,7 +697,7 @@ def run_infor_residue(task_id: str, state_machine: TaskStateMachine) -> dict:
     state["status"] = Status.INFOR_MATCHING
     state_machine.save_state(task_id, state)
 
-    input_items = task_repo.get_items_by_source(task_id, "INPUT")
+    input_items = _live_input_items(task_id)
     if not input_items:
         return {"residue_matches": 0}
 
@@ -777,7 +866,7 @@ def run_item_labeling(task_id: str, state_machine: TaskStateMachine) -> dict:
     task_repo.update_task_phase(task_id, Phase.PREPROCESS, Status.ITEM_LABELING)
 
     task = task_repo.get_task(task_id)
-    input_items = task_repo.get_items_by_source(task_id, "INPUT")
+    input_items = _live_input_items(task_id)
     # Clear unresolved labeling issues — pipeline reruns rebuild from scratch.
     task_repo.delete_unresolved_preprocess_issues(task_id, ["MULTI_ITEM_ERROR"])
     if not input_items:
@@ -948,7 +1037,7 @@ def run_buy_uom_check(task_id: str, state_machine: TaskStateMachine) -> dict:
     state_machine.save_state(task_id, state)
     task_repo.update_task_phase(task_id, Phase.PREPROCESS, Status.BUY_UOM_CHECKING)
 
-    input_items = task_repo.get_items_by_source(task_id, "INPUT")
+    input_items = _live_input_items(task_id)
     # Clear unresolved buy-UOM issues — pipeline reruns rebuild from scratch.
     task_repo.delete_unresolved_preprocess_issues(task_id, ["BUY_UOM_ERROR"])
     if not input_items:
@@ -1082,7 +1171,23 @@ def run_full_preprocess(
     7. Buy UOM aggregation
 
     Returns aggregated results dict.
+
+    Gate-keeper: in ``explicit`` precheck mode we first reconcile dup state
+    across all input rows. If any open ``DUPLICATE_ITEM_ERROR`` remains the
+    pipeline is blocked so the user resolves duplicates before re-running.
     """
+    task = task_repo.get_task(task_id)
+    precheck_mode = (getattr(task, "precheck_mode", None) or "default").lower()
+    if precheck_mode == "explicit":
+        dup_summary = _recompute_explicit_duplicates(task_id)
+        if dup_summary.get("dup_groups"):
+            count = sum(len(g["item_ids"]) for g in dup_summary["dup_groups"])
+            raise ValueError(
+                f"Cannot re-preprocess: {count} row(s) across "
+                f"{len(dup_summary['dup_groups'])} duplicate group(s) must be "
+                "resolved (Edit UOM/QOE or Delete) before re-running."
+            )
+
     results = {}
     results["sku_matching"] = run_sku_matching(task_id, state_machine)
     results["contract_check"] = run_contract_check(task_id, state_machine)
@@ -1399,7 +1504,7 @@ def resolve_buy_uom_edit(
     issue = task_repo.get_preprocess_issue(issue_id)
     if not issue or issue.task_id != task_id:
         raise ValueError("Issue not found")
-    if issue.issue_type != "BUY_UOM_ERROR" or issue.resolved:
+    if issue.issue_type not in ("BUY_UOM_ERROR", "DUPLICATE_ITEM_ERROR") or issue.resolved:
         raise ValueError("Issue not eligible for EDIT_UOM_QOE")
 
     raw_uom = (new_uom or "").strip()
@@ -1455,117 +1560,151 @@ def resolve_buy_uom_edit(
         for n in item_numbers:
             aggregate_options.update(_query_buy_uom_options(sess, n))
     options_str = ", ".join(sorted(aggregate_options)) if aggregate_options else None
+    task_repo.update_items_bulk([{
+        "item_id": issue.item_id,
+        "infor_buy_uom_options": options_str,
+    }])
 
     task = task_repo.get_task(task_id)
     intention = _intention_for_item(item, task)
     is_expire = intention == "EXPIRE"
     precheck_mode = (getattr(task, "precheck_mode", None) or "default").lower()
-
     buy_uom_passed = expected_option in aggregate_options
 
-    # Explicit-mode duplicate check: in this mode the PC1 dup key is mfg + UOM,
-    # but the edit also moves QOE so we use (clean_mfg, uom_to_match_infor, qoe)
-    # to flag rows whose buy-UOM expectation now collides with another input row.
-    dup_payload = None
-    if precheck_mode == "explicit":
-        dup_payload = _find_explicit_buy_uom_duplicates(
-            task_id=task_id,
-            edited_item_id=issue.item_id,
-            mfg_catalog_num=item.mfg_catalog_num,
-            uom_to_match_infor=validated_uom,
-            qoe=qoe_val,
-        )
+    # Update the BUY_UOM_ERROR issue (if any) to reflect this edit attempt.
+    buy_uom_issue_id = issue_id if issue.issue_type == "BUY_UOM_ERROR" else None
+    if buy_uom_issue_id is None:
+        # Editing from a DUPLICATE_ITEM_ERROR — find the open BUY_UOM_ERROR for
+        # this item, if one exists, to attach the edit attempt to.
+        for other in task_repo.get_preprocess_issues(task_id, include_resolved=False):
+            if other.resolved or other.item_id != issue.item_id:
+                continue
+            if other.issue_type == "BUY_UOM_ERROR":
+                buy_uom_issue_id = other.issue_id
+                break
 
-    try:
-        detail = json.loads(issue.detail or "{}")
-    except (TypeError, ValueError):
-        detail = {}
-    edits = detail.get("edit_attempts") or []
-    edits.append({
-        "edited_at": ny_now().isoformat(),
-        "edited_by": decided_by,
-        "uom": std_uom,
-        "uom_to_match_infor": uom_to_match_infor or None,
-        "qoe": qoe_val,
-        "expected": expected_option,
-        "passed": buy_uom_passed,
-        "duplicate_check": dup_payload,
-    })
-    detail["edit_attempts"] = edits
-    detail["expected"] = expected_option
-    detail["available"] = sorted(aggregate_options)
-    detail["duplicate_check"] = dup_payload
-
-    if buy_uom_passed and not dup_payload:
-        task_repo.update_items_bulk([{
-            "item_id": issue.item_id,
-            "infor_buy_uom_options": options_str,
-            "status": Status.ITEM_PREPROCESSED,
-        }])
-        task_repo.resolve_preprocess_issue(
-            issue_id=issue_id,
-            resolution_action="EDIT_UOM_QOE",
-            resolved_by=decided_by,
-            detail=json.dumps(detail),
-        )
-        # Edit no longer collides — clear any prior dup error for this item.
-        task_repo.delete_unresolved_preprocess_issues_for_item(
-            task_id, issue.item_id, ["DUPLICATE_ITEM_ERROR"]
-        )
-        return {
-            "issue_id": issue_id,
-            "passed": True,
-            "item_status": Status.ITEM_PREPROCESSED,
+    if buy_uom_issue_id is not None:
+        bu_issue = task_repo.get_preprocess_issue(buy_uom_issue_id)
+        try:
+            bu_detail = json.loads((bu_issue.detail if bu_issue else "") or "{}")
+        except (TypeError, ValueError):
+            bu_detail = {}
+        edits = bu_detail.get("edit_attempts") or []
+        edits.append({
+            "edited_at": ny_now().isoformat(),
+            "edited_by": decided_by,
             "uom": std_uom,
             "uom_to_match_infor": uom_to_match_infor or None,
             "qoe": qoe_val,
-        }
+            "expected": expected_option,
+            "passed": buy_uom_passed,
+        })
+        bu_detail["edit_attempts"] = edits
+        bu_detail["expected"] = expected_option
+        bu_detail["available"] = sorted(aggregate_options)
 
-    if dup_payload:
-        # Collision in explicit mode: surface as a separate DUPLICATE_ITEM_ERROR
-        # so the user sees it in the error table; keep BUY_UOM_ERROR open so the
-        # existing Edit button stays available for re-editing.
+        if buy_uom_passed:
+            task_repo.resolve_preprocess_issue(
+                issue_id=buy_uom_issue_id,
+                resolution_action="EDIT_UOM_QOE",
+                resolved_by=decided_by,
+                detail=json.dumps(bu_detail),
+            )
+        else:
+            task_repo.update_preprocess_issue(
+                issue_id=buy_uom_issue_id,
+                severity="WARN" if is_expire else "ERROR",
+                detail=json.dumps(bu_detail),
+            )
+    elif not buy_uom_passed:
+        # No prior BUY_UOM_ERROR but the edit fails buy_uom — raise one.
         task_repo.upsert_preprocess_issue(
             task_id=task_id,
             item_id=issue.item_id,
-            issue_type="DUPLICATE_ITEM_ERROR",
-            severity="ERROR",
+            issue_type="BUY_UOM_ERROR",
+            severity="WARN" if is_expire else "ERROR",
             detail=json.dumps({
                 "expected": expected_option,
-                "uom_to_match_infor": validated_uom,
-                "qoe": qoe_val,
-                "duplicates": dup_payload,
+                "available": sorted(aggregate_options),
+                "infor_item_number": item.infor_item_number,
+                "intention": intention,
                 "raised_after": "EDIT_UOM_QOE",
             }),
         )
-        new_status = Status.DUPLICATE_ITEM_ERROR
-        severity = "ERROR"
-    else:
-        # No collision; still failing buy_uom — clear any prior dup error.
-        task_repo.delete_unresolved_preprocess_issues_for_item(
-            task_id, issue.item_id, ["DUPLICATE_ITEM_ERROR"]
-        )
-        new_status = Status.BUY_UOM_WARN if is_expire else Status.BUY_UOM_ERROR
-        severity = "WARN" if is_expire else "ERROR"
 
-    task_repo.update_items_bulk([{
-        "item_id": issue.item_id,
-        "infor_buy_uom_options": options_str,
-        "status": new_status,
-    }])
-    task_repo.update_preprocess_issue(
-        issue_id=issue_id,
-        severity=severity,
-        detail=json.dumps(detail),
+    # Recompute task-wide explicit-mode duplicates. This reconciles the
+    # DUPLICATE_ITEM_ERROR issue set across all rows (including the partner
+    # of the edited row) and updates each affected item's status from the
+    # current open-issue set.
+    dup_summary = {"dup_groups": []}
+    if precheck_mode == "explicit":
+        dup_summary = _recompute_explicit_duplicates(
+            task_id, force_item_ids={issue.item_id}
+        )
+    else:
+        # Outside explicit mode, just reconcile the edited item's status.
+        types_open = set()
+        buy_uom_sev = "ERROR"
+        for iss in task_repo.get_preprocess_issues(task_id, include_resolved=False):
+            if iss.resolved or iss.item_id != issue.item_id:
+                continue
+            types_open.add(iss.issue_type)
+            if iss.issue_type == "BUY_UOM_ERROR":
+                buy_uom_sev = (iss.severity or "ERROR").upper()
+        new_status = _derive_item_status(types_open, buy_uom_sev)
+        task_repo.update_items_bulk([{"item_id": issue.item_id, "status": new_status}])
+
+    final_item = task_repo.get_task_item(issue.item_id)
+    final_status = final_item.status if final_item else Status.ITEM_PREPROCESSED
+    in_dup = any(
+        issue.item_id in group.get("item_ids", [])
+        for group in dup_summary.get("dup_groups", [])
     )
+
     return {
         "issue_id": issue_id,
-        "passed": False,
-        "item_status": new_status,
+        "passed": buy_uom_passed and not in_dup,
+        "buy_uom_passed": buy_uom_passed,
+        "in_duplicate_group": in_dup,
+        "item_status": final_status,
         "uom": std_uom,
         "uom_to_match_infor": uom_to_match_infor or None,
         "qoe": qoe_val,
-        "duplicate": dup_payload,
+    }
+
+
+def soft_delete_preprocess_item(task_id: str, item_id: int, decided_by: str) -> dict:
+    """Soft-delete an item from Phase 3 (mark DELETED_PREPROCESS).
+
+    Resolves all open Phase-3 issues for the item, refreshes match-result
+    rows so it stops contributing downstream, and re-runs explicit-mode dup
+    recompute so a partner row whose only collision was with the deleted
+    row clears its ``DUPLICATE_ITEM_ERROR``.
+    """
+    item = task_repo.get_task_item(item_id)
+    if not item or item.task_id != task_id:
+        raise ValueError("Item not found")
+    if item.source_dataset != "INPUT":
+        raise ValueError("Only input items can be deleted from preprocess")
+
+    ok = task_repo.soft_delete_item_phase3(item_id, resolved_by=decided_by)
+    if not ok:
+        raise ValueError("Item not found")
+
+    # Drop derived match-result rows for this input item so it no longer
+    # influences downstream phases.
+    task_repo.delete_match_results(task_id, input_item_id=item_id)
+
+    task = task_repo.get_task(task_id)
+    precheck_mode = (getattr(task, "precheck_mode", None) or "default").lower()
+    dup_summary = {"dup_groups": []}
+    if precheck_mode == "explicit":
+        dup_summary = _recompute_explicit_duplicates(task_id)
+
+    return {
+        "deleted": item_id,
+        "status": Status.DELETED_PREPROCESS,
+        "dup_groups": dup_summary.get("dup_groups", []),
     }
 
 
@@ -1609,7 +1748,7 @@ def _summarize_issue_severities(issues: list) -> dict[str, int]:
 
 def _mark_resolved_preprocess_items_complete(task_id: str, unresolved_item_ids: set[int] | None = None) -> None:
     unresolved_item_ids = unresolved_item_ids or set()
-    input_items = task_repo.get_items_by_source(task_id, "INPUT")
+    input_items = _live_input_items(task_id)
     updates = [
         {"item_id": item.item_id, "status": Status.ITEM_PREPROCESSED}
         for item in input_items
@@ -1667,6 +1806,20 @@ def maybe_auto_advance_preprocess(task_id: str, state_machine: TaskStateMachine,
     if pending_matches or _get_unresolved_preprocess_issues(task_id):
         return None
 
+    # Zero-viable guard: don't silently advance an empty task. Log and skip.
+    if not _live_input_items(task_id):
+        state = state_machine.get_state(task_id)
+        task_repo.add_status_log(
+            task_id=task_id,
+            old_phase=Phase.PREPROCESS,
+            new_phase=Phase.PREPROCESS,
+            old_status=state.get("status"),
+            new_status=state.get("status"),
+            changed_by=user,
+            notes="Auto-advance skipped: task has 0 viable items to move forward (all input rows soft-deleted).",
+        )
+        return None
+
     _mark_resolved_preprocess_items_complete(task_id)
     return _complete_preprocess_and_advance(
         task_id,
@@ -1685,6 +1838,22 @@ def finalize_preprocess(task_id: str, state_machine: TaskStateMachine, user: str
     user can navigate to /tasks/<task_id> and resolve them. Calling finalize
     again after they're cleared advances the phase to DEDUP.
     """
+    # Zero-viable guard: every input row was soft-deleted. Block advance and
+    # leave a status_log entry so the task history records why.
+    if not _live_input_items(task_id):
+        state = state_machine.get_state(task_id)
+        msg = "Cannot advance to Dedup: task has 0 viable items to move forward (all input rows soft-deleted)."
+        task_repo.add_status_log(
+            task_id=task_id,
+            old_phase=Phase.PREPROCESS,
+            new_phase=Phase.PREPROCESS,
+            old_status=state.get("status"),
+            new_status=state.get("status"),
+            changed_by=user,
+            notes=msg,
+        )
+        raise ValueError(msg)
+
     # Self-heal: cascade rows are aggregated from their CCX sources at creation;
     # if those sources were decided afterwards the rollup may be stale. Re-run
     # before checking PENDING so we don't block on aggregation lag.

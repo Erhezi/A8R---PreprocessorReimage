@@ -103,19 +103,16 @@ function describeIssue(issue) {
   }
   if (issue.issue_type === "BUY_UOM_ERROR") {
     const expected = detail.expected || '—';
-    const availableArr = detail.available || [];
-    const available = availableArr.join(", ") || '—';
+    const available = (detail.available || []).join(", ") || '—';
     const itemNumber = detail.infor_item_number || '—';
-    if (detail.duplicate_check && Array.isArray(availableArr) && availableArr.includes(detail.expected)) {
-      return `Input buy UOM <code>${expected}</code> matches Infor, but the edit duplicates other input rows — re-edit to resolve`;
-    }
     return `Input buy UOM <code>${expected}</code> not in <code>${available}</code> for matched item ${itemNumber}`;
   }
   if (issue.issue_type === "DUPLICATE_ITEM_ERROR") {
-    const dupRows = (detail.duplicates && detail.duplicates.rows) || [];
-    const rowList = dupRows.map(r => r.file_row != null ? `#${r.file_row}` : `item ${r.item_id}`).join(", ") || '—';
-    const expected = detail.expected || '—';
-    return `Edited Mfg + UOM (Infor) + QOE <code>${expected}</code> duplicates rows ${rowList} (explicit precheck mode)`;
+    const partners = detail.partners || [];
+    const rowList = partners.map(p => p.file_row != null ? `#${p.file_row}` : `item ${p.item_id}`).join(", ") || '—';
+    const mfg = detail.key_mfg || '—';
+    const uom = detail.key_uom_to_match_infor || '—';
+    return `Mfg <code>${mfg}</code> + UOM (Infor) <code>${uom}</code> duplicates row(s) ${rowList} — explicit precheck mode`;
   }
   return issue.issue_type;
 }
@@ -134,8 +131,13 @@ function actionsForIssue(issue, item) {
     }
     return [
       `<button class="btn btn-sm btn-outline-primary py-0 px-1 me-1" onclick="event.stopPropagation();openEditBuyUomModal(${issue.issue_id})" title="Edit input UOM and QOE"><i class="bi bi-pencil-square"></i> Edit</button>`,
-      `<button class="btn btn-sm btn-outline-warning py-0 px-1 me-1" onclick="event.stopPropagation();noteBuyUom(${issue.issue_id})" title="Demote to warning, carry forward">Note</button>`,
-      `<button class="btn btn-sm btn-outline-info py-0 px-1" onclick="event.stopPropagation();recheckBuyUom(${issue.issue_id})" title="Re-query Infor for buy UOM">Re-check</button>`,
+      `<button class="btn btn-sm btn-outline-warning py-0 px-1" onclick="event.stopPropagation();noteBuyUom(${issue.issue_id})" title="Demote to warning, carry forward">Note</button>`,
+    ].join("");
+  }
+  if (issue.issue_type === "DUPLICATE_ITEM_ERROR") {
+    return [
+      `<button class="btn btn-sm btn-outline-primary py-0 px-1 me-1" onclick="event.stopPropagation();openEditBuyUomModal(${issue.issue_id})" title="Edit input UOM and QOE"><i class="bi bi-pencil-square"></i> Edit</button>`,
+      `<button class="btn btn-sm btn-outline-danger py-0 px-1" onclick="event.stopPropagation();softDeletePreprocessItem(${issue.item_id})" title="Delete row"><i class="bi bi-trash"></i> Delete</button>`,
     ].join("");
   }
   return "";
@@ -272,15 +274,11 @@ async function noteBuyUom(issueId) {
   loadTask();
 }
 
-async function recheckBuyUom(issueId) {
-  const resp = await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/issues/${issueId}/recheck`, { method: "POST" });
+async function softDeletePreprocessItem(itemId) {
+  if (!confirm("Mark this row as DELETED_PREPROCESS? It will be excluded from later phases.")) return;
+  const resp = await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/items/${itemId}`, { method: "DELETE" });
   const data = await resp.json();
-  if (!resp.ok) { alert("Re-check failed: " + (data.error || "unknown")); return; }
-  if (data.passed) {
-    alert("Buy UOM is now valid — issue resolved.");
-  } else {
-    alert(`Buy UOM still invalid. Recorded attempt #${data.attempts}.`);
-  }
+  if (!resp.ok) { alert("Delete failed: " + (data.error || "unknown")); return; }
   loadTask();
 }
 
@@ -289,12 +287,30 @@ function openEditBuyUomModal(issueId) {
   if (!issue) return;
   const item = currentItems.find(it => it.item_id === issue.item_id) || {};
   const detail = parseIssueDetail(issue);
+  // For DUPLICATE_ITEM_ERROR, "expected"/"available" come from the open
+  // BUY_UOM_ERROR detail (if any) on the same item — fall back gracefully.
+  let expectedDisplay = detail.expected;
+  let availableDisplay = detail.available;
+  if (issue.issue_type === "DUPLICATE_ITEM_ERROR") {
+    const buyUomIssue = currentIssues.find(i =>
+      !i.resolved && i.item_id === issue.item_id && i.issue_type === "BUY_UOM_ERROR"
+    );
+    if (buyUomIssue) {
+      const buyDetail = parseIssueDetail(buyUomIssue);
+      expectedDisplay = expectedDisplay || buyDetail.expected;
+      availableDisplay = availableDisplay || buyDetail.available;
+    }
+    if (!expectedDisplay && item.uom_to_match_infor && item.qoe != null) {
+      expectedDisplay = `${item.uom_to_match_infor}*${item.qoe}`;
+    }
+    if (!availableDisplay) availableDisplay = (item.infor_buy_uom_options || "").split(",").map(s => s.trim()).filter(Boolean);
+  }
   document.getElementById("editBuyUomIssueId").value = issueId;
   document.getElementById("editBuyUomCurrentUom").textContent = item.uom || "—";
   document.getElementById("editBuyUomCurrentQoe").textContent = item.qoe != null ? item.qoe : "—";
   document.getElementById("editBuyUomCurrentInforUom").textContent = item.uom_to_match_infor || "—";
-  document.getElementById("editBuyUomCurrentExpected").textContent = detail.expected || "—";
-  document.getElementById("editBuyUomCurrentAvailable").textContent = (detail.available || []).join(", ") || "—";
+  document.getElementById("editBuyUomCurrentExpected").textContent = expectedDisplay || "—";
+  document.getElementById("editBuyUomCurrentAvailable").textContent = (availableDisplay || []).join(", ") || "—";
   document.getElementById("editBuyUomNewUom").value = item.uom || "";
   document.getElementById("editBuyUomNewQoe").value = item.qoe != null ? item.qoe : "";
   new bootstrap.Modal(document.getElementById("editBuyUomModal")).show();
@@ -322,6 +338,12 @@ document.getElementById("btnSubmitEditBuyUom").addEventListener("click", async (
   bootstrap.Modal.getInstance(document.getElementById("editBuyUomModal")).hide();
   if (data.passed) {
     alert("UOM/QOE updated — buy UOM is now valid and the issue is resolved.");
+  } else if (data.in_duplicate_group) {
+    if (data.buy_uom_passed) {
+      alert("UOM/QOE updated and buy UOM is valid, but the new value duplicates another input row. Resolve the duplicate before continuing.");
+    } else {
+      alert("UOM/QOE updated but the buy UOM is still missing AND the new value duplicates another input row.");
+    }
   } else {
     alert("UOM/QOE updated but the buy UOM is still missing. The issue remains open.");
   }

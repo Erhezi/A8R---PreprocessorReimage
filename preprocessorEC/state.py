@@ -66,7 +66,12 @@ class Status:
     BUY_UOM_ERROR = "BUY_UOM_ERROR"
     BUY_UOM_WARN = "BUY_UOM_WARN"
     DUPLICATE_ITEM_ERROR = "DUPLICATE_ITEM_ERROR"
+    DELETED_PREPROCESS = "DELETED_PREPROCESS"
+    DELETED_PC1 = "DELETED_PC1"
     ITEM_PREPROCESSED = "ITEM_PREPROCESSED"
+
+    # Item-level statuses that mean "soft-deleted, ignore in pipeline + advance gates"
+    DELETED_STATUSES = frozenset({"DELETED_PC1", "DELETED_PREPROCESS"})
 
     # Phase 4 — Dedup
     SIMULATING = "SIMULATING"

@@ -244,6 +244,22 @@ def run_precheck2(task_id: str, state_machine: TaskStateMachine) -> dict:
 # ---------------------------------------------------------------------------
 def advance_to_preprocess(task_id: str, state_machine: TaskStateMachine, user: str) -> dict:
     """Advance task from IDENTITY → PREPROCESS after PC2 passes."""
+    # Zero-viable guard: every row was soft-deleted upstream.
+    all_items = task_repo.get_items(task_id)
+    if not any((i.status or "") not in Status.DELETED_STATUSES for i in all_items):
+        state = state_machine.get_state(task_id)
+        msg = "Cannot advance to Preprocess: task has 0 viable items to move forward (all rows soft-deleted)."
+        task_repo.add_status_log(
+            task_id=task_id,
+            old_phase=Phase.IDENTITY,
+            new_phase=Phase.IDENTITY,
+            old_status=state.get("status"),
+            new_status=state.get("status"),
+            changed_by=user,
+            notes=msg,
+        )
+        raise ValueError(msg)
+
     new_state = state_machine.advance(
         task_id, Phase.PREPROCESS, changed_by=user, notes="PC2 passed, advancing to Preprocess"
     )

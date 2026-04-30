@@ -333,8 +333,10 @@ async function refresh() {
     document.getElementById("errorsCard").style.display = "none";
   }
 
-  // Enable proceed: PC2 must have passed + manufacturer confirmed + (NEW → contract # set)
-  const allPassed = items.length > 0 && items.every(i => i.status === "PASSED_PC2");
+  // Enable proceed: PC2 must have passed + manufacturer confirmed + (NEW → contract # set).
+  // Soft-deleted rows (DELETED_*) are ignored — they're filtered out of all downstream phases.
+  const liveItems = items.filter(i => !String(i.status || "").startsWith("DELETED_"));
+  const allPassed = liveItems.length > 0 && liveItems.every(i => i.status === "PASSED_PC2");
   const mfgOk = data.manufacturer_confirmed;
   const contractOk = intention !== "NEW" || !!(t.contract_number && t.contract_number.trim());
   document.getElementById("btnProceed").disabled = !(allPassed && mfgOk && contractOk);

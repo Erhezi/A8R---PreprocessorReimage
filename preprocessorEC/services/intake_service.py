@@ -173,10 +173,10 @@ def _translate_uom_to_match_infor(std_uom: str, uom_map: dict[str, str]) -> str:
 # Duplicate-detection helpers (mode-aware)
 # ---------------------------------------------------------------------------
 # Precheck modes:
-#   default   — reduced_mfg only (catches aaa-bb = aaabb)
+#   default   — reduced_mfg only (catches aaa-bb = aaabb) - warn if reduced_mfg matches but clean_mfg differs
 #   strict    — exact Mfg Part Num only (aaa-bb ≠ aaabb)
 #   explicit  — exact Mfg Part Num + UOM (aaa-bb BX ≠ aaa-bb CA)
-#   distributor — vendor_id_short + reduced_vendor_catalog_num
+#   distributor — vendor_id_short + reduced_vendor_catalog_num - warn if reduced_vendor matches but clean_vendor differs
 
 def _check_mfg_dup(
     reduced_mfg: str,
@@ -720,12 +720,34 @@ def proceed_with_passing(task_id: str, state_machine: TaskStateMachine, user: st
         raise ValueError("Task not found")
 
     all_items = task_repo.get_items(task_id)
-    passed_items = [i for i in all_items if i.status == "PASSED_PC1"]
-    error_items = [i for i in all_items if i.status == "ERROR_PC1"]
-    warn_items = [i for i in all_items if i.status == "WARN_PC1"]
+    live_items = [i for i in all_items if (i.status or "") not in Status.DELETED_STATUSES]
+
+    # Zero-viable guard takes precedence over the "no passed items" message —
+    # a task whose every row was soft-deleted has nothing to advance, period.
+    if not live_items:
+        state = state_machine.get_state(task_id)
+        msg = "Cannot advance to Identity: task has 0 viable items to move forward (all rows soft-deleted)."
+        task_repo.add_status_log(
+            task_id=task_id,
+            old_phase=Phase.INTAKE,
+            new_phase=Phase.INTAKE,
+            old_status=state.get("status"),
+            new_status=state.get("status"),
+            changed_by=user,
+            notes=msg,
+        )
+        raise ValueError(msg)
+
+    passed_items = [i for i in live_items if i.status == "PASSED_PC1"]
+    error_items = [i for i in live_items if i.status == "ERROR_PC1"]
+    warn_items = [i for i in live_items if i.status == "WARN_PC1"]
 
     if not passed_items:
-        raise ValueError("No items passed PC1. Cannot proceed.")
+        raise ValueError(
+            f"No items have passed PC1 yet "
+            f"({len(error_items)} error(s), {len(warn_items)} warning(s) outstanding). "
+            "Resolve or pass them before advancing."
+        )
 
     if warn_items:
         raise ValueError(

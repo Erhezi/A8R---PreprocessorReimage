@@ -322,21 +322,6 @@ def delete_items_for_task(task_id: str) -> int:
         s.commit()
         return count
 
-def delete_item(item_id: int) -> bool:
-    """Delete a single item and its associated pre-check errors.
-
-    Deletes item-linked child rows first to avoid FK constraint violations.
-    Returns True if the item existed and was deleted.
-    """
-    with _session() as s:
-        s.query(ItemMatchCandidate).filter(ItemMatchCandidate.item_id == item_id).delete()
-        s.query(PreCheckError).filter(PreCheckError.item_id == item_id).delete()
-        s.query(PreprocessIssue).filter(PreprocessIssue.item_id == item_id).delete()
-        count = s.query(TaskItem).filter(TaskItem.item_id == item_id).delete()
-        s.commit()
-        return count > 0
-
-
 def soft_delete_item(item_id: int) -> bool:
     """Mark an item as DELETED_PC1 and resolve its errors."""
     with _session() as s:
@@ -350,6 +335,30 @@ def soft_delete_item(item_id: int) -> bool:
             PreCheckError.resolved == False,
         ).update({"resolved": True, "resolved_by": "SOFT_DELETE", "resolved_at": ny_now()},
                  synchronize_session="fetch")
+        s.commit()
+        return True
+
+
+def soft_delete_item_phase3(item_id: int, resolved_by: str = "SOFT_DELETE") -> bool:
+    """Mark an item as DELETED_PREPROCESS and resolve its open Phase-3 issues."""
+    with _session() as s:
+        item = s.get(TaskItem, item_id)
+        if not item:
+            return False
+        item.status = "DELETED_PREPROCESS"
+        item.updated_at = ny_now()
+        s.query(PreprocessIssue).filter(
+            PreprocessIssue.item_id == item_id,
+            PreprocessIssue.resolved == False,  # noqa: E712
+        ).update(
+            {
+                "resolved": True,
+                "resolved_by": resolved_by,
+                "resolved_at": ny_now(),
+                "resolution_action": "SOFT_DELETE",
+            },
+            synchronize_session="fetch",
+        )
         s.commit()
         return True
 
@@ -522,8 +531,13 @@ def resolve_precheck_error(error_id: int, resolved_by: str) -> None:
 # ---------------------------------------------------------------------------
 # MatchResult CRUD
 # ---------------------------------------------------------------------------
-def delete_match_results(task_id: str, matched_source: Optional[str] = None) -> int:
-    """Delete match results for a task. Optionally filter by source (CCX, INFOR_CL, etc.).
+def delete_match_results(
+    task_id: str,
+    matched_source: Optional[str] = None,
+    input_item_id: Optional[int] = None,
+) -> int:
+    """Delete match results for a task. Optionally filter by source (CCX,
+    INFOR_CL, etc.) and/or by originating input item id.
 
     Returns count of deleted rows.
     """
@@ -531,6 +545,8 @@ def delete_match_results(task_id: str, matched_source: Optional[str] = None) -> 
         q = s.query(MatchResult).filter(MatchResult.task_id == task_id)
         if matched_source:
             q = q.filter(MatchResult.matched_source == matched_source)
+        if input_item_id is not None:
+            q = q.filter(MatchResult.input_item_id == input_item_id)
         count = q.delete()
         s.commit()
         return count
@@ -1082,26 +1098,6 @@ def delete_unresolved_preprocess_issues(task_id: str, issue_types: list[str]) ->
             s.query(PreprocessIssue)
             .filter(
                 PreprocessIssue.task_id == task_id,
-                PreprocessIssue.issue_type.in_(issue_types),
-                PreprocessIssue.resolved == False,  # noqa: E712
-            )
-            .delete(synchronize_session=False)
-        )
-        s.commit()
-        return count
-
-
-def delete_unresolved_preprocess_issues_for_item(
-    task_id: str, item_id: int, issue_types: list[str]
-) -> int:
-    if not issue_types:
-        return 0
-    with _session() as s:
-        count = (
-            s.query(PreprocessIssue)
-            .filter(
-                PreprocessIssue.task_id == task_id,
-                PreprocessIssue.item_id == item_id,
                 PreprocessIssue.issue_type.in_(issue_types),
                 PreprocessIssue.resolved == False,  # noqa: E712
             )
