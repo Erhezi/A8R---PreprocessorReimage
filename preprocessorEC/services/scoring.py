@@ -15,7 +15,7 @@ Pair types (determined per match pair):
 
 Weight regimes per pair type:
     Type A/B (skip description similarity):
-        MFN 50%, EA Price 25%, UOM 10%, QOE 15%
+        MFN 60%, EA Price 15%, UOM 10%, QOE 15%
     Type C (description computed):
         desc > 0.4: MFN 20%, Desc 30%, Price 10%, UOM 10%, QOE 10%, VendorItem 20%
         desc ≤ 0.4: MFN 10%, Desc 40%, Price 10%, UOM 10%, QOE 10%, VendorItem 20%
@@ -464,10 +464,15 @@ def calculate_confidence_score(
         # Skip description, no vendor-item
         weighted = (
             mfn_score * 0.50
-            + price_score * 0.25
-            + uom_score * 0.10
+            + price_score * 0.15
+            + uom_score * 0.20
             + qoe_score * 0.15
         )
+        # Exact MFN + UOM match ⇒ force 100% regardless of weighting
+        mfn_str_a = str(mfn_input or "").strip().upper()
+        mfn_str_b = str(mfn_match or "").strip().upper()
+        if mfn_str_a and mfn_str_a == mfn_str_b and uom_score == 1.0:
+            weighted = 1.0
     elif pair_type == "C":
         vi = vi_score if vi_score is not None else 0.0
         ds = desc_score if desc_score is not None else 0.0
@@ -489,6 +494,9 @@ def calculate_confidence_score(
                 + qoe_score * 0.10
                 + vi * 0.20
             )
+        # Exact VendorItem match ⇒ force 100% regardless of weighting
+        if vi == 1.0:
+            weighted = 1.0
     else:
         # Type D — original weights
         ds = desc_score if desc_score is not None else 0.0

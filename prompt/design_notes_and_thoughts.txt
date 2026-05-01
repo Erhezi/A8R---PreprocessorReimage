@@ -211,16 +211,143 @@ Phase 3 -- Preprocess Core (Find Dups, Find Item Number, Remove False Positive M
     - Infor Item 3 - take the 'true-positive' match between INPUT and Infor, if under the same matched item group (same input record reference), populate the item group with the Item Number get from Infor Contract Line
 
 
--- before going into phase 3
+-- before going into phase 4 - Dedup
   - the end product of phase 3 is not exactly as planned, but except that on PreprocessorTaskItem table we have a couple ccx columns added which are not necessary and to be cleansed, other part are mostly very good
   - I might like to have a separarate table PreprocessorTaskItemForDescision so we can move things out from PreprocessorMatchResults 
-  - when advance to phase 4, we will only take the ACCEPTED matched results
+    - dedup_id
+    - columns to take from PreprocessorMatchResults:
+      - match_id
+      - task_id
+      - input_item_id
+      - matched_source
+      - match_status
+      - similarity_bucket
+      - similarity_score
+      - contract_id_matched
+      - erp_vendor_id_matched
+      - organization_eid_matched
+      - organization_matched
+      - manufacturer_number_matched
+      - vendor_item_matched
+      - uom_mathced
+      - uom_to_match_infor_matched
+      - qoe_matched
+      - contract_price_matched
+      - ea_price_matched
+      - item_desc_matched
+      - infor_pkids_matched
+      - infor_pkid
+      - infor_item_mathced (using infor_pkid or infor_pkids_mathed to get from InforActiveCLRefCCXSyncedCL in column 'Item' )
+      - match_type
+      - pair_type
+      - llm_reason
+      - llm_warning (place holder, we also want to add this column to PreprocessorMatchResult)
+    - columns from PreprocessorTaskItem and PreprocessorTask
+      - task_intention
+      - contract_id_input
+      - erp_vendor_id_input
+      - organization_eid_input
+      - organization_input
+      - manufacturer_number_input
+      - vendor_item_input
+      - uom_input
+      - uom_to_match_infor_input
+      - qoe_input
+      - contract_price_input
+      - ea_price_input
+      - item_description_input
+      - infor_item_number (set null to '')
+    - columns from CCXInforSyncedContractHeader
+      - matched_contract_source_type
+      - matched_contract_process_type
+      - input_contract_source_type
+      - input_contract_process_type
+    - we also will need to have columns for logging the keep or expire descision
+      - dedup_descision
+      - dedup_decided_by
+    - timestamp columns
+      - create_at
+      - dedup_decided_at
+    - if edits made we need to know what's been made and we also know some lines can not be edited
+      = editable
+      - edits (suppose to be a json string record the edited field, original value, current value)
+    - resolution stratey additional columns
+      - resolution_grouping (SS, DV, ODO, TCCD, CECCD)
+      - default_action_input
+      - default_action_matched
+      - dedup_sort
+  
+  - when advance to phase 4, we will only insert the ACCEPTED matched results to the PreprocessorTaskItemForDescision table
+  - currently we only displayed the CCX + ACCEPTED records under /dedup/<task_id> and the table is directly connected to PreprocessorMatchResult, we will re-route it to be connected to the PreprocessorTaskItemForDescision
 
 Phase 4 -- Dedup & Data Integrity Resolution
   -  Duplication Resolution
-     - we will first use header level information to determine if each pairt of matched contract has to be kept or we can apply deduplication logic
-       - 
+     - 1. contract resolution strategy grouping by compare input and matched (organization, erp_vendor_id, contract_id), total 5 top level groups
+       - group SS (Same Self):
+        - same organization, erp_vendor_id, contract_id
+       - group DV (Different Vendor):
+        - different erp_vendor_id
+       - group ODO (Only Different in Organization):
+        - same contract_id, same erp_vendor_id, different organization
+       - group TCCD (True Cross-Contract Duplicates):
+        - same epr_vendor_id, same organization, different contract_id
+       - group CECCD (Cross-Entity Cross-Contract Duplicates):
+        - same erp_vendor_id, different organization, different contract_id
+     - 2. contract default action
+       - it can take 'keep', 'drop', or 'any' as value
+       - given our current system constrains and how we are doing business, within different resolution strategy groups we will also mark the input or match set as 'To Keep' or 'To Drop'
+         - group SS
+           - if input task intention is to 'EXPIRE' -- drop input, drop matched
+           - if input task intention is to 'UPDATE' or 'NEW' -- keep input, drop matched
+         - group DV
+           - if input task intention is to 'EXPIRE' -- drop input, keep matched
+           - if input task intention is to 'UPDATE' or 'NEW' -- keep input, keep matched
+         - group ODO
+           - if input task intention is to 'EXPIRE' -- drop input, keep matched
+           - if input task intention is to 'UPDATE' or 'NEW' -- keep input, keep matched 
+         - group TCCD
+           - if input task intention is to 'EXPIRE' -- drop input, keep matched
+           - if input task intention is to 'UPDATE' or 'NEW'
+             -- if both input and matched are local -- any for input, any for matched
+             -- if input local, matched premier -- any for input, keep for matched
+             -- if input premier, matched local -- keep for input, any for premier
+             -- if both premier -- keep input, keep matched
+         - group CECCD (this group we will consider type of organization: MHS or ME, the 'Montefiore Health System (INFOR)' with EID = '105188574' will be MHS, others will be ME)
+           - if input task intention is to 'EXPIRE' -- drop input, keep matched
+           - if input task intention is to 'UPDATE' or 'NEW'
+             -- if both input and matched are local
+               --- if both ME -- keep input, keep matched
+               --- if input ME, matched MHS  -- any for input, keep for matched
+               --- if input MHS, matched ME  -- keep for input, any for mathced
+             -- if input local, matched premier
+               --- if both ME -- keep input, keep matched
+               --- if input ME, matched MHS  -- any for input, keep for matched
+               --- if input MHS, matched ME  -- keep for input, keep for mathced
+             -- if input premier, matched local
+               --- if both ME -- keep input, keep matched
+               --- if input ME, matched MHS  -- keep for input, keep for matched
+               --- if input MHS, matched ME  -- keep for input, any for mathced
+             -- if both premier
+               --- if both ME -- keep input, keep matched
+               --- if input ME, matched MHS  -- keep for input, keep for matched
+               --- if input MHS, matched ME  -- keep for input, keep for mathced
+     - 3. dedup_sort
+       -- sort the matched record by unit price within each input_item_group, lowest to highest
+
+
   -  Integratity Validation
+       - once the drop action or edits is done, user will run integratity validation to see if their end product passing data integrity checks
+       - check 1: same item should have same manufacturer number + manufacturer
+       - check 2: same item buy from same vendor (vendor group) under same UOM need to have same QOE
+       - check 3: same vendor, same vendor_part_number need to have the same UOM if the item is on item master (infor_item is not empty)
+  
+  - IM Checks
+       - once the 'expire' or 'drop' item is also an item master item, we have to do further checks to establish the consequence of removing the item
+         - check 1: sole coverage or not? (will give more details later on what to look at)
+         - check 2: affected location (will give more details later)
+       - when adding new lines, we will have to see if the newly added contract works with current inventory replenishment set up
+         - check 1: if the input erp vendor id the same as its contracted location (will give more details later)
+
 
 Phase 5 -- Export
 

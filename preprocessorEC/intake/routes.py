@@ -168,6 +168,12 @@ def api_upload_items(task_id: str):
                 if found:
                     resolved[key] = found
 
+        # Per-row intention is only sourced from the file in BATCH uploads;
+        # SINGLE uploads always inherit the task header's intention.
+        is_batch = (task.intake_mode or "SINGLE").upper() == "BATCH"
+        ALLOWED_ITEM_INTENTIONS = {"NEW", "UPDATE", "EXPIRE"}
+        intention_errors: list[str] = []
+
         items_to_add = []
         for idx, row in df.iterrows():
             def _str(val, fallback=""):
@@ -188,6 +194,23 @@ def api_upload_items(task_id: str):
                 except (ValueError, TypeError):
                     return fallback
 
+            if is_batch and "intention" in resolved:
+                raw_intent = _str(row.get(resolved["intention"], ""), "")
+                if raw_intent:
+                    normalized = raw_intent.upper()
+                    if normalized in ALLOWED_ITEM_INTENTIONS:
+                        item_intention = normalized
+                    else:
+                        intention_errors.append(
+                            f"Row {idx + 2}: invalid intention '{raw_intent}' "
+                            f"(allowed: NEW, UPDATE, EXPIRE)"
+                        )
+                        item_intention = task.intention
+                else:
+                    item_intention = task.intention
+            else:
+                item_intention = task.intention
+
             item = {
                 "mfg_catalog_num": _str(row.get(resolved.get("mfg_catalog_num", ""), "")),
                 "vendor_catalog_num": _str(row.get(resolved.get("vendor_catalog_num", ""), "")) or None,
@@ -195,7 +218,7 @@ def api_upload_items(task_id: str):
                 "uom": _str(row.get(resolved.get("uom", ""), "")),
                 "unit_price": _num(row.get(resolved.get("unit_price", ""), "0"), 0),
                 "qoe": _num(row.get(resolved.get("qoe", ""), "1"), 1),
-                "intention": _str(row.get(resolved.get("intention", ""), task.intention)) or task.intention,
+                "intention": item_intention,
                 "file_row": idx + 2,  # 1-indexed header + data row
             }
             # Optional tier fields
@@ -205,6 +228,13 @@ def api_upload_items(task_id: str):
                 item["tier_level"] = _str(row.get(resolved["tier_level"], "")) or None
 
             items_to_add.append(item)
+
+        if intention_errors:
+            return jsonify({
+                "error": "Invalid intention values in uploaded file. "
+                         "Allowed values are NEW, UPDATE, EXPIRE.",
+                "details": intention_errors,
+            }), 400
 
         task_repo.add_items(task_id, items_to_add)
 
