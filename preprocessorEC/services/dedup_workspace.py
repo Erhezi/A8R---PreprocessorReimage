@@ -251,10 +251,19 @@ def populate_dedup_workspace(task_id: str, *, force: bool = False) -> dict:
             if ea_price_input is None and input_item is not None:
                 ea_price_input = _ea_price_from(input_item.unit_price, input_item.qoe)
 
+            # Decisions are locked whenever the default is 'keep' or 'drop' —
+            # only 'any' lets the user toggle. Pre-stamp the locked value so
+            # the workspace state is consistent and the finalize gate doesn't
+            # need a special "default fills in for null" branch.
+            input_decision_seed = default_in if default_in in ("keep", "drop") else None
+            matched_decision_seed = default_match if default_match in ("keep", "drop") else None
+
             rows_to_insert.append(TaskItemForDecision(
                 match_id=m.match_id,
                 task_id=task_id,
                 input_item_id=m.input_item_id,
+                input_decision=input_decision_seed,
+                matched_decision=matched_decision_seed,
 
                 matched_source=m.matched_source,
                 match_status=m.match_status,

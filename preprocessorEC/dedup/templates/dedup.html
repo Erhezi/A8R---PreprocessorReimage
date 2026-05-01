@@ -179,11 +179,17 @@
       </div>
       <div>
         <span id="dedupCountBadge" class="small text-muted me-3">0 groups · 0 rows</span>
-        <button class="btn btn-sm btn-outline-secondary" id="btnReset">Reset to defaults</button>
+        <button class="btn btn-sm btn-outline-primary me-2" id="btnValidate">Run integrity check</button>
+        <button class="btn btn-sm btn-outline-warning me-2" id="btnImChecks">Run IM checks</button>
+        <button class="btn btn-sm btn-outline-secondary me-2" id="btnReset">Reset to defaults</button>
+        {# TEMPORARY: bypass-finalize button for testing — remove when 4F finalize gate lands. #}
+        <button class="btn btn-sm btn-dark" id="btnPassThrough" title="Temporary: skip the finalize gate and advance to Export">Pass through &rarr; Export</button>
       </div>
     </div>
     <div class="card-body p-3">
       <div id="dedupAlert" class="alert alert-danger d-none"></div>
+      <div id="integrityPanel" class="mb-3 d-none"></div>
+      <div id="imPanel" class="mb-3 d-none"></div>
       <div id="dedupGroups">
         <div class="text-center text-muted py-4">Loading dedup workspace...</div>
       </div>
@@ -248,13 +254,27 @@ function isLocal(sourceType) {
 function decisionPillHtml(side, current, fallbackDefault, attrs) {
   const dec = (current || "").toLowerCase();
   const def = (fallbackDefault || "").toLowerCase();
+
+  // Locked by business rule when the resolution-strategy default is
+  // explicitly 'keep' or 'drop'. Only 'any' lets the user toggle.
+  if (def === "keep" || def === "drop") {
+    const cls = def === "keep" ? "bg-success" : "bg-danger";
+    const label = def === "keep" ? "Keep" : "Drop";
+    return `
+      <div class="decision-pill" ${attrs}>
+        <span class="badge ${cls}"><span class="lock-icon">🔒</span>${label}</span>
+        <span class="default-hint">locked by default</span>
+      </div>
+    `;
+  }
+
   const keepCls = dec === "keep" ? "btn-success" : "btn-outline-success";
   const dropCls = dec === "drop" ? "btn-danger" : "btn-outline-danger";
   return `
     <div class="decision-pill" ${attrs}>
       <button type="button" class="btn ${keepCls}" data-decision="keep">Keep</button>
       <button type="button" class="btn ${dropCls}" data-decision="drop">Drop</button>
-      <span class="default-hint">default: ${def || "—"}</span>
+      <span class="default-hint">default: any</span>
     </div>
   `;
 }
@@ -492,11 +512,194 @@ document.getElementById("btnReset").addEventListener("click", async () => {
   setAlert("");
   try {
     await postJson(`${PREFIX}/api/dedup/${TASK_ID}/reset`, {});
+    document.getElementById("integrityPanel").classList.add("d-none");
+    document.getElementById("imPanel").classList.add("d-none");
     await loadRows();
   } catch (e) {
     setAlert(e.message);
   }
 });
+
+document.getElementById("btnValidate").addEventListener("click", async () => {
+  setAlert("");
+  try {
+    const summary = await postJson(`${PREFIX}/api/dedup/${TASK_ID}/validate`, {});
+    renderIntegrityPanel(summary);
+  } catch (e) {
+    setAlert(e.message);
+  }
+});
+
+const CHECK_TITLES = {
+  1: "Manufacturer # consistency (same input item)",
+  2: "QOE consistency (input × vendor × UOM)",
+  3: "UOM consistency (vendor × VPN, item-master items)",
+};
+
+function renderIntegrityPanel(summary) {
+  const panel = document.getElementById("integrityPanel");
+  if (!summary || summary.total_issues === 0) {
+    panel.classList.remove("d-none");
+    panel.innerHTML = `
+      <div class="alert alert-success mb-0">
+        <strong>Integrity check passed.</strong>
+        Kept set: ${summary?.kept_count ?? 0} entries · 0 violations.
+      </div>
+    `;
+    return;
+  }
+  panel.classList.remove("d-none");
+  const grouped = { 1: [], 2: [], 3: [] };
+  for (const issue of summary.issues || []) {
+    if (grouped[issue.check_id]) grouped[issue.check_id].push(issue);
+  }
+
+  const sections = Object.entries(grouped)
+    .filter(([, items]) => items.length)
+    .map(([checkId, items]) => `
+      <div class="mb-2">
+        <strong>Check ${checkId}: ${escapeHtml(CHECK_TITLES[checkId] || "")}</strong>
+        <span class="badge bg-danger ms-2">${items.length} violation${items.length === 1 ? "" : "s"}</span>
+        <ul class="mb-0 mt-1 small">
+          ${items.map((i) => `<li>${escapeHtml(i.detail)}</li>`).join("")}
+        </ul>
+      </div>
+    `).join("");
+
+  panel.innerHTML = `
+    <div class="alert alert-danger mb-0">
+      <div class="d-flex justify-content-between align-items-start mb-2">
+        <strong>Integrity check found ${summary.total_issues} issue${summary.total_issues === 1 ? "" : "s"}</strong>
+        <span class="small text-muted">Kept set: ${summary.kept_count} entries</span>
+      </div>
+      ${sections}
+    </div>
+  `;
+}
+
+async function loadIntegrityIssues() {
+  try {
+    const response = await fetch(`${PREFIX}/api/dedup/${TASK_ID}/issues`);
+    if (!response.ok) return;
+    const issues = await response.json();
+    if (!issues.length) return;
+    // Reconstruct a minimal summary so renderIntegrityPanel works the same
+    // way it does after a fresh /validate POST.
+    const summary = {
+      total_issues: issues.length,
+      kept_count: null,
+      issues: issues.map((i) => ({
+        check_id: i.check_id,
+        detail: i.detail,
+        group_keys: i.group_keys,
+        affected: i.affected,
+      })),
+    };
+    renderIntegrityPanel(summary);
+  } catch (_e) { /* silent — page still works */ }
+}
+
+const IM_CHECK_TITLES = {
+  1: "Sole coverage (drop + IM)",
+  2: "Affected locations (drop + IM)",
+  3: "Vendor / location alignment (new line + IM)",
+};
+
+// TEMPORARY: pass-through to Export. Remove this handler when 4F lands.
+document.getElementById("btnPassThrough").addEventListener("click", async () => {
+  if (!confirm("Skip the finalize gate and advance this task to Export? (Temporary action for development.)")) {
+    return;
+  }
+  setAlert("");
+  try {
+    const result = await postJson(`${PREFIX}/api/dedup/${TASK_ID}/finalize`, {});
+    window.location.href = `${PREFIX}/tasks/${TASK_ID}`;
+  } catch (e) {
+    setAlert(e.message);
+  }
+});
+
+document.getElementById("btnImChecks").addEventListener("click", async () => {
+  setAlert("");
+  try {
+    const summary = await postJson(`${PREFIX}/api/dedup/${TASK_ID}/im-checks`, {});
+    renderImPanel(summary);
+  } catch (e) {
+    setAlert(e.message);
+  }
+});
+
+function renderImPanel(summary) {
+  const panel = document.getElementById("imPanel");
+  if (!summary) {
+    panel.classList.add("d-none");
+    return;
+  }
+  panel.classList.remove("d-none");
+
+  if (!summary.total_warnings) {
+    panel.innerHTML = `
+      <div class="alert alert-info mb-0">
+        <strong>IM checks: no warnings.</strong>
+        Drop+IM candidates: ${summary.drop_candidates ?? 0} · New-line+IM candidates: ${summary.new_line_candidates ?? 0}.
+      </div>
+    `;
+    return;
+  }
+
+  const grouped = { 1: [], 2: [], 3: [] };
+  for (const f of summary.findings || []) {
+    if (grouped[f.check_id]) grouped[f.check_id].push(f);
+  }
+  const sections = Object.entries(grouped)
+    .filter(([, items]) => items.length)
+    .map(([checkId, items]) => `
+      <div class="mb-2">
+        <strong>Check ${checkId}: ${escapeHtml(IM_CHECK_TITLES[checkId] || "")}</strong>
+        <span class="badge bg-warning text-dark ms-2">${items.length} warning${items.length === 1 ? "" : "s"}</span>
+        <ul class="mb-0 mt-1 small">
+          ${items.map((f) => `<li>${escapeHtml(f.detail)}</li>`).join("")}
+        </ul>
+      </div>
+    `).join("");
+
+  const scaffolded = summary.status === "scaffolded";
+  const intro = scaffolded
+    ? `<div class="small text-muted mb-2">IM checks are scaffolded: candidate selection is live, the data lookups are pending.</div>`
+    : "";
+
+  panel.innerHTML = `
+    <div class="alert alert-warning mb-0">
+      <div class="d-flex justify-content-between align-items-start mb-1">
+        <strong>IM checks raised ${summary.total_warnings} warning${summary.total_warnings === 1 ? "" : "s"}</strong>
+        <span class="small text-muted">non-blocking · logged for MDM export</span>
+      </div>
+      ${intro}
+      ${sections}
+    </div>
+  `;
+}
+
+async function loadImResults() {
+  try {
+    const response = await fetch(`${PREFIX}/api/dedup/${TASK_ID}/im-results`);
+    if (!response.ok) return;
+    const results = await response.json();
+    if (!results.length) return;
+    const summary = {
+      total_warnings: results.length,
+      status: "persisted",
+      drop_candidates: null,
+      new_line_candidates: null,
+      findings: results.map((r) => ({
+        check_id: r.check_id,
+        detail: r.detail,
+        subject: r.subject,
+      })),
+    };
+    renderImPanel(summary);
+  } catch (_e) { /* silent */ }
+}
 
 async function loadRows() {
   setAlert("");
@@ -521,5 +724,7 @@ async function loadRows() {
 }
 
 loadRows();
+loadIntegrityIssues();
+loadImResults();
 </script>
 {% endblock %}

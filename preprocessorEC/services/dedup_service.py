@@ -125,12 +125,33 @@ def set_input_decision(
     """Apply a keep/drop decision to the INPUT side of every workspace row
     sharing ``(task_id, input_item_id)``. The input is one logical item —
     the decision must be uniform across its match group.
+
+    Only applicable when the row's ``default_action_input`` is ``'any'``;
+    a default of ``'keep'`` or ``'drop'`` is locked by business rules.
     """
     decision_norm = (decision or "").strip().lower()
     if decision_norm not in VALID_SIDE_DECISIONS:
         raise ValueError(f"Invalid decision {decision!r}; expected 'keep' or 'drop'.")
 
     with _session() as s:
+        anchor = (
+            s.query(TaskItemForDecision)
+            .filter(
+                TaskItemForDecision.task_id == task_id,
+                TaskItemForDecision.input_item_id == input_item_id,
+            )
+            .first()
+        )
+        if not anchor:
+            raise ValueError(
+                f"No dedup workspace rows found for task={task_id} input_item_id={input_item_id}."
+            )
+        if (anchor.default_action_input or "").lower() != "any":
+            raise ValueError(
+                "Input decision is locked by the resolution-strategy default "
+                f"({anchor.default_action_input}); only 'any' rows are user-toggleable."
+            )
+
         now = ny_now()
         count = (
             s.query(TaskItemForDecision)
@@ -148,17 +169,16 @@ def set_input_decision(
             )
         )
         s.commit()
-        if count == 0:
-            raise ValueError(
-                f"No dedup workspace rows found for task={task_id} input_item_id={input_item_id}."
-            )
         return {"updated": count, "side": "input", "decision": decision_norm}
 
 
 def set_matched_decision(
     task_id: str, dedup_id: int, decision: str, decided_by: str
 ) -> dict:
-    """Apply a keep/drop decision to the MATCHED side of one workspace row."""
+    """Apply a keep/drop decision to the MATCHED side of one workspace row.
+
+    Only applicable when ``default_action_matched`` is ``'any'``.
+    """
     decision_norm = (decision or "").strip().lower()
     if decision_norm not in VALID_SIDE_DECISIONS:
         raise ValueError(f"Invalid decision {decision!r}; expected 'keep' or 'drop'.")
@@ -167,6 +187,11 @@ def set_matched_decision(
         row = s.get(TaskItemForDecision, dedup_id)
         if not row or row.task_id != task_id:
             raise ValueError(f"Dedup row {dedup_id} not found for task {task_id}.")
+        if (row.default_action_matched or "").lower() != "any":
+            raise ValueError(
+                "Matched decision is locked by the resolution-strategy default "
+                f"({row.default_action_matched}); only 'any' rows are user-toggleable."
+            )
         row.matched_decision = decision_norm
         row.dedup_decided_by = decided_by
         row.dedup_decided_at = ny_now()

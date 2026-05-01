@@ -628,6 +628,80 @@ class PreprocessIssue(Base):
 
 
 # ---------------------------------------------------------------------------
+# IntegrityIssue — Phase 4D: captures violations from the post-dedup
+# integrity validator. Ephemeral — wiped & rewritten on every run.
+# ---------------------------------------------------------------------------
+class IntegrityIssue(Base):
+    __tablename__ = "PreprocessorIntegrityIssue"
+    __table_args__ = (
+        Index("ix_integrityissue_task_id", "task_id"),
+        Index("ix_integrityissue_task_check", "task_id", "check_id"),
+        {"schema": SCHEMA},
+    )
+
+    issue_id = Column(Integer, primary_key=True, autoincrement=True)
+    task_id = Column(String(4), ForeignKey(f"{SCHEMA}.PreprocessorTask.task_id"), nullable=False)
+    check_id = Column(Integer, nullable=False)  # 1 | 2 | 3
+    severity = Column(String(10), nullable=False, default="ERROR")
+    group_keys = Column(Text, nullable=True)  # JSON
+    affected = Column(Text, nullable=True)    # JSON list
+    detail = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=ny_now)
+
+    def to_dict(self) -> dict:
+        return {
+            "issue_id": self.issue_id,
+            "task_id": self.task_id,
+            "check_id": self.check_id,
+            "severity": self.severity,
+            "group_keys": self.group_keys,
+            "affected": self.affected,
+            "detail": self.detail,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+# ---------------------------------------------------------------------------
+# IMCheckResult — Phase 4E: WARN-level findings raised when dedup
+# decisions touch item-master items (sole coverage, affected locations,
+# vendor/location alignment for new lines). Logged for MDM export.
+# Wiped & rewritten on every IM-check run.
+# ---------------------------------------------------------------------------
+class IMCheckResult(Base):
+    __tablename__ = "PreprocessorIMCheckResult"
+    __table_args__ = (
+        Index("ix_imcheckresult_task_id", "task_id"),
+        Index("ix_imcheckresult_task_check", "task_id", "check_id"),
+        {"schema": SCHEMA},
+    )
+
+    result_id = Column(Integer, primary_key=True, autoincrement=True)
+    task_id = Column(String(4), ForeignKey(f"{SCHEMA}.PreprocessorTask.task_id"), nullable=False)
+    check_id = Column(Integer, nullable=False)  # 1 | 2 | 3
+    check_code = Column(String(40), nullable=False)
+    dedup_id = Column(Integer, nullable=True)
+    input_item_id = Column(Integer, nullable=True)
+    severity = Column(String(10), nullable=False, default="WARN")
+    subject = Column(Text, nullable=True)  # JSON
+    detail = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=ny_now)
+
+    def to_dict(self) -> dict:
+        return {
+            "result_id": self.result_id,
+            "task_id": self.task_id,
+            "check_id": self.check_id,
+            "check_code": self.check_code,
+            "dedup_id": self.dedup_id,
+            "input_item_id": self.input_item_id,
+            "severity": self.severity,
+            "subject": self.subject,
+            "detail": self.detail,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+# ---------------------------------------------------------------------------
 # TaskStatusLog — audit trail: who moved a task between phases/statuses
 # ---------------------------------------------------------------------------
 class TaskStatusLog(Base):

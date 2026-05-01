@@ -11,6 +11,8 @@ from flask_login import login_required, current_user
 from . import dedup_bp
 from ..db import task_repo, workstate_repo
 from ..services import dedup_service
+from ..services import integrity_check
+from ..services import im_check
 from ..state import TaskStateMachine
 
 
@@ -28,8 +30,41 @@ def api_simulate(task_id: str):
 @dedup_bp.route("/api/dedup/<task_id>/validate", methods=["POST"])
 @login_required
 def api_validate(task_id: str):
-    result = dedup_service.validate_integrity(task_id, _sm())
-    return jsonify(result)
+    """Run all 3 integrity checks on the kept-set and return a summary."""
+    task = task_repo.get_task(task_id)
+    if not task:
+        abort(404)
+    return jsonify(integrity_check.run_integrity_validation(task_id))
+
+
+@dedup_bp.route("/api/dedup/<task_id>/issues", methods=["GET"])
+@login_required
+def api_get_issues(task_id: str):
+    """Read the persisted integrity issues for a task (page-load hydrate)."""
+    task = task_repo.get_task(task_id)
+    if not task:
+        abort(404)
+    return jsonify(integrity_check.get_open_issues(task_id))
+
+
+@dedup_bp.route("/api/dedup/<task_id>/im-checks", methods=["POST"])
+@login_required
+def api_run_im_checks(task_id: str):
+    """Run the 3 item-master consequence checks (WARN-level, non-blocking)."""
+    task = task_repo.get_task(task_id)
+    if not task:
+        abort(404)
+    return jsonify(im_check.run_im_checks(task_id))
+
+
+@dedup_bp.route("/api/dedup/<task_id>/im-results", methods=["GET"])
+@login_required
+def api_get_im_results(task_id: str):
+    """Read persisted IM-check results for the task (page-load hydrate)."""
+    task = task_repo.get_task(task_id)
+    if not task:
+        abort(404)
+    return jsonify(im_check.get_im_check_results(task_id))
 
 
 @dedup_bp.route("/api/dedup/<task_id>/finalize", methods=["POST"])
