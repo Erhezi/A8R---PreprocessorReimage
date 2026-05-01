@@ -60,3 +60,6 @@ htmlcov/
 
 # .claude local state
 .claude/
+
+# .VS Code Counter
+.VSCodeCounter/

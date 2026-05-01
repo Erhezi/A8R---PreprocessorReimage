@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Optional
 
 from .common.utils import ny_now
+from .state import Status
 
 from flask_login import UserMixin
 from sqlalchemy import (
@@ -63,13 +64,14 @@ class Task(Base):
     status = Column(String(50), nullable=False, default="DRAFT")
 
     # Sub-task lineage — populated when this task was spawned off another
-    # (e.g. ERROR_PC1 items split off a parent task at PC1 advance time).
+    # (e.g. ERROR_PC1 items split off a parent task at PC1 advance time;
+    # see state.Reason for the audit code on spawn_reason).
     parent_task_id = Column(
         String(4),
         ForeignKey(f"{SCHEMA}.PreprocessorTask.task_id"),
         nullable=True,
     )
-    spawn_reason = Column(String(50), nullable=True)  # e.g. ERROR_PC1_SPLIT
+    spawn_reason = Column(String(50), nullable=True)  # see state.Reason
 
     # Audit
     created_by = Column(String(120), nullable=False)
@@ -140,7 +142,7 @@ class TaskItem(Base):
     tier_level = Column(String(50), nullable=True)
 
     # Status tracking
-    status = Column(String(50), nullable=False, default="UPLOADED")
+    status = Column(String(50), nullable=False, default=Status.UPLOADED)
     error_message = Column(Text, nullable=True)
 
     # Data source & linkage
@@ -453,7 +455,7 @@ class PreprocessIssue(Base):
     resolved = Column(Boolean, default=False, nullable=False)
     resolved_by = Column(String(120), nullable=True)
     resolved_at = Column(DateTime, nullable=True)
-    resolution_action = Column(String(40), nullable=True)  # PICK_ITEM | NOTE | RECHECK_PASSED | IGNORE_EXPIRE
+    resolution_action = Column(String(40), nullable=True)  # PICK_ITEM | NOTED | RECHECK_PASSED | IGNORE_EXPIRE
 
     created_at = Column(DateTime, default=ny_now)
     updated_at = Column(DateTime, default=ny_now, onupdate=ny_now)

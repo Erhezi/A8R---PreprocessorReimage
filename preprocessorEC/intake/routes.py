@@ -23,7 +23,7 @@ from flask_login import login_required, current_user
 from . import intake_bp
 from ..db import task_repo, workstate_repo
 from ..services import intake_service
-from ..state import TaskStateMachine, Phase
+from ..state import TaskStateMachine, Phase, Status
 
 
 def _sm() -> TaskStateMachine:
@@ -79,7 +79,7 @@ def api_delete_item(task_id: str, item_id: int):
     ok = task_repo.soft_delete_item(item_id)
     if not ok:
         return jsonify({"error": "Item not found"}), 404
-    return jsonify({"deleted": item_id, "status": "DELETED_PC1"})
+    return jsonify({"deleted": item_id, "status": Status.DELETED_PC1})
 
 
 @intake_bp.route("/api/intake/<task_id>/upload", methods=["POST"])
@@ -220,7 +220,7 @@ def api_upload_items(task_id: str):
             current_app.logger.warning("Could not save file to network drive: %s", save_exc)
 
         # Move task status to PENDING_PRECHECK
-        task_repo.update_task_phase(task_id, "INTAKE", "PENDING_PRECHECK")
+        task_repo.update_task_phase(task_id, Phase.INTAKE, Status.PENDING_PRECHECK)
 
         return jsonify({"uploaded": len(items_to_add), "task_id": task_id}), 201
 
@@ -348,7 +348,7 @@ def api_recheck_all(task_id: str):
 
     sm = _sm()
     items = task_repo.get_items(task_id)
-    error_warn_ids = [i.item_id for i in items if i.status in ("ERROR_PC1", "WARN_PC1")]
+    error_warn_ids = [i.item_id for i in items if i.status in (Status.ERROR_PC1, Status.WARN_PC1)]
     if not error_warn_ids:
         return jsonify({"error": "No items to re-check"}), 400
     result = intake_service.recheck_items(task_id, error_warn_ids, sm)

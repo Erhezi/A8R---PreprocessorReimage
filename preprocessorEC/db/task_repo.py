@@ -13,6 +13,7 @@ from sqlalchemy import MetaData, Table, inspect, text
 from sqlalchemy.orm import Session
 
 from ..models import Task, TaskItem, PreCheckError, MatchResult, TaskStatusLog, ItemMatchCandidate, PreprocessIssue
+from ..state import Status
 from ..common.utils import ny_now
 from .engine import get_sqlserver_engine
 
@@ -328,7 +329,7 @@ def soft_delete_item(item_id: int) -> bool:
         item = s.get(TaskItem, item_id)
         if not item:
             return False
-        item.status = "DELETED_PC1"
+        item.status = Status.DELETED_PC1
         item.updated_at = ny_now()
         s.query(PreCheckError).filter(
             PreCheckError.item_id == item_id,
@@ -345,7 +346,7 @@ def soft_delete_item_phase3(item_id: int, resolved_by: str = "SOFT_DELETE") -> b
         item = s.get(TaskItem, item_id)
         if not item:
             return False
-        item.status = "DELETED_PREPROCESS"
+        item.status = Status.DELETED_PREPROCESS
         item.updated_at = ny_now()
         s.query(PreprocessIssue).filter(
             PreprocessIssue.item_id == item_id,

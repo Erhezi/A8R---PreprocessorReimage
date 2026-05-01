@@ -25,66 +25,120 @@ class Phase:
 
 
 class Status:
-    # Global
-    DRAFT = "DRAFT"
-    ON_HOLD = "ON_HOLD"
-    CANCELLED = "CANCELLED"
+    """Workflow statuses for tasks and individual items.
 
+    Conventions:
+      - Substrings ``ERROR`` / ``WARN`` / ``REVIEW`` / ``PENDING`` / ``HOLD``
+        are pattern-matched by UI badges and finalize gates — keep new names
+        consistent with this convention so substring scans don't need hard-
+        coded lists.
+      - Suffixes ``_PC1`` / ``_PC2`` denote intake / identity precheck stages.
+      - Item-level statuses live on ``PreprocessorTaskItem.status``; everything
+        else lives on the task record (and mirrors into TaskState).
+    """
+
+    # ---- Global (any phase) -------------------------------------------------
+    DRAFT     = "DRAFT"      # Task created, no work started.
+    ON_HOLD   = "ON_HOLD"    # Generic hold (phase-specific holds preferred).
+    CANCELLED = "CANCELLED"  # Task abandoned; no further transitions.
+
+    # =========================================================================
     # Phase 1 — Intake
-    PENDING_PRECHECK = "PENDING_PRECHECK"
-    PENDING_NUVIA = "PENDING_NUVIA"
-    ERROR_PC1 = "ERROR_PC1"
-    WARN_PC1 = "WARN_PC1"
-    MDM_HELP_PC1 = "MDM_HELP_PC1"
-    ON_HOLD_PC1 = "ON_HOLD_PC1"
+    # =========================================================================
+    # --- Task-level ---
+    PENDING_PRECHECK = "PENDING_PRECHECK"  # Items uploaded; PC1 not yet run.
+    PENDING_NUVIA    = "PENDING_NUVIA"     # PC1 passed; awaiting Nuvia identity sync.
+    MDM_HELP_PC1     = "MDM_HELP_PC1"      # Reserved: not currently set by code.
+    ON_HOLD_PC1      = "ON_HOLD_PC1"       # PC1 found blocking errors; user must resolve in /intake.
 
+    # --- Item-level ---
+    UPLOADED    = "UPLOADED"    # Default state on row creation; reset back to this when PC1 is re-run.
+    # Set per row by run_pc1():
+    ERROR_PC1   = "ERROR_PC1"   # Row failed PC1 validation (or is a duplicate); blocks advance unless split off.
+    WARN_PC1    = "WARN_PC1"    # Row has a non-blocking warning; user must fix or manually pass before advancing.
+    PASSED_PC1  = "PASSED_PC1"  # Row passed PC1; carries forward to Identity.
+    DELETED_PC1 = "DELETED_PC1" # User soft-deleted a row in /intake; excluded from all later phases.
+
+    # =========================================================================
     # Phase 2 — Identity
-    PENDING_PREPROCESSOR = "PENDING_PREPROCESSOR"
-    ERROR_PC2 = "ERROR_PC2"
-    ON_HOLD_PC2 = "ON_HOLD_PC2"
+    # =========================================================================
+    # --- Task-level ---
+    PENDING_PREPROCESSOR = "PENDING_PREPROCESSOR"  # PC2 passed; ready for preprocess.
+    ERROR_PC2            = "ERROR_PC2"             # PC2 validation failed (also written on items — same string).
+    ON_HOLD_PC2          = "ON_HOLD_PC2"           # Reserved: not currently set by code.
 
+    # --- Item-level ---
+    # Set per row by run_pc2() — ERROR_PC2 above is also written on items.
+    PASSED_PC2 = "PASSED_PC2"  # Row passed PC2; carries forward to Preprocess.
+
+    # =========================================================================
     # Phase 3 — Preprocess
-    PREPROCESSING = "PREPROCESSING"
-    REVIEW_CONTRACTS = "REVIEW_CONTRACTS"
-    REVIEW_ITEMS = "REVIEW_ITEMS"
-    LLM_REVIEW = "LLM_REVIEW"
-    INFOR_MATCHING = "INFOR_MATCHING"
-    INFOR_REVIEW = "INFOR_REVIEW"
-    ITEM_LABELING = "ITEM_LABELING"
-    BUY_UOM_CHECKING = "BUY_UOM_CHECKING"
-    PREPROCESSED = "PREPROCESSED"
-    ON_HOLD_PREPROCESS = "ON_HOLD_PREPROCESS"
+    # =========================================================================
+    # --- Task-level (sub-step indicators driven by run_full_preprocess) ---
+    PREPROCESSING        = "PREPROCESSING"         # CCX SKU matching started.
+    REVIEW_CONTRACTS     = "REVIEW_CONTRACTS"      # Contract-level decisions awaiting user.
+    REVIEW_ITEMS         = "REVIEW_ITEMS"          # Reserved: not currently set by code.
+    LLM_REVIEW           = "LLM_REVIEW"            # MED/LOW CCX matches sent to LLM for triage.
+    INFOR_MATCHING       = "INFOR_MATCHING"        # Infor cascade running.
+    INFOR_REVIEW         = "INFOR_REVIEW"          # Reserved: not currently set by code.
+    ITEM_LABELING        = "ITEM_LABELING"         # 3-source labeling step running.
+    BUY_UOM_CHECKING     = "BUY_UOM_CHECKING"      # Buy-UOM validation step running.
+    PENDING_FINALIZATION = "PENDING_FINALIZATION"  # Pipeline complete; waiting on user to finalize.
+    PREPROCESSED         = "PREPROCESSED"          # Preprocess done; advancing to Dedup.
+    ON_HOLD_PREPROCESS   = "ON_HOLD_PREPROCESS"    # Finalize called but unresolved item issues remain.
 
-    # Phase 3 — item-level statuses
-    MATCHING = "MATCHING"
-    MATCHED = "MATCHED"
-    ITEM_FETCHED = "ITEM_FETCHED"
-    REVIEW_PENDING = "REVIEW_PENDING"
-    MATCH_CONFIRMED = "MATCH_CONFIRMED"
-    ITEM_LABELED = "ITEM_LABELED"
-    MULTI_ITEM_ERROR = "MULTI_ITEM_ERROR"
-    BUY_UOM_ERROR = "BUY_UOM_ERROR"
-    BUY_UOM_WARN = "BUY_UOM_WARN"
-    DUPLICATE_ITEM_ERROR = "DUPLICATE_ITEM_ERROR"
-    DELETED_PREPROCESS = "DELETED_PREPROCESS"
-    DELETED_PC1 = "DELETED_PC1"
-    ITEM_PREPROCESSED = "ITEM_PREPROCESSED"
+    # --- Item-level (PreprocessorTaskItem.status) ---
+    # Written by 3-source labeling:
+    ITEM_FETCHED         = "ITEM_FETCHED"          # Labeling found 0 Infor item# candidates.
+    ITEM_LABELED         = "ITEM_LABELED"          # Labeling reached exactly 1 consensus item#.
+    MULTI_ITEM_ERROR     = "MULTI_ITEM_ERROR"      # Labeling found 2+ candidates; user must Pick.
+    # Written by buy-UOM check / Pick / Noted:
+    BUY_UOM_ERROR        = "BUY_UOM_ERROR"         # Expected UOM*QOE absent from Infor options (non-EXPIRE intent).
+    BUY_UOM_WARN         = "BUY_UOM_WARN"          # Same as above but EXPIRE intent (auto-WARN) or demoted via "Noted".
+    # Written by explicit-mode duplicate detection (via _derive_item_status):
+    DUPLICATE_ITEM_ERROR = "DUPLICATE_ITEM_ERROR"  # Two rows share the clean_mfg + uom_to_match_infor key.
+    # Terminal:
+    ITEM_PREPROCESSED    = "ITEM_PREPROCESSED"     # Item passed all checks; ready for Dedup.
+    DELETED_PREPROCESS   = "DELETED_PREPROCESS"    # User soft-deleted in /preprocess; excluded from later phases.
 
-    # Item-level statuses that mean "soft-deleted, ignore in pipeline + advance gates"
-    DELETED_STATUSES = frozenset({"DELETED_PC1", "DELETED_PREPROCESS"})
+    # Soft-deleted item statuses — _live_input_items() filters these out so
+    # they cannot be resurrected or re-matched on a pipeline rerun.
+    DELETED_STATUSES = frozenset({DELETED_PC1, DELETED_PREPROCESS})
 
+    # =========================================================================
     # Phase 4 — Dedup
-    SIMULATING = "SIMULATING"
-    REVIEW_DEDUP = "REVIEW_DEDUP"
-    DEDUP_COMPLETE = "DEDUP_COMPLETE"
+    # =========================================================================
+    # --- Task-level ---
+    SIMULATING     = "SIMULATING"      # Dedup simulation running against existing catalog.
+    REVIEW_DEDUP   = "REVIEW_DEDUP"    # User reviewing simulation conflicts.
+    DEDUP_COMPLETE = "DEDUP_COMPLETE"  # Dedup decisions finalized; ready for Export.
 
+    # (Phase 4 does not write any item-level statuses.)
+
+    # =========================================================================
     # Phase 5 — Export
-    EXPORTING = "EXPORTING"
-    EXPORTED = "EXPORTED"
+    # =========================================================================
+    # --- Task-level ---
+    EXPORTING = "EXPORTING"  # Export files being generated.
+    EXPORTED  = "EXPORTED"   # Export complete; advancing to Monitoring.
 
+    # (Phase 5 does not write any item-level statuses.)
+
+    # =========================================================================
     # Phase 6 — Monitoring
-    MONITORING_ACTIVE = "MONITORING_ACTIVE"
-    COMPLETED = "COMPLETED"
+    # =========================================================================
+    # --- Task-level ---
+    MONITORING_ACTIVE = "MONITORING_ACTIVE"  # Post-export monitoring window.
+    COMPLETED         = "COMPLETED"          # Terminal: task fully finished.
+
+
+# ---------------------------------------------------------------------------
+# Reason — audit-trail codes for non-status events.
+# Lives on PreprocessorTask.spawn_reason (and similar audit fields). Kept
+# separate from Status so the two namespaces can't be confused.
+# ---------------------------------------------------------------------------
+class Reason:
+    REASON_ERROR_PC1_SPLIT = "REASON_ERROR_PC1_SPLIT"  # Sub-task spawned to carry ERROR_PC1 items split off the parent at PC1 advance.
 
 
 # ---------------------------------------------------------------------------

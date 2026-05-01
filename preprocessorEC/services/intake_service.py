@@ -15,7 +15,7 @@ from typing import Optional
 from ..db import task_repo, workstate_repo
 from ..db.engine import get_sqlserver_engine
 from ..db.sql_loader import load_query
-from ..state import TaskStateMachine, Phase, Status
+from ..state import TaskStateMachine, Phase, Status, Reason
 
 # ---------------------------------------------------------------------------
 # UOM substitution map (common short forms → standard EDI codes)
@@ -335,7 +335,7 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
     # Load ALL items for the task regardless of current status
     all_items = task_repo.get_items(task_id)
     # Exclude DELETED_PC1 items — soft-deleted by user, should not participate
-    items = [i for i in all_items if i.status != "DELETED_PC1"]
+    items = [i for i in all_items if i.status != Status.DELETED_PC1]
     if not items:
         return {"total": 0, "passed": 0, "failed": 0, "errors": [], "uom_mappings": []}
 
@@ -343,7 +343,7 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
     # from a clean slate every time (prevents dissolving duplicate detection).
     all_ids = [i.item_id for i in items]
     for iid in all_ids:
-        task_repo.update_item_status(iid, "UPLOADED", error_message=None)
+        task_repo.update_item_status(iid, Status.UPLOADED, error_message=None)
 
     existing_errors = task_repo.get_precheck_errors(task_id, phase="PC1", resolved=False)
     for e in existing_errors:
@@ -490,7 +490,7 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
         all_issues = item_errors + item_warnings
         if item_errors:
             failed_ids.append(item.item_id)
-            task_repo.update_item_status(item.item_id, "ERROR_PC1", "; ".join(e[1] for e in item_errors))
+            task_repo.update_item_status(item.item_id, Status.ERROR_PC1, "; ".join(e[1] for e in item_errors))
             task_repo.update_items_bulk(
                 [item.item_id],
                 description=clean_desc,
@@ -507,7 +507,7 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
                 errors.append({"item_id": item.item_id, "error_type": err_type, "error_detail": err_detail})
         elif item_warnings:
             warned_ids.append(item.item_id)
-            task_repo.update_item_status(item.item_id, "WARN_PC1")
+            task_repo.update_item_status(item.item_id, Status.WARN_PC1)
             for wtype, wdetail in item_warnings:
                 task_repo.add_precheck_error(task_id, item.item_id, "PC1", wtype, wdetail)
                 errors.append({"item_id": item.item_id, "error_type": wtype, "error_detail": wdetail})
@@ -525,7 +525,7 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
             )
         else:
             passed_ids.append(item.item_id)
-            task_repo.update_item_status(item.item_id, "PASSED_PC1")
+            task_repo.update_item_status(item.item_id, Status.PASSED_PC1)
             # Update cleaned fields
             task_repo.update_items_bulk(
                 [item.item_id],
@@ -572,7 +572,7 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
                 continue
             task_repo.add_precheck_error(task_id, mid, "PC1", dup_type, unified_detail)
             errors.append({"item_id": mid, "error_type": dup_type, "error_detail": unified_detail})
-            task_repo.update_item_status(mid, "ERROR_PC1", unified_detail)
+            task_repo.update_item_status(mid, Status.ERROR_PC1, unified_detail)
             if mid in passed_ids:
                 passed_ids.remove(mid)
             elif mid in warned_ids:
@@ -683,7 +683,7 @@ def _spawn_error_pc1_subtask(parent_task, error_items: list, user: str) -> str:
         wrike_id=parent_task.wrike_id,
         created_by=user,
         parent_task_id=parent_task.task_id,
-        spawn_reason="ERROR_PC1_SPLIT",
+        spawn_reason=Reason.REASON_ERROR_PC1_SPLIT,
         phase=Phase.INTAKE,
         status=Status.ON_HOLD_PC1,
     )
@@ -698,7 +698,7 @@ def _spawn_error_pc1_subtask(parent_task, error_items: list, user: str) -> str:
         old_status=None,
         new_status=Status.ON_HOLD_PC1,
         changed_by=user,
-        notes=f"Spawned from {parent_task.task_id} carrying {len(error_ids)} ERROR_PC1 item(s).",
+        notes=f"Spawned from {parent_task.task_id} carrying {len(error_ids)} {Status.ERROR_PC1} item(s).",
     )
     return sub_task.task_id
 
@@ -738,9 +738,9 @@ def proceed_with_passing(task_id: str, state_machine: TaskStateMachine, user: st
         )
         raise ValueError(msg)
 
-    passed_items = [i for i in live_items if i.status == "PASSED_PC1"]
-    error_items = [i for i in live_items if i.status == "ERROR_PC1"]
-    warn_items = [i for i in live_items if i.status == "WARN_PC1"]
+    passed_items = [i for i in live_items if i.status == Status.PASSED_PC1]
+    error_items = [i for i in live_items if i.status == Status.ERROR_PC1]
+    warn_items = [i for i in live_items if i.status == Status.WARN_PC1]
 
     if not passed_items:
         raise ValueError(
@@ -751,7 +751,7 @@ def proceed_with_passing(task_id: str, state_machine: TaskStateMachine, user: st
 
     if warn_items:
         raise ValueError(
-            f"{len(warn_items)} item(s) still in WARN_PC1. Resolve every warning "
+            f"{len(warn_items)} item(s) still in {Status.WARN_PC1}. Resolve every warning "
             f"(fix the item or manually pass it) before advancing to Identity."
         )
 
@@ -777,7 +777,7 @@ def proceed_with_passing(task_id: str, state_machine: TaskStateMachine, user: st
         Phase.IDENTITY,
         changed_by=user,
         notes=(
-            f"PC1 passed, advancing to Identity (split {len(error_items)} ERROR_PC1 "
+            f"PC1 passed, advancing to Identity (split {len(error_items)} {Status.ERROR_PC1} "
             f"item(s) into sub-task {sub_task_id})"
             if sub_task_id
             else "PC1 passed, advancing to Identity"
@@ -814,11 +814,11 @@ def manually_pass_item(task_id: str, item_id: int, user: str) -> dict:
             break
     if not item:
         raise ValueError(f"Item {item_id} not found in task {task_id}")
-    if item.status != "WARN_PC1":
-        raise ValueError(f"Item {item_id} is not in WARN_PC1 status (current: {item.status})")
+    if item.status != Status.WARN_PC1:
+        raise ValueError(f"Item {item_id} is not in {Status.WARN_PC1} status (current: {item.status})")
 
     # Mark item as passed
-    task_repo.update_item_status(item_id, "PASSED_PC1")
+    task_repo.update_item_status(item_id, Status.PASSED_PC1)
 
     # Resolve all unresolved warnings for this item
     errors = task_repo.get_precheck_errors(task_id, phase="PC1", resolved=False)
@@ -826,7 +826,7 @@ def manually_pass_item(task_id: str, item_id: int, user: str) -> dict:
         if e.item_id == item_id:
             task_repo.resolve_precheck_error(e.error_id, resolved_by=user)
 
-    return {"item_id": item_id, "new_status": "PASSED_PC1", "approved_by": user}
+    return {"item_id": item_id, "new_status": Status.PASSED_PC1, "approved_by": user}
 
 
 def update_item_fields(task_id: str, item_id: int, fields: dict) -> dict:
@@ -835,7 +835,7 @@ def update_item_fields(task_id: str, item_id: int, fields: dict) -> dict:
     Allowed fields: mfg_catalog_num, vendor_catalog_num, description, uom, qoe, unit_price.
     """
     ALLOWED_FIELDS = {"mfg_catalog_num", "vendor_catalog_num", "description", "uom", "qoe", "unit_price"}
-    EDITABLE_STATUSES = {"ERROR_PC1", "WARN_PC1"}
+    EDITABLE_STATUSES = {Status.ERROR_PC1, Status.WARN_PC1}
     filtered = {k: v for k, v in fields.items() if k in ALLOWED_FIELDS}
     if not filtered:
         raise ValueError("No valid fields to update")

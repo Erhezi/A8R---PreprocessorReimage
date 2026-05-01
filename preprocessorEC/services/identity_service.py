@@ -25,7 +25,7 @@ def copy_descriptions_from_input(task_id: str, state_machine: TaskStateMachine) 
 
     Future: integrate with Nuvia, LLM, or manual cleanse upload.
     """
-    items = task_repo.get_items(task_id, status="PASSED_PC1")
+    items = task_repo.get_items(task_id, status=Status.PASSED_PC1)
     updated = 0
     for item in items:
         std_desc = (item.description or "").strip().upper()
@@ -197,7 +197,7 @@ def run_precheck2(task_id: str, state_machine: TaskStateMachine) -> dict:
             "blocked": True,
         }
 
-    items = task_repo.get_items(task_id, status="PASSED_PC1")
+    items = task_repo.get_items(task_id, status=Status.PASSED_PC1)
     errors = []
     warnings = []
 
@@ -211,12 +211,12 @@ def run_precheck2(task_id: str, state_machine: TaskStateMachine) -> dict:
                 "error_detail": "Standardized description is required",
             })
             task_repo.add_precheck_error(task_id, item.item_id, "PC2", "NULL_STD_DESCRIPTION", "Standardized description is required")
-            task_repo.update_item_status(item.item_id, "ERROR_PC2")
+            task_repo.update_item_status(item.item_id, Status.ERROR_PC2)
             continue
 
         # Ensure upper case
         task_repo.update_items_bulk([item.item_id], standardized_description=std_desc)
-        task_repo.update_item_status(item.item_id, "PASSED_PC2")
+        task_repo.update_item_status(item.item_id, Status.PASSED_PC2)
 
     passed_count = len(items) - len(errors)
 

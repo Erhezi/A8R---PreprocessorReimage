@@ -1140,7 +1140,9 @@ def run_buy_uom_check(task_id: str, state_machine: TaskStateMachine) -> dict:
         task_repo.update_item_matches_bulk(candidate_updates)
 
     state["buy_uom_check_done"] = True
+    state["status"] = Status.PENDING_FINALIZATION
     state_machine.save_state(task_id, state)
+    task_repo.update_task_phase(task_id, Phase.PREPROCESS, Status.PENDING_FINALIZATION)
     return {
         "checked": len(input_items),
         "matched_items": len(candidate_rows),
@@ -1411,7 +1413,7 @@ def resolve_buy_uom_note(task_id: str, issue_id: int, decided_by: str) -> dict:
     task_repo.update_items_bulk([{"item_id": issue.item_id, "status": Status.BUY_UOM_WARN}])
     task_repo.resolve_preprocess_issue(
         issue_id=issue_id,
-        resolution_action="NOTE",
+        resolution_action="NOTED",
         resolved_by=decided_by,
     )
     # Persist the demoted severity on the (now resolved) row for clearer audit.

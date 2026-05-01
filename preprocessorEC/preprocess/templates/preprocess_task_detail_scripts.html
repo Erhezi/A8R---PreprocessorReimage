@@ -11,7 +11,7 @@ function preprocessStatusBadge(status) {
 function renderItemsTable() {
   const body = document.getElementById("itemsBody");
   if (!currentItems.length) {
-    body.innerHTML = '<tr><td colspan="11" class="text-center text-muted">No items yet</td></tr>';
+    body.innerHTML = '<tr><td colspan="12" class="text-center text-muted">No items yet</td></tr>';
     return;
   }
 
@@ -29,7 +29,7 @@ function renderItemsTable() {
   }
 
   if (!visible.length) {
-    body.innerHTML = '<tr><td colspan="11" class="text-center text-muted">No matching items</td></tr>';
+    body.innerHTML = '<tr><td colspan="12" class="text-center text-muted">No matching items</td></tr>';
   } else {
     const openIssuesByItem = new Map();
     currentIssues.forEach(issue => {
@@ -55,6 +55,7 @@ function renderItemsTable() {
           <td>${item.uom || "—"}</td>
           <td>${item.uom_to_match_infor || "—"}</td>
           <td>${item.qoe != null ? item.qoe : "—"}</td>
+          <td>${item.unit_price != null ? item.unit_price : "—"}</td>
           <td>${item.infor_item_number || "—"}</td>
           <td class="text-truncate" style="max-width:200px" title="${(item.infor_buy_uom_options || '').replace(/"/g, '&quot;')}">${item.infor_buy_uom_options || "—"}</td>
           <td>${preprocessStatusBadge(item.status)}</td>
@@ -131,7 +132,7 @@ function actionsForIssue(issue, item) {
     }
     return [
       `<button class="btn btn-sm btn-outline-primary py-0 px-1 me-1" onclick="event.stopPropagation();openEditBuyUomModal(${issue.issue_id})" title="Edit input UOM and QOE"><i class="bi bi-pencil-square"></i> Edit</button>`,
-      `<button class="btn btn-sm btn-outline-warning py-0 px-1" onclick="event.stopPropagation();noteBuyUom(${issue.issue_id})" title="Demote to warning, carry forward">Note</button>`,
+      `<button class="btn btn-sm btn-outline-warning py-0 px-1" onclick="event.stopPropagation();noteBuyUom(${issue.issue_id})" title="Demote to warning, carry forward">Noted</button>`,
     ].join("");
   }
   if (issue.issue_type === "DUPLICATE_ITEM_ERROR") {
@@ -146,7 +147,17 @@ function actionsForIssue(issue, item) {
 function renderIssueRow(issue) {
   const item = currentItems.find(it => it.item_id === issue.item_id) || {};
   const rowLabel = item.file_row || `#${issue.item_id}`;
-  const focusAttr = ` style="cursor:pointer" title="Click to focus and view accepted matches" onclick="focusItemAndShowMatches(${issue.item_id})"`;
+  let focusAttr;
+  if (issue.issue_type === "DUPLICATE_ITEM_ERROR") {
+    const detail = parseIssueDetail(issue);
+    const partnerIds = (detail.partners || [])
+      .map(p => p.item_id)
+      .filter(id => id !== null && id !== undefined);
+    const focusIds = [issue.item_id, ...partnerIds];
+    focusAttr = ` style="cursor:pointer" title="Click to focus all duplicate-group rows" onclick="focusItems([${focusIds.join(",")}])"`;
+  } else {
+    focusAttr = ` style="cursor:pointer" title="Click to focus and view accepted matches" onclick="focusItemAndShowMatches(${issue.item_id})"`;
+  }
   return `
     <tr${focusAttr}>
       <td>${rowLabel}</td>
@@ -370,5 +381,8 @@ async function loadPreprocessIssues() {
   }
   renderPreprocessIssues();
   renderItemsTable();
+  if (typeof currentTask !== "undefined" && currentTask) {
+    renderTaskActions(currentTask, []);
+  }
 }
 </script>

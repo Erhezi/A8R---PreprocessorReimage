@@ -217,8 +217,9 @@ Phase 3 -- Preprocess Core (Find Dups, Find Item Number, Remove False Positive M
   - when advance to phase 4, we will only take the ACCEPTED matched results
 
 Phase 4 -- Dedup & Data Integrity Resolution
-  - 
   -  Duplication Resolution
+     - we will first use header level information to determine if each pairt of matched contract has to be kept or we can apply deduplication logic
+       - 
   -  Integratity Validation
 
 Phase 5 -- Export

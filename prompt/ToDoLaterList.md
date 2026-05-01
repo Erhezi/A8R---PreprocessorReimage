@@ -58,3 +58,6 @@ on data model, for preprocessor.CCXInforSyncedContractHeader, I think we should 
   - if task is split, the child task will inherit the header information and spun as a new task
   - deletion of child task is not allowed, deletion need to be done on the parent task, then cascade to child task.
   - split task will not be allowed to re-upload items, only the error items in original scopes will be allowed to be deleted or edited.
+
+- preprocess item status with warning:
+  - if user choose to 'Noted' the issue, the WARN status will only lives on the issue table, the TaskItem table will have it marked just as 'ITEM_PREPROCESSED'

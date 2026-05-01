@@ -157,10 +157,17 @@ function renderTaskActions(task, issues) {
   }
   if (task.phase === "PREPROCESS") {
     const preprocessStatus = String(task.status || "").toUpperCase();
-    const preprocessLabel = ["BUY_UOM_CHECKING", "ON_HOLD_PREPROCESS", "PREPROCESSED"].includes(preprocessStatus)
-      ? "Re-Preprocess"
-      : "Preprocess";
-    buttons += `<a href="${PREFIX}/preprocess/${TASK_ID}" class="btn btn-sm btn-outline-primary d-block mb-1">${preprocessLabel}</a>`;
+    const isReRun = ["BUY_UOM_CHECKING", "PENDING_FINALIZATION", "ON_HOLD_PREPROCESS", "PREPROCESSED"].includes(preprocessStatus);
+    const preprocessLabel = isReRun ? "Re-Preprocess" : "Preprocess";
+    const dupBlocked = isReRun
+      && typeof currentIssues !== "undefined"
+      && currentIssues.some(i => !i.resolved && i.issue_type === "DUPLICATE_ITEM_ERROR");
+    if (dupBlocked) {
+      buttons += `<button type="button" class="btn btn-sm btn-outline-secondary d-block mb-1" disabled title="Resolve all duplicate item errors before re-preprocessing">${preprocessLabel}</button>`;
+      buttons += `<div class="small text-danger mb-1"><i class="bi bi-exclamation-triangle-fill me-1"></i>Resolve all duplicate item errors before re-preprocessing or advancing.</div>`;
+    } else {
+      buttons += `<a href="${PREFIX}/preprocess/${TASK_ID}" class="btn btn-sm btn-outline-primary d-block mb-1">${preprocessLabel}</a>`;
+    }
   }
   if (task.phase === "DEDUP") {
     buttons += `<a href="${PREFIX}/dedup/${TASK_ID}" class="btn btn-sm btn-outline-primary d-block mb-1">Dedup</a>`;
