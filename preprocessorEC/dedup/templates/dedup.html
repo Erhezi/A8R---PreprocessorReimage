@@ -25,22 +25,7 @@
   }
 
   .dedup-table-wrap {
-    max-height: 600px;
-    overflow-y: auto;
-  }
-
-  .dedup-table-wrap thead th {
-    position: sticky;
-    top: 0;
-    z-index: 1;
-    background: #f8f9fa;
-  }
-
-  .dedup-toolbar-counts {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.5rem;
-    flex-wrap: wrap;
+    overflow-x: auto;
   }
 
   .dedup-toolbar {
@@ -51,17 +36,100 @@
     flex-wrap: wrap;
   }
 
-  .dedup-toolbar-actions {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.5rem;
-    flex-wrap: wrap;
+  .dedup-group {
+    border: 1px solid #dee2e6;
+    border-radius: 0.5rem;
+    margin: 0.75rem 0;
+    overflow: hidden;
   }
 
-  .dedup-table-wrap .table td,
-  .dedup-table-wrap .table th {
+  .dedup-group-header {
+    background: #eef2ff;
+    padding: 0.55rem 0.85rem;
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    flex-wrap: wrap;
+    border-bottom: 1px solid #c7d2fe;
+  }
+
+  .dedup-group-header .dedup-group-title {
+    font-weight: 600;
+    color: #1e293b;
+  }
+
+  .dedup-group-header .badge {
+    font-weight: 500;
+  }
+
+  .dedup-group table {
+    margin-bottom: 0;
+    font-size: 0.83rem;
+  }
+
+  .dedup-group .table th {
+    background: #f8f9fa;
+    white-space: nowrap;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: #6b7280;
+  }
+
+  .dedup-group tr.input-row {
+    background: #fff7ed;
+  }
+
+  .dedup-group tr.matched-row {
+    background: #ffffff;
+  }
+
+  .dedup-group td.editable {
+    cursor: text;
+    background: #fefce8;
+    outline: 1px dashed #facc15;
+  }
+
+  .dedup-group td.locked {
+    color: #6b7280;
+    background: #f3f4f6;
+  }
+
+  .dedup-group td.modified {
+    background: #ecfdf5 !important;
+    outline: 1px solid #10b981;
+  }
+
+  .decision-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+  }
+
+  .decision-pill .btn {
+    padding: 0.1rem 0.55rem;
+    font-size: 0.72rem;
+    font-weight: 600;
+  }
+
+  .decision-pill .default-hint {
+    font-size: 0.7rem;
+    color: #6b7280;
+    margin-left: 0.35rem;
     white-space: nowrap;
   }
+
+  .lock-icon {
+    color: #9ca3af;
+    margin-right: 0.25rem;
+    font-size: 0.85rem;
+  }
+
+  .group-badge-SS    { background: #4338ca; }
+  .group-badge-DV    { background: #db2777; }
+  .group-badge-ODO   { background: #0ea5e9; }
+  .group-badge-TCCD  { background: #ea580c; }
+  .group-badge-CECCD { background: #7c3aed; }
 </style>
 {% endblock %}
 
@@ -69,7 +137,7 @@
 <div class="container-fluid mt-3" id="dedupPageRoot" data-task-id="{{ task_id }}" data-url-prefix="{{ url_prefix }}">
   <a href="{{ url_prefix }}/tasks/{{ task_id }}" class="text-decoration-none">&larr; Task #{{ task_id }}</a>
   <h4 class="mt-1">Phase 4: Dedup Review</h4>
-  <p class="text-muted mb-3">Review accepted CCX matches only and assign bulk dedup decisions.</p>
+  <p class="text-muted mb-3">Decide keep/drop on each input item and its matched contract lines. Premier rows are read-only; LOCAL rows allow inline edits to MFN, VPN, UOM, QOE, and Description.</p>
 
   <div class="card mb-3">
     <div class="card-header">Current Task</div>
@@ -80,12 +148,8 @@
           <div class="dedup-meta-value">{{ task.contract_number or '—' }}</div>
         </div>
         <div>
-          <div class="dedup-meta-label">Task Phase</div>
-          <div class="dedup-meta-value">{{ task.phase or '—' }}</div>
-        </div>
-        <div>
-          <div class="dedup-meta-label">Task Status</div>
-          <div class="dedup-meta-value">{{ task.status or '—' }}</div>
+          <div class="dedup-meta-label">Intention</div>
+          <div class="dedup-meta-value">{{ task.intention or '—' }}</div>
         </div>
         <div>
           <div class="dedup-meta-label">Type</div>
@@ -99,6 +163,10 @@
           <div class="dedup-meta-label">Vendor</div>
           <div class="dedup-meta-value">{{ ((task.vendor_id or '—') ~ ' - ' ~ (task.erp_vendor_name or '—')) if (task.vendor_id or task.erp_vendor_name) else '—' }}</div>
         </div>
+        <div>
+          <div class="dedup-meta-label">Phase / Status</div>
+          <div class="dedup-meta-value">{{ (task.phase or '—') ~ ' / ' ~ (task.status or '—') }}</div>
+        </div>
       </div>
     </div>
   </div>
@@ -107,45 +175,17 @@
     <div class="card-header dedup-toolbar">
       <div>
         <strong>Accepted CCX Match Results</strong>
-        <div class="text-muted small">Rejected rows and INFOR_CL rows are excluded from this review.</div>
+        <div class="text-muted small">Grouped by input item. INFOR_CL rows are excluded from this review (kept in the workspace for integrity checks).</div>
       </div>
-      <div class="dedup-toolbar-actions">
-        <button class="btn btn-sm btn-outline-success" id="btnDecisionUpload" disabled>Upload</button>
-        <button class="btn btn-sm btn-outline-danger" id="btnDecisionExpire" disabled>Expire</button>
-        <button class="btn btn-sm btn-outline-secondary" id="btnDecisionKeep" disabled>Keep As Is</button>
+      <div>
+        <span id="dedupCountBadge" class="small text-muted me-3">0 groups · 0 rows</span>
+        <button class="btn btn-sm btn-outline-secondary" id="btnReset">Reset to defaults</button>
       </div>
     </div>
-    <div class="card-body p-0">
-      <div id="dedupAlert" class="alert alert-danger rounded-0 border-0 border-bottom mb-0 d-none"></div>
-      <div class="d-flex justify-content-between align-items-center px-3 py-2 border-bottom bg-light">
-        <div class="dedup-toolbar-counts">
-          <span id="dedupCountBadge" class="small text-muted">0 matches</span>
-          <span id="dedupSelectedBadge" class="small text-muted">0 selected</span>
-        </div>
-      </div>
-      <div class="dedup-table-wrap table-responsive">
-        <table class="table table-sm table-hover mb-0">
-          <thead class="table-light">
-            <tr>
-              <th><input type="checkbox" id="toggleAllRows"></th>
-              <th>Input ID</th><th>Input MFN</th><th>Matched MFN</th>
-              <th>Input VPN</th><th>Matched VPN</th>
-              <th>Input UOM</th><th>Matched UOM</th><th>Input QOE</th><th>Matched QOE</th>
-              <th>Input Price</th><th>Matched Price</th>
-              <th>Input EA Price</th><th>Matched EA Price</th>
-              <th>Bucket</th>
-              <th>Score</th>
-              <th>Status</th>
-              <th>Source</th>
-              <th>Input Desc.</th><th>Matched Desc.</th><th>Contract</th><th>Organization</th><th>Match Type</th><th>Pair Type</th>
-            </tr>
-          </thead>
-          <tbody id="dedupTableBody">
-            <tr>
-              <td colspan="24" class="text-center text-muted py-4">Loading accepted CCX rows...</td>
-            </tr>
-          </tbody>
-        </table>
+    <div class="card-body p-3">
+      <div id="dedupAlert" class="alert alert-danger d-none"></div>
+      <div id="dedupGroups">
+        <div class="text-center text-muted py-4">Loading dedup workspace...</div>
       </div>
     </div>
   </div>
@@ -156,104 +196,38 @@ const dedupPageRoot = document.getElementById("dedupPageRoot");
 const TASK_ID = dedupPageRoot.dataset.taskId || "";
 const PREFIX = dedupPageRoot.dataset.urlPrefix || "";
 
+// Public field name -> {column on input row, column on matched row}.
+// Mirrors the server allowlist in services/dedup_service.py.
+const EDITABLE_FIELDS = {
+  manufacturer_number: { input: "manufacturer_number_input", matched: "manufacturer_number_matched" },
+  vendor_item:         { input: "vendor_item_input",         matched: "vendor_item_matched" },
+  uom:                 { input: "uom_input",                 matched: "uom_matched" },
+  qoe:                 { input: "qoe_input",                 matched: "qoe_matched" },
+  item_description:    { input: "item_description_input",    matched: "item_desc_matched" },
+};
+
 let dedupRows = [];
-let selectedMatchIds = new Set();
+let groupsByInput = new Map();
 
 function escapeHtml(value) {
   return String(value ?? "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/\"/g, "&quot;")
+    .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
 }
 
-function percent(value) {
-  return value != null ? `${Number(value).toFixed(1)}%` : "-";
+function fmtCurrency(value) {
+  return value != null ? `$${Number(value).toFixed(2)}` : "—";
 }
 
-function currency(value) {
-  return value != null ? `$${Number(value).toFixed(2)}` : "-";
-}
-
-function currencyTitle(value) {
-  return value != null ? `$${Number(value).toFixed(4)}` : "";
+function fmtPct(value) {
+  return value != null ? `${Number(value).toFixed(1)}%` : "—";
 }
 
 function bucketColor(bucket) {
   return bucket === "HIGH" ? "success" : bucket === "MED" ? "warning" : "secondary";
-}
-
-function statusColor(status) {
-  if (status === "ACCEPTED") {
-    return "success";
-  }
-  if (status === "REJECTED") {
-    return "danger";
-  }
-  return "warning";
-}
-
-function updateToolbarState() {
-  const selectedCount = selectedMatchIds.size;
-  document.getElementById("dedupCountBadge").textContent = `${dedupRows.length} matches`;
-  document.getElementById("dedupSelectedBadge").textContent = `${selectedCount} selected`;
-  document.getElementById("btnDecisionUpload").disabled = selectedCount === 0;
-  document.getElementById("btnDecisionExpire").disabled = selectedCount === 0;
-  document.getElementById("btnDecisionKeep").disabled = selectedCount === 0;
-  document.getElementById("toggleAllRows").checked = dedupRows.length > 0 && selectedCount === dedupRows.length;
-}
-
-function renderRows() {
-  const body = document.getElementById("dedupTableBody");
-  if (!dedupRows.length) {
-    body.innerHTML = '<tr><td colspan="24" class="text-center text-muted py-4">No accepted CCX rows found for dedup review.</td></tr>';
-    updateToolbarState();
-    return;
-  }
-
-  body.innerHTML = dedupRows.map((row) => `
-    <tr>
-      <td><input type="checkbox" class="dedup-row-checkbox" value="${row.match_id}" ${selectedMatchIds.has(row.match_id) ? "checked" : ""}></td>
-      <td>${escapeHtml(row.input_item_id ?? "-")}</td>
-      <td class="text-truncate" style="max-width:120px" title="${escapeHtml(row.input_mfg_catalog_num || "")}">${escapeHtml(row.input_mfg_catalog_num || "-")}</td>
-      <td class="text-truncate" style="max-width:120px" title="${escapeHtml(row.manufacturer_number_matched || "")}">${escapeHtml(row.manufacturer_number_matched || "-")}</td>
-      <td class="text-truncate" style="max-width:120px" title="${escapeHtml(row.input_vendor_catalog_num || "")}">${escapeHtml(row.input_vendor_catalog_num || "-")}</td>
-      <td class="text-truncate" style="max-width:120px" title="${escapeHtml(row.vendor_item_matched || "")}">${escapeHtml(row.vendor_item_matched || "-")}</td>
-      <td>${escapeHtml(row.input_uom || "-")}</td>
-      <td>${escapeHtml(row.uom_matched || "-")}</td>
-      <td>${escapeHtml(row.input_qoe ?? "-")}</td>
-      <td>${escapeHtml(row.qoe_matched ?? "-")}</td>
-      <td title="${currencyTitle(row.input_unit_price)}">${currency(row.input_unit_price)}</td>
-      <td title="${currencyTitle(row.contract_price_matched)}">${currency(row.contract_price_matched)}</td>
-      <td title="${currencyTitle(row.input_ea_price)}">${currency(row.input_ea_price)}</td>
-      <td title="${currencyTitle(row.match_ea_price)}">${currency(row.match_ea_price)}</td>
-      <td><span class="badge bg-${bucketColor(row.similarity_bucket)}">${escapeHtml(row.similarity_bucket || "-")}</span></td>
-      <td>${percent(row.similarity_score)}</td>
-      <td><span class="badge bg-${statusColor(row.match_status)}">${escapeHtml(row.match_status || "-")}</span></td>
-      <td><span class="badge bg-info">${escapeHtml(row.matched_source || "-")}</span></td>
-      <td class="text-truncate" style="max-width:220px" title="${escapeHtml(row.input_description || "")}">${escapeHtml(row.input_description || "-")}</td>
-      <td class="text-truncate" style="max-width:220px" title="${escapeHtml(row.item_desc_matched || "")}">${escapeHtml(row.item_desc_matched || "-")}</td>
-      <td class="text-truncate" style="max-width:160px" title="${escapeHtml(row.contract_number || "")}">${escapeHtml(row.contract_number || "-")}</td>
-      <td class="text-truncate" style="max-width:180px" title="${escapeHtml(row.organization_matched || "")}">${escapeHtml(row.organization_matched || "-")}</td>
-      <td>${escapeHtml(row.match_type || "-")}</td>
-      <td>${escapeHtml(row.pair_type || "-")}</td>
-    </tr>
-  `).join("");
-
-  document.querySelectorAll(".dedup-row-checkbox").forEach((checkbox) => {
-    checkbox.addEventListener("change", (event) => {
-      const matchId = Number(event.target.value);
-      if (event.target.checked) {
-        selectedMatchIds.add(matchId);
-      } else {
-        selectedMatchIds.delete(matchId);
-      }
-      updateToolbarState();
-    });
-  });
-
-  updateToolbarState();
 }
 
 function setAlert(message) {
@@ -267,52 +241,284 @@ function setAlert(message) {
   alert.classList.remove("d-none");
 }
 
-async function loadRows() {
-  setAlert("");
-  const response = await fetch(`${PREFIX}/api/dedup/${TASK_ID}/matches`);
-  if (!response.ok) {
-    document.getElementById("dedupTableBody").innerHTML = '<tr><td colspan="24" class="text-center text-danger py-4">Unable to load dedup rows.</td></tr>';
-    updateToolbarState();
-    return;
-  }
-  dedupRows = await response.json();
-  selectedMatchIds = new Set([...selectedMatchIds].filter((id) => dedupRows.some((row) => row.match_id === id)));
-  renderRows();
+function isLocal(sourceType) {
+  return (sourceType || "").trim().toUpperCase() === "LOCAL";
 }
 
-async function applyDecision(decision) {
-  const matchIds = [...selectedMatchIds];
-  if (!matchIds.length) {
+function decisionPillHtml(side, current, fallbackDefault, attrs) {
+  const dec = (current || "").toLowerCase();
+  const def = (fallbackDefault || "").toLowerCase();
+  const keepCls = dec === "keep" ? "btn-success" : "btn-outline-success";
+  const dropCls = dec === "drop" ? "btn-danger" : "btn-outline-danger";
+  return `
+    <div class="decision-pill" ${attrs}>
+      <button type="button" class="btn ${keepCls}" data-decision="keep">Keep</button>
+      <button type="button" class="btn ${dropCls}" data-decision="drop">Drop</button>
+      <span class="default-hint">default: ${def || "—"}</span>
+    </div>
+  `;
+}
+
+function editableCell(value, side, field, sourceType, modified) {
+  const local = isLocal(sourceType);
+  const display = (value === null || value === undefined || value === "") ? "—" : value;
+  if (!local) {
+    return `<td class="locked"><span class="lock-icon">🔒</span>${escapeHtml(display)}</td>`;
+  }
+  const cls = "editable" + (modified ? " modified" : "");
+  return `
+    <td class="${cls}"
+        contenteditable="true"
+        data-side="${side}"
+        data-field="${field}"
+        data-original="${escapeHtml(value ?? "")}"
+        title="Click to edit · Tab/blur to save">${escapeHtml(display)}</td>
+  `;
+}
+
+function isFieldModified(row, side, field) {
+  const log = parseEditsLog(row.edits);
+  return log.some((entry) => entry.side === side && entry.field === field);
+}
+
+function parseEditsLog(raw) {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_e) {
+    return [];
+  }
+}
+
+function renderInputRow(group) {
+  const sample = group.rows[0];
+  const sourceType = sample.input_contract_source_type;
+  const decision = sample.input_decision;
+  const def = sample.default_action_input;
+  return `
+    <tr class="input-row" data-input-item-id="${sample.input_item_id}">
+      <td><span class="badge bg-warning text-dark">INPUT</span></td>
+      <td>${escapeHtml(sample.input_contract_source_type || "—")}</td>
+      <td>${escapeHtml(sample.contract_id_input || "—")}</td>
+      <td>${escapeHtml(sample.erp_vendor_id_input || "—")}</td>
+      <td>${escapeHtml(sample.organization_input || "—")}</td>
+      ${editableCell(sample.manufacturer_number_input, "input", "manufacturer_number", sourceType, isFieldModified(sample, "input", "manufacturer_number"))}
+      ${editableCell(sample.vendor_item_input, "input", "vendor_item", sourceType, isFieldModified(sample, "input", "vendor_item"))}
+      ${editableCell(sample.uom_input, "input", "uom", sourceType, isFieldModified(sample, "input", "uom"))}
+      ${editableCell(sample.qoe_input, "input", "qoe", sourceType, isFieldModified(sample, "input", "qoe"))}
+      <td>${fmtCurrency(sample.contract_price_input)}</td>
+      <td>${fmtCurrency(sample.ea_price_input)}</td>
+      ${editableCell(sample.item_description_input, "input", "item_description", sourceType, isFieldModified(sample, "input", "item_description"))}
+      <td>—</td>
+      <td>${decisionPillHtml("input", decision, def, `data-side="input" data-input-item-id="${sample.input_item_id}"`)}</td>
+    </tr>
+  `;
+}
+
+function renderMatchedRow(row) {
+  const sourceType = row.matched_contract_source_type;
+  const def = row.default_action_matched;
+  const groupBadge = row.resolution_grouping
+    ? `<span class="badge group-badge-${row.resolution_grouping}">${row.resolution_grouping}</span>`
+    : "";
+  const sim = row.similarity_bucket
+    ? `<span class="badge bg-${bucketColor(row.similarity_bucket)}">${row.similarity_bucket}</span> ${fmtPct(row.similarity_score)}`
+    : "—";
+  return `
+    <tr class="matched-row" data-dedup-id="${row.dedup_id}" data-match-id="${row.match_id}">
+      <td>${groupBadge}</td>
+      <td>${escapeHtml(row.matched_contract_source_type || "—")}</td>
+      <td>${escapeHtml(row.contract_id_matched || "—")}</td>
+      <td>${escapeHtml(row.erp_vendor_id_matched || "—")}</td>
+      <td>${escapeHtml(row.organization_matched || "—")}</td>
+      ${editableCell(row.manufacturer_number_matched, "matched", "manufacturer_number", sourceType, isFieldModified(row, "matched", "manufacturer_number"))}
+      ${editableCell(row.vendor_item_matched, "matched", "vendor_item", sourceType, isFieldModified(row, "matched", "vendor_item"))}
+      ${editableCell(row.uom_matched, "matched", "uom", sourceType, isFieldModified(row, "matched", "uom"))}
+      ${editableCell(row.qoe_matched, "matched", "qoe", sourceType, isFieldModified(row, "matched", "qoe"))}
+      <td>${fmtCurrency(row.contract_price_matched)}</td>
+      <td>${fmtCurrency(row.ea_price_matched)}</td>
+      ${editableCell(row.item_desc_matched, "matched", "item_description", sourceType, isFieldModified(row, "matched", "item_description"))}
+      <td>${sim}</td>
+      <td>${decisionPillHtml("matched", row.matched_decision, def, `data-side="matched" data-dedup-id="${row.dedup_id}"`)}</td>
+    </tr>
+  `;
+}
+
+function renderGroups() {
+  const container = document.getElementById("dedupGroups");
+  if (!groupsByInput.size) {
+    container.innerHTML = `<div class="text-center text-muted py-4">No accepted CCX rows in the dedup workspace.</div>`;
+    document.getElementById("dedupCountBadge").textContent = "0 groups · 0 rows";
     return;
   }
 
-  const response = await fetch(`${PREFIX}/api/dedup/${TASK_ID}/decisions`, {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({match_ids: matchIds, decision})
+  const html = [];
+  for (const [, group] of groupsByInput) {
+    const sample = group.rows[0];
+    const headerBits = [
+      `<span class="dedup-group-title">Input Item #${escapeHtml(sample.input_item_id)}</span>`,
+      `<span class="badge bg-secondary">${escapeHtml(sample.task_intention || "—")}</span>`,
+      `<span class="text-muted small">${group.rows.length} match${group.rows.length === 1 ? "" : "es"}</span>`,
+    ];
+    html.push(`
+      <div class="dedup-group" data-input-item-id="${sample.input_item_id}">
+        <div class="dedup-group-header">
+          ${headerBits.join("")}
+        </div>
+        <div class="dedup-table-wrap">
+          <table class="table table-sm align-middle">
+            <thead>
+              <tr>
+                <th>Side</th><th>Source</th><th>Contract</th><th>ERP Vendor</th><th>Org</th>
+                <th>MFN</th><th>VPN</th><th>UOM</th><th>QOE</th>
+                <th>Price</th><th>EA Price</th>
+                <th>Description</th>
+                <th>Similarity</th>
+                <th>Decision</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${renderInputRow(group)}
+              ${group.rows.map(renderMatchedRow).join("")}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `);
+  }
+  container.innerHTML = html.join("");
+
+  document.getElementById("dedupCountBadge").textContent =
+    `${groupsByInput.size} group${groupsByInput.size === 1 ? "" : "s"} · ${dedupRows.length} row${dedupRows.length === 1 ? "" : "s"}`;
+
+  attachHandlers();
+}
+
+function attachHandlers() {
+  document.querySelectorAll(".decision-pill button").forEach((btn) => {
+    btn.addEventListener("click", onDecisionClick);
   });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    setAlert(payload.error || "Unable to save dedup decision.");
-    return;
-  }
-
-  selectedMatchIds = new Set();
-  await loadRows();
+  document.querySelectorAll("td.editable").forEach((cell) => {
+    cell.addEventListener("blur", onCellBlur);
+    cell.addEventListener("keydown", onCellKeydown);
+  });
 }
 
-document.getElementById("toggleAllRows").addEventListener("change", (event) => {
-  if (event.target.checked) {
-    selectedMatchIds = new Set(dedupRows.map((row) => row.match_id));
-  } else {
-    selectedMatchIds = new Set();
+async function postJson(url, body) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body || {}),
+  });
+  let payload = {};
+  try { payload = await response.json(); } catch (_e) { /* empty */ }
+  if (!response.ok) {
+    throw new Error(payload.error || `Request failed (${response.status})`);
   }
-  renderRows();
+  return payload;
+}
+
+async function onDecisionClick(event) {
+  setAlert("");
+  const btn = event.currentTarget;
+  const pill = btn.closest(".decision-pill");
+  const side = pill.dataset.side;
+  const decision = btn.dataset.decision;
+
+  const body = { side, decision };
+  if (side === "input") {
+    body.input_item_id = Number(pill.dataset.inputItemId);
+  } else {
+    body.dedup_id = Number(pill.dataset.dedupId);
+  }
+
+  try {
+    await postJson(`${PREFIX}/api/dedup/${TASK_ID}/decision`, body);
+    await loadRows();
+  } catch (e) {
+    setAlert(e.message);
+  }
+}
+
+async function onCellBlur(event) {
+  setAlert("");
+  const cell = event.currentTarget;
+  const original = cell.dataset.original ?? "";
+  const newRaw = cell.innerText.trim();
+  if (newRaw === original) return;
+
+  const dedupRow = cell.closest("tr");
+  const side = cell.dataset.side;
+  const field = cell.dataset.field;
+
+  // For input cells the dedup_id can be any row in the group — server
+  // resolves the input_item_id and bulk-applies the edit.
+  const group = dedupRow.closest(".dedup-group");
+  const anyMatchedRow = group.querySelector("tr.matched-row");
+  const dedupId = side === "input"
+    ? Number(anyMatchedRow.dataset.dedupId)
+    : Number(dedupRow.dataset.dedupId);
+
+  try {
+    await postJson(`${PREFIX}/api/dedup/${TASK_ID}/edit`, {
+      dedup_id: dedupId,
+      side,
+      field,
+      value: newRaw,
+    });
+    await loadRows();
+  } catch (e) {
+    setAlert(e.message);
+    cell.innerText = original;
+  }
+}
+
+function onCellKeydown(event) {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    event.currentTarget.blur();
+  } else if (event.key === "Escape") {
+    event.preventDefault();
+    event.currentTarget.innerText = event.currentTarget.dataset.original ?? "";
+    event.currentTarget.blur();
+  }
+}
+
+document.getElementById("btnReset").addEventListener("click", async () => {
+  if (!confirm("Reset every decision and edit on this task and re-derive defaults? This cannot be undone.")) {
+    return;
+  }
+  setAlert("");
+  try {
+    await postJson(`${PREFIX}/api/dedup/${TASK_ID}/reset`, {});
+    await loadRows();
+  } catch (e) {
+    setAlert(e.message);
+  }
 });
 
-document.getElementById("btnDecisionUpload").addEventListener("click", () => applyDecision("UPLOAD"));
-document.getElementById("btnDecisionExpire").addEventListener("click", () => applyDecision("EXPIRE"));
-document.getElementById("btnDecisionKeep").addEventListener("click", () => applyDecision("KEEP_AS_IS"));
+async function loadRows() {
+  setAlert("");
+  try {
+    const response = await fetch(`${PREFIX}/api/dedup/${TASK_ID}/matches`);
+    if (!response.ok) {
+      throw new Error("Unable to load dedup workspace.");
+    }
+    dedupRows = await response.json();
+  } catch (e) {
+    setAlert(e.message);
+    dedupRows = [];
+  }
+
+  groupsByInput = new Map();
+  for (const row of dedupRows) {
+    const key = row.input_item_id;
+    if (!groupsByInput.has(key)) groupsByInput.set(key, { rows: [] });
+    groupsByInput.get(key).rows.push(row);
+  }
+  renderGroups();
+}
 
 loadRows();
 </script>

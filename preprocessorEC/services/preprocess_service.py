@@ -1791,6 +1791,17 @@ def _complete_preprocess_and_advance(
         changed_by=user,
         notes="Preprocess complete, advancing to Dedup",
     )
+
+    # Materialize the Phase 4 dedup workspace eagerly so the user lands on
+    # /dedup/<task_id> with rows already populated. The populator is
+    # idempotent; if rows exist (e.g. a re-advance after manual rollback)
+    # this is a no-op.
+    try:
+        from .dedup_workspace import populate_dedup_workspace
+        populate_dedup_workspace(task_id)
+    except Exception as exc:  # pragma: no cover — log and continue
+        logger.exception("Dedup workspace populate failed for task %s: %s", task_id, exc)
+
     return {"phase": new_state["phase"], "status": new_state["status"], "advanced": True}
 
 

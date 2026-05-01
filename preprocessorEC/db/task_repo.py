@@ -12,7 +12,16 @@ from typing import Optional
 from sqlalchemy import MetaData, Table, inspect, text
 from sqlalchemy.orm import Session
 
-from ..models import Task, TaskItem, PreCheckError, MatchResult, TaskStatusLog, ItemMatchCandidate, PreprocessIssue
+from ..models import (
+    Task,
+    TaskItem,
+    PreCheckError,
+    MatchResult,
+    TaskStatusLog,
+    ItemMatchCandidate,
+    PreprocessIssue,
+    TaskItemForDecision,
+)
 from ..state import Status
 from ..common.utils import ny_now
 from .engine import get_sqlserver_engine
@@ -621,82 +630,26 @@ def get_match_results(task_id: str, matched_source: Optional[str] = None) -> lis
         return results
 
 
-def get_dedup_candidates(task_id: str) -> list[dict]:
-    select_columns = [
-        "match_id",
-        "task_id",
-        "input_item_id",
-        "matched_source",
-        "matched_item_ref",
-        "similarity_score",
-        "similarity_bucket",
-        "match_status",
-        "reviewed_by",
-        "reviewed_at",
-        "llm_confidence",
-        "llm_reason",
-        "contract_number",
-        "match_type",
-        "ccx_pkid",
-        "ccx_pkids_matched",
-        "infor_pkids_matched",
-        "infor_pkid",
-        "contract_id_matched",
-        "organization_eid_matched",
-        "organization_matched",
-        "manufacturer_number_matched",
-        "uom_matched",
-        "erp_vendor_id_matched",
-        "vendor_item_matched",
-        "uom_to_match_infor_matched",
-        "qoe_matched",
-        "contract_price_matched",
-        "item_desc_matched",
-        "mfn_score",
-        "mfn_complexity",
-        "uom_score",
-        "qoe_score",
-        "price_score",
-        "price_diff_pct",
-        "desc_score",
-        "weighted_score",
-        "match_ea_price",
-        "input_ea_price",
-        "pair_type",
-        "vendor_item_score",
-        "created_at",
-    ]
-    available_columns = _get_match_result_columns()
-    if "uom_nuance" in available_columns:
-        select_columns.append("uom_nuance")
-    if match_result_has_dedup_columns():
-        select_columns.extend(["dedup_decision", "dedup_decided_by", "dedup_decided_at"])
+def get_dedup_candidates(task_id: str, *, source: Optional[str] = "CCX") -> list[dict]:
+    """Return Phase 4 dedup workspace rows for a task.
 
-    column_sql = ",\n                ".join(f"[{column}]" for column in select_columns)
-    stmt = text(
-        f"""
-        SELECT
-                {column_sql}
-        FROM [Preprocessor].[PreprocessorMatchResult]
-        WHERE [task_id] = :task_id
-          AND [matched_source] = 'CCX'
-          AND [match_status] = 'ACCEPTED'
-        ORDER BY [input_item_id] ASC, [match_id] ASC
-        """
-    )
-
+    Reads from PreprocessorTaskItemForDecision (the new workspace table).
+    By default filters to ``matched_source='CCX'`` because the dedup UI
+    only renders the CCX side; pass ``source=None`` to include INFOR_CL
+    rows (used by the integrity validator and IM-check pipeline).
+    """
     with _session() as s:
-        rows = s.execute(stmt, {"task_id": task_id}).mappings().all()
-        results = [dict(row) for row in rows]
-        if not match_result_has_dedup_columns():
-            for row in results:
-                row["dedup_decision"] = None
-                row["dedup_decided_by"] = None
-                row["dedup_decided_at"] = None
-        if "uom_nuance" not in available_columns:
-            for row in results:
-                row["uom_nuance"] = None
-        return results
+        query = s.query(TaskItemForDecision).filter(
+            TaskItemForDecision.task_id == task_id
+        )
+        if source:
+            query = query.filter(TaskItemForDecision.matched_source == source)
+        rows = query.order_by(
+            TaskItemForDecision.input_item_id.asc(),
+            TaskItemForDecision.dedup_sort.asc(),
+            TaskItemForDecision.dedup_id.asc(),
+        ).all()
+        return [row.to_dict() for row in rows]
 
 
 def get_match_results_by_contract(task_id: str) -> dict[str, list[MatchResult]]:
@@ -932,21 +885,25 @@ def update_match_input_ea_price(task_id: str, input_item_id: int, input_ea_price
 
 
 def update_dedup_decisions(match_ids: list[int], decision: str, decided_by: str) -> int:
+    """Stamp a bulk dedup decision on PreprocessorTaskItemForDecision.
+
+    Lookup is by ``match_id`` so existing UI payloads (which carry
+    MatchResult.match_id) keep working. Returns the number of workspace
+    rows updated.
+    """
     if not match_ids:
         return 0
-    if not match_result_has_dedup_columns():
-        raise ValueError("Dedup decision columns are not available yet. Apply migration 018_add_dedup_decision_to_match_result.sql first.")
 
     with _session() as s:
         now = ny_now()
         count = (
-            s.query(MatchResult)
-            .filter(MatchResult.match_id.in_(match_ids))
+            s.query(TaskItemForDecision)
+            .filter(TaskItemForDecision.match_id.in_(match_ids))
             .update(
                 {
-                    MatchResult.dedup_decision: decision,
-                    MatchResult.dedup_decided_by: decided_by,
-                    MatchResult.dedup_decided_at: now,
+                    TaskItemForDecision.dedup_decision: decision,
+                    TaskItemForDecision.dedup_decided_by: decided_by,
+                    TaskItemForDecision.dedup_decided_at: now,
                 },
                 synchronize_session=False,
             )

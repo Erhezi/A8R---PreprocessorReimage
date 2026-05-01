@@ -339,6 +339,8 @@ class MatchResult(Base):
     # 'Yes' when same-contract match has identical QOE but a different UOM
     # (UOM inconsistency for the same pack size). Cascaded from CCX to INFOR_CL.
     uom_nuance = Column(String(3), nullable=True)  # 'Yes' | 'No'
+    # Placeholder for LLM-side warning payloads (Phase 4 dedup workspace mirrors this).
+    llm_warning = Column(Text, nullable=True)
 
     created_at = Column(DateTime, default=ny_now)
 
@@ -391,7 +393,155 @@ class MatchResult(Base):
             "pair_type": self.pair_type,
             "vendor_item_score": self.vendor_item_score,
             "uom_nuance": self.uom_nuance,
+            "llm_warning": self.llm_warning,
             "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+
+# ---------------------------------------------------------------------------
+# TaskItemForDecision — Phase 4 dedup workspace. One row per ACCEPTED
+# match (CCX or INFOR_CL) carrying input + matched snapshots, contract
+# header source/process types, resolution-strategy classification,
+# default actions, and the user's keep/drop decision plus edit log.
+# ---------------------------------------------------------------------------
+class TaskItemForDecision(Base):
+    __tablename__ = "PreprocessorTaskItemForDecision"
+    __table_args__ = (
+        Index("ix_taskitemfordecision_task_id", "task_id"),
+        Index("ix_taskitemfordecision_task_input", "task_id", "input_item_id"),
+        {"schema": SCHEMA},
+    )
+
+    dedup_id = Column(Integer, primary_key=True, autoincrement=True)
+    match_id = Column(Integer, ForeignKey(f"{SCHEMA}.PreprocessorMatchResult.match_id"), nullable=False)
+    task_id = Column(String(4), ForeignKey(f"{SCHEMA}.PreprocessorTask.task_id"), nullable=False)
+    input_item_id = Column(Integer, ForeignKey(f"{SCHEMA}.PreprocessorTaskItem.item_id"), nullable=False)
+
+    # Carried from PreprocessorMatchResult
+    matched_source = Column(String(20), nullable=False)  # CCX | INFOR_CL
+    match_status = Column(String(20), nullable=False)
+    similarity_bucket = Column(String(10), nullable=True)
+    similarity_score = Column(Float, nullable=True)
+    contract_id_matched = Column(String(100), nullable=True)
+    erp_vendor_id_matched = Column(String(20), nullable=True)
+    organization_eid_matched = Column(String(10), nullable=True)
+    organization_matched = Column(String(100), nullable=True)
+    manufacturer_number_matched = Column(String(255), nullable=True)
+    vendor_item_matched = Column(String(255), nullable=True)
+    uom_matched = Column(String(10), nullable=True)
+    uom_to_match_infor_matched = Column(String(10), nullable=True)
+    qoe_matched = Column(Integer, nullable=True)
+    contract_price_matched = Column(Numeric(18, 4), nullable=True)
+    ea_price_matched = Column(Float, nullable=True)
+    item_desc_matched = Column(String(500), nullable=True)
+    infor_pkids_matched = Column(String(255), nullable=True)
+    infor_pkid = Column(String(31), nullable=True)
+    infor_item_matched = Column(String(20), nullable=True)
+    match_type = Column(String(20), nullable=True)
+    pair_type = Column(String(1), nullable=True)
+    llm_reason = Column(Text, nullable=True)
+    llm_warning = Column(Text, nullable=True)
+
+    # Carried from PreprocessorTask + PreprocessorTaskItem (input side)
+    task_intention = Column(String(10), nullable=True)
+    contract_id_input = Column(String(100), nullable=True)
+    erp_vendor_id_input = Column(String(20), nullable=True)
+    organization_eid_input = Column(String(10), nullable=True)
+    organization_input = Column(String(100), nullable=True)
+    manufacturer_number_input = Column(String(255), nullable=True)
+    vendor_item_input = Column(String(255), nullable=True)
+    uom_input = Column(String(50), nullable=True)
+    uom_to_match_infor_input = Column(String(10), nullable=True)
+    qoe_input = Column(Integer, nullable=True)
+    contract_price_input = Column(Numeric(18, 4), nullable=True)
+    ea_price_input = Column(Float, nullable=True)
+    item_description_input = Column(Text, nullable=True)
+    infor_item_number = Column(String(20), nullable=False, default="")
+
+    # Carried from CCXInforSyncedContractHeader (both sides)
+    matched_contract_source_type = Column(String(20), nullable=True)
+    matched_contract_process_type = Column(String(20), nullable=True)
+    input_contract_source_type = Column(String(20), nullable=True)
+    input_contract_process_type = Column(String(20), nullable=True)
+
+    # Decision/audit — per-side decisions are the source of truth for 4C+;
+    # dedup_decision is reserved for a finalize-stage composite/status.
+    input_decision = Column(String(10), nullable=True)    # keep | drop
+    matched_decision = Column(String(10), nullable=True)  # keep | drop
+    dedup_decision = Column(String(20), nullable=True)
+    dedup_decided_by = Column(String(120), nullable=True)
+    created_at = Column(DateTime, default=ny_now)
+    dedup_decided_at = Column(DateTime, nullable=True)
+
+    # Editing
+    editable = Column(Boolean, default=True, nullable=False)
+    edits = Column(Text, nullable=True)  # JSON list of {side, field, original, current}
+
+    # Resolution strategy
+    resolution_grouping = Column(String(10), nullable=True)  # SS | DV | ODO | TCCD | CECCD
+    default_action_input = Column(String(10), nullable=True)  # keep | drop | any
+    default_action_matched = Column(String(10), nullable=True)
+    dedup_sort = Column(Integer, nullable=True)
+
+    def to_dict(self) -> dict:
+        return {
+            "dedup_id": self.dedup_id,
+            "match_id": self.match_id,
+            "task_id": self.task_id,
+            "input_item_id": self.input_item_id,
+            "matched_source": self.matched_source,
+            "match_status": self.match_status,
+            "similarity_bucket": self.similarity_bucket,
+            "similarity_score": self.similarity_score,
+            "contract_id_matched": self.contract_id_matched,
+            "erp_vendor_id_matched": self.erp_vendor_id_matched,
+            "organization_eid_matched": self.organization_eid_matched,
+            "organization_matched": self.organization_matched,
+            "manufacturer_number_matched": self.manufacturer_number_matched,
+            "vendor_item_matched": self.vendor_item_matched,
+            "uom_matched": self.uom_matched,
+            "uom_to_match_infor_matched": self.uom_to_match_infor_matched,
+            "qoe_matched": self.qoe_matched,
+            "contract_price_matched": float(self.contract_price_matched) if self.contract_price_matched is not None else None,
+            "ea_price_matched": self.ea_price_matched,
+            "item_desc_matched": self.item_desc_matched,
+            "infor_pkids_matched": self.infor_pkids_matched,
+            "infor_pkid": self.infor_pkid,
+            "infor_item_matched": self.infor_item_matched,
+            "match_type": self.match_type,
+            "pair_type": self.pair_type,
+            "llm_reason": self.llm_reason,
+            "llm_warning": self.llm_warning,
+            "task_intention": self.task_intention,
+            "contract_id_input": self.contract_id_input,
+            "erp_vendor_id_input": self.erp_vendor_id_input,
+            "organization_eid_input": self.organization_eid_input,
+            "organization_input": self.organization_input,
+            "manufacturer_number_input": self.manufacturer_number_input,
+            "vendor_item_input": self.vendor_item_input,
+            "uom_input": self.uom_input,
+            "uom_to_match_infor_input": self.uom_to_match_infor_input,
+            "qoe_input": self.qoe_input,
+            "contract_price_input": float(self.contract_price_input) if self.contract_price_input is not None else None,
+            "ea_price_input": self.ea_price_input,
+            "item_description_input": self.item_description_input,
+            "infor_item_number": self.infor_item_number,
+            "matched_contract_source_type": self.matched_contract_source_type,
+            "matched_contract_process_type": self.matched_contract_process_type,
+            "input_contract_source_type": self.input_contract_source_type,
+            "input_contract_process_type": self.input_contract_process_type,
+            "input_decision": self.input_decision,
+            "matched_decision": self.matched_decision,
+            "dedup_decision": self.dedup_decision,
+            "dedup_decided_by": self.dedup_decided_by,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "dedup_decided_at": self.dedup_decided_at.isoformat() if self.dedup_decided_at else None,
+            "editable": bool(self.editable),
+            "edits": self.edits,
+            "resolution_grouping": self.resolution_grouping,
+            "default_action_input": self.default_action_input,
+            "default_action_matched": self.default_action_matched,
+            "dedup_sort": self.dedup_sort,
         }
 
 
