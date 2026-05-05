@@ -22,12 +22,17 @@ SELECT
     cnt.VendorID,
     cnt.Manufacturer,
     cnt.Vendor                       AS vendor_name,
-    cnt.ContractDescription
+    cnt.ContractDescription,
+    hdr.ContractProcessType          AS match_process_type
 FROM [Preprocessor].[CCXSyncedContractLine] ccx
 JOIN [Preprocessor].[CCXSyncedContractLineCnt] cnt
     ON ccx.OrganizationEID = cnt.OrganizationEID
    AND ccx.ContractID      = cnt.ContractID
    AND ccx.ERPVendorID     = cnt.ERPVendorID
+LEFT JOIN [Preprocessor].[CCXInforSyncedContractHeader] hdr
+    ON hdr.Organization  = ccx.Organization
+   AND hdr.ContractID    = ccx.ContractID
+   AND hdr.ERPVendorID   = ccx.ERPVendorID
 WHERE ccx.reduced_mfg_num_ccx = :reduced_mfg_num
   AND (
       :org_eid = '105188574'
@@ -58,6 +63,7 @@ SELECT
     cnt.Manufacturer,
     cnt.Vendor                       AS vendor_name,
     cnt.ContractDescription,
+    hdr.ContractProcessType          AS match_process_type,
     CASE
         WHEN ccx.reduced_mfg_num_ccx = :reduced_mfg_num THEN 'REDUCED_MFG'
         WHEN ccx.reduced_vendor_num_ccx = :reduced_vendor_num THEN 'REDUCED_VPN'
@@ -68,6 +74,10 @@ JOIN [Preprocessor].[CCXSyncedContractLineCnt] cnt
     ON ccx.OrganizationEID = cnt.OrganizationEID
    AND ccx.ContractID      = cnt.ContractID
    AND ccx.ERPVendorID     = cnt.ERPVendorID
+LEFT JOIN [Preprocessor].[CCXInforSyncedContractHeader] hdr
+    ON hdr.Organization  = ccx.Organization
+   AND hdr.ContractID    = ccx.ContractID
+   AND hdr.ERPVendorID   = ccx.ERPVendorID
 WHERE (
         ccx.reduced_mfg_num_ccx = :reduced_mfg_num
      OR ccx.reduced_vendor_num_ccx = :reduced_vendor_num
@@ -101,6 +111,7 @@ SELECT
     cnt.Manufacturer,
     cnt.Vendor                       AS vendor_name,
     cnt.ContractDescription,
+    hdr.ContractProcessType          AS match_process_type,
     CASE
         WHEN ccx.reduced_mfg_num_ccx = :reduced_mfg_num THEN 'REDUCED_MFG'
         WHEN ccx.reduced_vendor_num_ccx = :reduced_mfg_num THEN 'CROSS_MATCH'
@@ -111,6 +122,10 @@ JOIN [Preprocessor].[CCXSyncedContractLineCnt] cnt
     ON ccx.OrganizationEID = cnt.OrganizationEID
    AND ccx.ContractID      = cnt.ContractID
    AND ccx.ERPVendorID     = cnt.ERPVendorID
+LEFT JOIN [Preprocessor].[CCXInforSyncedContractHeader] hdr
+    ON hdr.Organization  = ccx.Organization
+   AND hdr.ContractID    = ccx.ContractID
+   AND hdr.ERPVendorID   = ccx.ERPVendorID
 WHERE (
         ccx.reduced_mfg_num_ccx = :reduced_mfg_num
      OR ccx.reduced_vendor_num_ccx = :reduced_mfg_num

@@ -380,6 +380,7 @@ def run_sku_matching(task_id: str, state_machine: TaskStateMachine) -> dict:
                     match_contract_id=row.get("ContractID", ""),
                     match_contract_manufacturer=row.get("contract_manufacturer", ""),
                     match_erp_vendor_id=row.get("ERPVendorID", ""),
+                    match_process_type=row.get("match_process_type", "") or "",
                     match_vendor_group=distributor_groups.get(str(row.get("ERPVendorID") or "").strip().upper()),
                 )
 

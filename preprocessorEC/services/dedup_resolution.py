@@ -41,6 +41,30 @@ def _is_premier(source_type: Optional[str]) -> bool:
     return _norm(source_type) == "PREMIER"
 
 
+def _orgs_equal(
+    a_eid: Optional[str],
+    a_name: Optional[str],
+    b_eid: Optional[str],
+    b_name: Optional[str],
+) -> bool:
+    """Are two (eid, name) pairs the same organization?
+
+    EID match wins when both sides have one. When either side is missing
+    its EID (the input TaskItem currently doesn't carry organization_eid
+    in intake), we fall back to comparing organization names. If neither
+    signal is fully populated on both sides, declare different so a real
+    mismatch surfaces in the resolution group rather than being silently
+    swallowed.
+    """
+    aeid, beid = _norm(a_eid), _norm(b_eid)
+    if aeid and beid:
+        return aeid == beid
+    aname, bname = _norm(a_name), _norm(b_name)
+    if aname and bname:
+        return aname == bname
+    return False
+
+
 def classify_group(
     input_org_eid: Optional[str],
     input_vendor: Optional[str],
@@ -48,10 +72,12 @@ def classify_group(
     matched_org_eid: Optional[str],
     matched_vendor: Optional[str],
     matched_contract: Optional[str],
+    input_org_name: Optional[str] = None,
+    matched_org_name: Optional[str] = None,
 ) -> str:
     """Bucket an (input, matched) pair into one of the 5 resolution groups."""
     same_vendor = _norm(input_vendor) == _norm(matched_vendor)
-    same_org = _norm(input_org_eid) == _norm(matched_org_eid)
+    same_org = _orgs_equal(input_org_eid, input_org_name, matched_org_eid, matched_org_name)
     same_contract = _norm(input_contract) == _norm(matched_contract)
 
     # DV trumps everything else: different vendor isn't a same-contract dup

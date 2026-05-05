@@ -172,6 +172,9 @@ function renderTaskActions(task, issues) {
   if (task.phase === "DEDUP") {
     buttons += `<a href="${PREFIX}/dedup/${TASK_ID}" class="btn btn-sm btn-outline-primary d-block mb-1">Dedup</a>`;
   }
+  if (task.phase === "EXPORT") {
+    buttons += `<a href="${PREFIX}/export/${TASK_ID}" class="btn btn-sm btn-outline-primary d-block mb-1">Export</a>`;
+  }
 
   actions.innerHTML = buttons || '<p class="text-muted small mb-0">No actions available</p>';
 }

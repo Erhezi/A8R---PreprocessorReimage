@@ -230,6 +230,11 @@ def populate_dedup_workspace(task_id: str, *, force: bool = False) -> dict:
                 matched_org_eid=m.organization_eid_matched,
                 matched_vendor=m.erp_vendor_id_matched,
                 matched_contract=m.contract_id_matched,
+                # Input items don't currently carry organization_eid (it's
+                # never written during intake), so pass the org NAME as a
+                # fallback signal — see _orgs_equal in dedup_resolution.
+                input_org_name=task.organization,
+                matched_org_name=m.organization_matched,
             )
             default_in, default_match = default_actions(
                 group=group,

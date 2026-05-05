@@ -736,7 +736,7 @@ async function loadTasks() {
       <td>${t.intention}</td>
       <td><span class="badge bg-info">${t.phase}</span></td>
       <td><span class="badge bg-secondary">${t.status}</span></td>
-      <td>${t.wrike_id || "—"}</td>
+      <td onclick="event.stopPropagation()">${t.wrike_id ? `<a href="https://www.wrike.com/open.htm?id=${encodeURIComponent(t.wrike_id)}" target="_blank" rel="noopener">${t.wrike_id}</a>` : "—"}</td>
       <td>${t.created_by}</td>
       <td>${t.updated_at ? new Date(t.updated_at).toLocaleDateString() : "—"}</td>
       <td onclick="event.stopPropagation()">

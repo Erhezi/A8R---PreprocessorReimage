@@ -40,7 +40,7 @@ function renderIntakeActionButtons(task, issues) {
       buttons += `<button class="btn btn-sm btn-outline-warning d-block mb-1 w-100" onclick="showReupload()">Re-upload Items</button>`;
     }
     if (allUploaded) {
-      buttons += `<button class="btn btn-sm btn-primary d-block mb-1 w-100" onclick="runPrecheck()">Run Pre-check</button>`;
+      buttons += `<button class="btn btn-sm btn-primary d-block mb-1 w-100" onclick="runPrecheck(this)">Run Pre-check</button>`;
     }
   }
 
@@ -51,7 +51,7 @@ function renderIntakeActionButtons(task, issues) {
   if (task.status === "ON_HOLD_PC1" || task.status === "PENDING_NUVIA") {
     const hasErrorWarn = currentItems.some(item => item.status === "ERROR_PC1" || item.status === "WARN_PC1");
     if (hasErrorWarn) {
-      buttons += `<button class="btn btn-sm btn-outline-info d-block mb-1 w-100" onclick="recheckAll()">Re-run Pre-check</button>`;
+      buttons += `<button class="btn btn-sm btn-outline-info d-block mb-1 w-100" onclick="recheckAll(this)">Re-run Pre-check</button>`;
       buttons += renderRecheckModeControl(task);
     }
   }
@@ -381,14 +381,40 @@ document.getElementById("btnConfirmReupload").addEventListener("click", async ()
   }
 });
 
-async function runPrecheck() {
+function showPrecheckRunning(btn, label, itemCount) {
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1"></span>${label}…`;
+  }
+  const card = document.getElementById("precheckCard");
+  if (card) {
+    card.style.display = "";
+    const header = document.getElementById("precheckHeader");
+    if (header) header.className = "card-header text-muted";
+    const countTxt = itemCount ? ` on <strong>${itemCount}</strong> item${itemCount === 1 ? "" : "s"}` : "";
+    document.getElementById("precheckBody").innerHTML =
+      `<p class="mb-0 text-muted"><span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>${label}${countTxt}… this can take a moment for larger files.</p>`;
+    card.scrollIntoView({behavior: "smooth", block: "nearest"});
+  }
+}
+
+async function runPrecheck(btn) {
   if (!confirm("Run pre-check validation on all uploaded items using Default mode?")) return;
-  const resp = await fetch(`${PREFIX}/api/intake/${TASK_ID}/precheck`, {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({precheck_mode: "default"}),
-  });
-  const data = await resp.json();
+  const itemCount = (typeof currentItems !== "undefined" && currentItems) ? currentItems.length : 0;
+  showPrecheckRunning(btn, "Running pre-check", itemCount);
+  let data;
+  try {
+    const resp = await fetch(`${PREFIX}/api/intake/${TASK_ID}/precheck`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({precheck_mode: "default"}),
+    });
+    data = await resp.json();
+  } catch (err) {
+    document.getElementById("precheckBody").innerHTML = `<p class="text-danger mb-0">Pre-check failed: ${err.message || err}</p>`;
+    if (btn) { btn.disabled = false; }
+    return;
+  }
   const card = document.getElementById("precheckCard");
   card.style.display = "";
   const allGood = data.failed === 0 && (data.warned || 0) === 0;
@@ -474,18 +500,28 @@ async function softDeleteItem(itemId) {
   }
 }
 
-async function recheckAll() {
+async function recheckAll(btn) {
   const select = document.getElementById("recheckModeSelect");
   const mode = select ? select.value : "default";
-  const resp = await fetch(`${PREFIX}/api/intake/${TASK_ID}/recheck-all`, {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({precheck_mode: mode}),
-  });
-  const data = await resp.json();
+  const itemCount = (typeof currentItems !== "undefined" && currentItems) ? currentItems.length : 0;
+  showPrecheckRunning(btn, "Re-running pre-check", itemCount);
+  let resp, data;
+  try {
+    resp = await fetch(`${PREFIX}/api/intake/${TASK_ID}/recheck-all`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({precheck_mode: mode}),
+    });
+    data = await resp.json();
+  } catch (err) {
+    document.getElementById("precheckBody").innerHTML = `<p class="text-danger mb-0">Re-run pre-check failed: ${err.message || err}</p>`;
+    if (btn) { btn.disabled = false; }
+    return;
+  }
 
   if (!resp.ok) {
-    alert(data.error || "Re-run pre-check failed");
+    document.getElementById("precheckBody").innerHTML = `<p class="text-danger mb-0">${data.error || "Re-run pre-check failed"}</p>`;
+    if (btn) { btn.disabled = false; }
     return;
   }
 

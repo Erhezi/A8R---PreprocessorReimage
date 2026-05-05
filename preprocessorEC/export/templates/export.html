@@ -1,9 +1,359 @@
 {% extends "base.html" %}
 {% block title %}Export — Task #{{ task_id }}{% endblock %}
+
+{% block head %}
+<style>
+  .export-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    margin-bottom: 1rem;
+  }
+
+  .export-summary table,
+  .export-sheet table {
+    font-size: 0.82rem;
+  }
+
+  .export-summary table {
+    width: 100%;
+  }
+
+  .export-summary th,
+  .export-sheet th {
+    white-space: nowrap;
+    background: #f8f9fa;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: #6b7280;
+  }
+
+  .export-summary th.matched-col {
+    background: #fff2cc !important;
+  }
+
+  .export-summary th.input-col {
+    background: #d9e1f2 !important;
+  }
+
+  .export-sheet {
+    border: 1px solid #dee2e6;
+    border-radius: 0.5rem;
+    margin-bottom: 1rem;
+    overflow: hidden;
+  }
+
+  .export-sheet-header {
+    background: #eef2ff;
+    padding: 0.55rem 0.85rem;
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    flex-wrap: wrap;
+    border-bottom: 1px solid #c7d2fe;
+  }
+
+  .export-sheet-title {
+    font-weight: 600;
+    color: #1e293b;
+  }
+
+  .export-sheet-close {
+    margin-left: auto;
+  }
+
+  .export-table-wrap {
+    overflow-x: auto;
+    max-height: 420px;
+  }
+
+  .export-table-wrap table {
+    margin-bottom: 0;
+    table-layout: fixed;
+    width: max-content;
+  }
+
+  .export-sheet td {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 220px;
+  }
+
+  th.matched-col {
+    background: #fff2cc !important;
+  }
+
+  th.input-col {
+    background: #d9e1f2 !important;
+  }
+
+  .empty-msg {
+    color: #6b7280;
+    font-style: italic;
+  }
+
+  .sheet-link {
+    cursor: pointer;
+  }
+
+  .sheet-link.active {
+    font-weight: 600;
+  }
+</style>
+{% endblock %}
+
 {% block content %}
-<div class="container-fluid mt-3">
+<div class="container-fluid mt-3"
+     id="exportPageRoot"
+     data-task-id="{{ task_id }}"
+     data-url-prefix="{{ url_prefix }}">
   <a href="{{ url_prefix }}/tasks/{{ task_id }}" class="text-decoration-none">&larr; Task #{{ task_id }}</a>
-  <h4 class="mt-1">Phase 5: Export</h4>
-  <p class="text-muted">Stub — implementation in Phase D.</p>
+  <h4 class="mt-1">Phase 5: Export — Dedup Output to Review</h4>
+  <p class="text-muted mb-3">
+    v1.0-compatible workbook of CCX matched (ACCEPTED) records for sourcing review.
+    One sheet per matched contract; <code>quick_line_count</code> totals are sourced from
+    <code>CCXSyncedContractLineCnt</code>. Click a <em>Sheet</em> link below to preview that sheet.
+  </p>
+
+  <div class="export-toolbar">
+    <div>
+      <span id="exp-filename" class="badge bg-light text-dark border"></span>
+      <span id="exp-empty" class="empty-msg ms-2 d-none">No CCX/ACCEPTED matches to export.</span>
+    </div>
+    <div>
+      <a id="exp-download" class="btn btn-primary btn-sm disabled"
+         href="#"
+         aria-disabled="true">
+        Download .xlsx
+      </a>
+    </div>
+  </div>
+
+  <div id="exp-summary" class="export-summary mb-3"></div>
+
+  <div id="exp-sheet"></div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  const exportPageRoot = document.getElementById("exportPageRoot");
+  const taskId = exportPageRoot.dataset.taskId || "";
+  const urlPrefix = exportPageRoot.dataset.urlPrefix || "";
+  const previewUrl = `${urlPrefix}/api/export/${taskId}/dedup-review/preview`;
+  const downloadUrl = `${urlPrefix}/api/export/${taskId}/dedup-review.xlsx`;
+
+  const $filename = document.getElementById("exp-filename");
+  const $empty = document.getElementById("exp-empty");
+  const $download = document.getElementById("exp-download");
+  const $summary = document.getElementById("exp-summary");
+  const $sheet = document.getElementById("exp-sheet");
+
+  let previewData = null;
+  let activeSheetName = null;
+
+  function escapeHtml(value) {
+    if (value === null || value === undefined) return "";
+    return String(value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function buildSummary(summary) {
+    if (!summary || summary.length === 0) {
+      $summary.innerHTML = "";
+      return;
+    }
+    const rows = summary
+      .map(
+        (s) => `
+          <tr>
+            <td>${escapeHtml(s.contract_id)}</td>
+            <td>${escapeHtml(s.erp_vendor_id)}</td>
+            <td>${escapeHtml(s.organization)}</td>
+            <td class="text-end">${s.total_lines}</td>
+            <td class="text-end">${s.matched_lines}</td>
+            <td>${escapeHtml(s.contract_id_input)}</td>
+            <td>${escapeHtml(s.erp_vendor_id_input)}</td>
+            <td>${escapeHtml(s.organization_input)}</td>
+            <td><a class="sheet-link" data-sheet="${escapeHtml(s.sheet_name)}">${escapeHtml(s.sheet_name)}</a></td>
+          </tr>`
+      )
+      .join("");
+    $summary.innerHTML = `
+      <h6 class="mb-2">quick_line_count</h6>
+      <div class="export-table-wrap">
+        <table class="table table-sm table-bordered table-striped">
+          <thead>
+            <tr>
+              <th class="matched-col">Contract ID</th>
+              <th class="matched-col">ERP Vendor ID</th>
+              <th class="matched-col">Organization</th>
+              <th class="matched-col text-end">Total Lines</th>
+              <th class="matched-col text-end">Matched Lines</th>
+              <th class="input-col">Contract ID (Input)</th>
+              <th class="input-col">ERP Vendor ID (Input)</th>
+              <th class="input-col">Organization (Input)</th>
+              <th class="matched-col">Sheet</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+
+    $summary.querySelectorAll(".sheet-link").forEach((el) => {
+      el.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        const name = el.getAttribute("data-sheet");
+        showSheet(name);
+      });
+    });
+  }
+
+  function buildSheet(sheet, leftHeaders, rightHeaders, leftClass, rightClass) {
+    const headerCells = leftHeaders
+      .map((h) => `<th class="${leftClass}">${escapeHtml(h)}</th>`)
+      .concat(rightHeaders.map((h) => `<th class="${rightClass}">${escapeHtml(h)}</th>`))
+      .join("");
+
+    const allHeaders = leftHeaders.concat(rightHeaders);
+    const bodyRows =
+      sheet.rows.length === 0
+        ? `<tr><td colspan="${allHeaders.length}" class="empty-msg">No rows</td></tr>`
+        : sheet.rows
+            .map((row) => {
+              const cells = allHeaders
+                .map((h) => {
+                  const v = row[h] ?? "";
+                  const safe = escapeHtml(v);
+                  return `<td title="${safe}">${safe}</td>`;
+                })
+                .join("");
+              return `<tr>${cells}</tr>`;
+            })
+            .join("");
+
+    const key = sheet.key || {};
+    const subtitle = key.contract_id
+      ? `${escapeHtml(key.contract_id)} · ${escapeHtml(key.erp_vendor_id || "")} · ${escapeHtml(key.organization || "")}`
+      : "";
+    return `
+      <section class="export-sheet" id="sheet-${escapeHtml(sheet.sheet_name)}">
+        <div class="export-sheet-header">
+          <span class="export-sheet-title">${escapeHtml(sheet.sheet_name)}</span>
+          <span class="badge bg-secondary">${sheet.row_count} rows</span>
+          ${subtitle ? `<span class="text-muted small">${subtitle}</span>` : ""}
+          <button type="button" class="btn btn-sm btn-link export-sheet-close" data-action="close">Close</button>
+        </div>
+        <div class="export-table-wrap">
+          <table class="table table-sm table-bordered table-hover mb-0">
+            <thead><tr>${headerCells}</tr></thead>
+            <tbody>${bodyRows}</tbody>
+          </table>
+        </div>
+      </section>`;
+  }
+
+  function showSheet(name) {
+    if (!previewData) return;
+    if (activeSheetName === name) {
+      // toggle off when clicked again
+      hideSheet();
+      return;
+    }
+
+    let html;
+    const vbi = previewData.view_by_input;
+    if (vbi && vbi.sheet_name === name) {
+      // view_by_input: input columns (light blue) on the left, matched (yellow) on the right.
+      html = buildSheet(
+        {
+          sheet_name: vbi.sheet_name,
+          rows: vbi.rows || [],
+          row_count: vbi.row_count || 0,
+          key: {},
+        },
+        vbi.input_headers,
+        vbi.matched_headers,
+        "input-col",
+        "matched-col"
+      );
+    } else {
+      const sheet = previewData.sheets.find((s) => s.sheet_name === name);
+      if (!sheet) return;
+      html = buildSheet(
+        sheet,
+        previewData.matched_headers,
+        previewData.input_headers,
+        "matched-col",
+        "input-col"
+      );
+    }
+
+    activeSheetName = name;
+    $sheet.innerHTML = html;
+    $summary.querySelectorAll(".sheet-link").forEach((el) => {
+      el.classList.toggle("active", el.getAttribute("data-sheet") === name);
+    });
+
+    const closeBtn = $sheet.querySelector('[data-action="close"]');
+    if (closeBtn) closeBtn.addEventListener("click", hideSheet);
+
+    $sheet.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  function hideSheet() {
+    activeSheetName = null;
+    $sheet.innerHTML = "";
+    $summary.querySelectorAll(".sheet-link").forEach((el) => {
+      el.classList.remove("active");
+    });
+  }
+
+  function renderEmpty(msg) {
+    $filename.textContent = "";
+    $empty.textContent = msg;
+    $empty.classList.remove("d-none");
+    $download.classList.add("disabled");
+    $download.setAttribute("aria-disabled", "true");
+    $summary.innerHTML = "";
+    $sheet.innerHTML = "";
+  }
+
+  fetch(previewUrl, { credentials: "same-origin" })
+    .then(async (resp) => {
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        throw new Error(data.error || `HTTP ${resp.status}`);
+      }
+      return resp.json();
+    })
+    .then((data) => {
+      if (!data.sheets || data.sheets.length === 0) {
+        renderEmpty("No CCX/ACCEPTED matches to export for this task.");
+        return;
+      }
+      previewData = data;
+      $filename.textContent = data.filename;
+      $empty.classList.add("d-none");
+      $download.href = downloadUrl;
+      $download.classList.remove("disabled");
+      $download.removeAttribute("aria-disabled");
+
+      buildSummary(data.summary);
+      $sheet.innerHTML = "";
+    })
+    .catch((err) => {
+      renderEmpty(`Failed to load preview: ${err.message}`);
+    });
+})();
+</script>
 {% endblock %}

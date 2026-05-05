@@ -8,10 +8,10 @@ Ported from the original Contract Atlas scoring logic with enhancements:
   * Vendor-item exact match (type C only)
 
 Pair types (determined per match pair):
-    A — same contract (input item found itself)
-    B — different contract, same manufacturer, both MANUFACTURER type
-    C — different contract, same vendor, both DISTRIBUTOR type
-    D — all others (including Infor residue)
+    A — same contract id (regardless of process/source type on either side)
+    B — different contract, same manufacturer, BOTH sides MANUFACTURER process type
+    C — different contract, same vendor,       BOTH sides DISTRIBUTOR  process type
+    D — all others (including Infor residue and cross-type pairs)
 
 Weight regimes per pair type:
     Type A/B (skip description similarity):
@@ -360,15 +360,16 @@ def determine_pair_type(
     match_contract_id: str,
     match_contract_manufacturer: str,
     match_erp_vendor_id: str,
+    match_process_type: str = "",
     task_vendor_group: object | None = None,
     match_vendor_group: object | None = None,
 ) -> str:
     """Determine the pair type (A/B/C/D) for a match pair.
 
-    A — same contract (input item found itself in CCX)
-    B — different contract, same manufacturer, both MANUFACTURER-type
-    C — different contract, same vendor, both DISTRIBUTOR-type
-    D — everything else (including all Infor residue matches)
+    A — same contract id (regardless of process/source type on either side)
+    B — different contract, same manufacturer, BOTH sides MANUFACTURER process type
+    C — different contract, same vendor,       BOTH sides DISTRIBUTOR process type
+    D — everything else (including all Infor residue matches and cross-type pairs)
     """
     task_cn = str(task_contract_number or "").strip().upper()
     match_cn = str(match_contract_id or "").strip().upper()
@@ -376,17 +377,18 @@ def determine_pair_type(
     if task_cn and match_cn and task_cn == match_cn:
         return "A"
 
-    proc = str(task_process_type or "").upper()
+    task_proc = str(task_process_type or "").upper()
+    match_proc = str(match_process_type or "").upper()
 
-    # Type B: both manufacturer, same manufacturer code
-    if "MANUFACTURER" in proc:
+    # Type B: both manufacturer process type, same manufacturer code
+    if "MANUFACTURER" in task_proc and "MANUFACTURER" in match_proc:
         task_mfg = str(task_contract_manufacturer or "").strip().upper()
         match_mfg = str(match_contract_manufacturer or "").strip().upper()
         if task_mfg and match_mfg and task_mfg == match_mfg:
             return "B"
 
-    # Type C: both distributor, same vendor
-    if "DISTRIBUTOR" in proc:
+    # Type C: both distributor process type, same vendor
+    if "DISTRIBUTOR" in task_proc and "DISTRIBUTOR" in match_proc:
         task_vendor_full = str(task_vendor_id or "").strip().upper()
         match_vendor_full = str(match_erp_vendor_id or "").strip().upper()
         task_vid = str(task_vendor_id or "")[:7].strip().upper()

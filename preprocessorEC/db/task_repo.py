@@ -228,8 +228,13 @@ def update_task_fields(task_id: str, **kwargs) -> None:
 
 
 _TASK_CHILD_TABLES = [
+    # TaskItemForDecision must come before MatchResult — its match_id FK
+    # references MatchResult.match_id.
+    "[Preprocessor].PreprocessorTaskItemForDecision",
     "[Preprocessor].PreprocessorItemMatching",
     "[Preprocessor].PreprocessorMatchResult",
+    "[Preprocessor].PreprocessorIMCheckResult",
+    "[Preprocessor].PreprocessorIntegrityIssue",
     "[Preprocessor].PreprocessorPreCheckError",
     "[Preprocessor].PreprocessorPreprocessIssue",
     "[Preprocessor].PreprocessorTaskStatusLog",
@@ -243,9 +248,18 @@ def _purge_task_rows(session, task_id: str) -> None:
     Raw SQL on purpose — it never SELECTs, so it tolerates schema columns the
     ORM doesn't know about. Order is important: item-linked tables before
     PreprocessorTaskItem, all task-children before the PreprocessorTask row.
+
+    The OBJECT_ID guard skips tables that the ORM defines but haven't been
+    created in this database yet (e.g. newer tables in older environments).
     """
     for tbl in _TASK_CHILD_TABLES:
-        session.execute(text(f"DELETE FROM {tbl} WHERE task_id = :tid"), {"tid": task_id})
+        session.execute(
+            text(
+                f"IF OBJECT_ID(N'{tbl}', N'U') IS NOT NULL "
+                f"DELETE FROM {tbl} WHERE task_id = :tid"
+            ),
+            {"tid": task_id},
+        )
     session.execute(
         text("DELETE FROM [Preprocessor].PreprocessorTask WHERE task_id = :tid"),
         {"tid": task_id},

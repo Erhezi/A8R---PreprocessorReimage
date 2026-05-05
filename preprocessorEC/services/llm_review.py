@@ -36,6 +36,11 @@ Special rule for pair types A and C:
 - If they are the same product but sold in different packaging, pack size, UOM, or quantity-per-pack, you must REJECT.
 - Treat differences like BX 20 vs EA 1, CA vs BX, or other pack/count differences as different packaging unless the evidence clearly shows they are the exact same sellable pack.
 
+Special rule for pair type D:
+- For pair type D, ACCEPT when the INPUT and MATCH represent the same underlying physical product even if their UOM or pack size differs (e.g., EA vs BX, CA vs BX, different QOE).
+- The goal of pair type D is to surface the same item being purchased under different packaging configurations across systems, so UOM/QOE differences alone are NOT a reason to reject.
+- Still REJECT if catalog numbers, manufacturer, brand, formulation, size, or other product-identity attributes indicate they are different items, or if the contract price is wildly inconsistent in a way that cannot be explained by the UOM/QOE difference.
+
 Do not accept a match only because the descriptions are broadly similar.
 Use all fields together. If UOM looks interchangeable but the contract price is materially inconsistent for the stated pack and quantity, prefer REJECT.
 For example, if both sides have the same vendor and manufacturer number and both have QOE 6, but one side is priced around 6 times higher than the other, that usually indicates they are not the same contract line and should be REJECTED.
