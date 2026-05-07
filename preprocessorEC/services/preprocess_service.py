@@ -165,9 +165,12 @@ def _recompute_explicit_duplicates(
 
     Mirrors PC1's explicit-mode key — ``clean_mfg + uom_to_match_infor`` — so
     that downstream phases see the same collision semantics. For each group
-    of size >= 2 a ``DUPLICATE_ITEM_ERROR`` issue is upserted on every
+    of size >= 2 a ``DUPLICATE_ITEM_ERROR`` issue is created on every
     member, with detail listing partner rows. Items previously flagged but
-    no longer in a dup group have their issue auto-resolved.
+    no longer in a dup group simply lose their issue row (the unresolved
+    DUPLICATE_ITEM_ERROR rows for the task are deleted up-front and only
+    current members are re-inserted — same approach the labeling and
+    buy-UOM steps already use).
 
     Item statuses for everything touched are reconciled via
     ``_derive_item_status`` so the badge + filters stay consistent with the
@@ -185,16 +188,19 @@ def _recompute_explicit_duplicates(
     dup_groups = {k: v for k, v in groups.items() if len(v) >= 2}
     in_dup_item_ids = {i.item_id for v in dup_groups.values() for i in v}
 
+    # Snapshot existing open issues *before* clearing dup rows so the
+    # affected_ids set still includes items that just fell out of any group.
     open_issues = [
         i for i in task_repo.get_preprocess_issues(task_id, include_resolved=False)
         if not i.resolved
     ]
-    dup_issue_by_item: dict[int, object] = {
-        iss.item_id: iss for iss in open_issues
-        if iss.issue_type == "DUPLICATE_ITEM_ERROR"
-    }
 
-    # Upsert dup issues for items currently in a group.
+    # Wipe the prior dup rows in one statement, then buffer new ones for a
+    # single bulk insert. This used to fire one round-trip per group member
+    # and per resolve, which dominated rerun cost on large files.
+    task_repo.delete_unresolved_preprocess_issues(task_id, ["DUPLICATE_ITEM_ERROR"])
+
+    pending_issue_records: list[dict] = []
     for (mfg, uom), members in dup_groups.items():
         member_summaries = [
             {"item_id": m.item_id, "file_row": m.file_row, "uom": m.uom, "qoe": m.qoe}
@@ -202,29 +208,20 @@ def _recompute_explicit_duplicates(
         ]
         for member in members:
             partners = [s for s in member_summaries if s["item_id"] != member.item_id]
-            task_repo.upsert_preprocess_issue(
-                task_id=task_id,
-                item_id=member.item_id,
-                issue_type="DUPLICATE_ITEM_ERROR",
-                severity="ERROR",
-                detail=json.dumps({
+            pending_issue_records.append({
+                "task_id": task_id,
+                "item_id": member.item_id,
+                "issue_type": "DUPLICATE_ITEM_ERROR",
+                "severity": "ERROR",
+                "detail": json.dumps({
                     "key": f"{mfg}|{uom}",
                     "key_mfg": mfg,
                     "key_uom_to_match_infor": uom,
                     "qoe": member.qoe,
                     "partners": partners,
                 }),
-            )
-
-    # Auto-resolve dup issues for items no longer in any group.
-    for item_id, dup_iss in dup_issue_by_item.items():
-        if item_id in in_dup_item_ids:
-            continue
-        task_repo.resolve_preprocess_issue(
-            issue_id=dup_iss.issue_id,
-            resolution_action="DUP_RESOLVED_AUTO",
-            resolved_by="system",
-        )
+            })
+    task_repo.add_preprocess_issues_bulk(pending_issue_records)
 
     # Recompute statuses for every item that has any open issue OR is now in
     # a dup group OR was passed in via force_item_ids (typically the just-
@@ -506,30 +503,14 @@ def run_contract_check(task_id: str, state_machine: TaskStateMachine) -> dict:
 # ---------------------------------------------------------------------------
 # Step 3 -- LLM review for MED/LOW matches
 # ---------------------------------------------------------------------------
-def run_llm_review(task_id: str, state_machine: TaskStateMachine) -> dict:
-    """Send MED/LOW CCX matches to the LLM for review.
+def _llm_review_matches(matches: list, item_by_id: dict) -> int:
+    """Run review_match_pair against each match and persist the verdict.
 
-    Updates match_status to ACCEPTED or REJECTED based on LLM verdict.
+    Returns the number of matches actually reviewed (skips orphans whose input
+    item is no longer present).
     """
-    state = state_machine.get_state(task_id)
-    state["status"] = Status.LLM_REVIEW
-    state_machine.save_state(task_id, state)
-    task_repo.update_task_phase(task_id, Phase.PREPROCESS, Status.LLM_REVIEW)
-
-    pending_matches = [
-        m for m in task_repo.get_match_results(task_id, matched_source="CCX")
-        if m.match_status == "PENDING" and m.similarity_bucket in ("MED", "LOW")
-    ]
-
-    if not pending_matches:
-        return {"reviewed": 0}
-
-    # build item lookup
-    input_items = task_repo.get_items_by_source(task_id, "INPUT")
-    item_by_id = {it.item_id: it for it in input_items}
-
     reviewed = 0
-    for match in pending_matches:
+    for match in matches:
         item = item_by_id.get(match.input_item_id)
         if not item:
             continue
@@ -563,7 +544,31 @@ def run_llm_review(task_id: str, state_machine: TaskStateMachine) -> dict:
             llm_reason=result.get("reason"),
         )
         reviewed += 1
+    return reviewed
 
+
+def run_llm_review(task_id: str, state_machine: TaskStateMachine) -> dict:
+    """Send MED/LOW CCX matches to the LLM for review.
+
+    Updates match_status to ACCEPTED or REJECTED based on LLM verdict.
+    """
+    state = state_machine.get_state(task_id)
+    state["status"] = Status.LLM_REVIEW
+    state_machine.save_state(task_id, state)
+    task_repo.update_task_phase(task_id, Phase.PREPROCESS, Status.LLM_REVIEW)
+
+    pending_matches = [
+        m for m in task_repo.get_match_results(task_id, matched_source="CCX")
+        if m.match_status == "PENDING" and m.similarity_bucket in ("MED", "LOW")
+    ]
+
+    if not pending_matches:
+        return {"reviewed": 0}
+
+    input_items = task_repo.get_items_by_source(task_id, "INPUT")
+    item_by_id = {it.item_id: it for it in input_items}
+
+    reviewed = _llm_review_matches(pending_matches, item_by_id)
     return {"reviewed": reviewed}
 
 
@@ -811,40 +816,30 @@ def run_infor_residue_llm_review(task_id: str, state_machine: TaskStateMachine) 
     input_items = task_repo.get_items_by_source(task_id, "INPUT")
     item_by_id = {it.item_id: it for it in input_items}
 
+    reviewed = _llm_review_matches(pending, item_by_id)
+    return {"reviewed": reviewed}
+
+
+def run_llm_review_pending_all(task_id: str, state_machine: TaskStateMachine) -> dict:
+    """Send every remaining PENDING match (any bucket, any source) to the LLM.
+
+    Triggered by the user after manual review when leftover PENDING rows should
+    be auto-decided. CCX is processed first so the cascade in
+    update_match_decision settles linked INFOR_CL CASCADE rows before the
+    INFOR_CL pass re-reads PENDING from the DB.
+    """
+    input_items = task_repo.get_items_by_source(task_id, "INPUT")
+    item_by_id = {it.item_id: it for it in input_items}
+
     reviewed = 0
-    for match in pending:
-        item = item_by_id.get(match.input_item_id)
-        if not item:
+    for source in ("CCX", "INFOR_CL"):
+        pending = [
+            m for m in task_repo.get_match_results(task_id, matched_source=source)
+            if m.match_status == "PENDING"
+        ]
+        if not pending:
             continue
-        input_dict = {
-            "description": item.description or "",
-            "mfg_catalog_num": item.mfg_catalog_num or "",
-            "vendor_catalog_num": item.vendor_catalog_num or "",
-            "uom": item.uom or "",
-            "qoe": item.qoe,
-            "contract_price": float(item.unit_price) if item.unit_price is not None else None,
-        }
-        match_dict = {
-            "matched_source": match.matched_source,
-            "description": match.item_desc_matched or "",
-            "mfg_catalog_num": match.manufacturer_number_matched or "",
-            "vendor_catalog_num": match.vendor_item_matched or "",
-            "uom": match.uom_matched or "",
-            "qoe": match.qoe_matched,
-            "contract_price": float(match.contract_price_matched) if match.contract_price_matched is not None else None,
-            "similarity_score": match.similarity_score,
-            "pair_type": match.pair_type or "",
-        }
-        result = review_match_pair(input_dict, match_dict)
-        new_status = "ACCEPTED" if result["decision"] == "ACCEPT" else "REJECTED"
-        task_repo.update_match_decision(
-            match.match_id,
-            new_status,
-            "LLM",
-            llm_confidence=result.get("confidence"),
-            llm_reason=result.get("reason"),
-        )
-        reviewed += 1
+        reviewed += _llm_review_matches(pending, item_by_id)
 
     return {"reviewed": reviewed}
 
@@ -880,6 +875,10 @@ def run_item_labeling(task_id: str, state_machine: TaskStateMachine) -> dict:
     q_item_desc = load_query("preprocess", "item_matching", query="item_description_by_item_number")
 
     contract_manufacturer_infor = (getattr(task, "contract_manufacturer_infor", None) or "").strip()
+
+    # Buffer MULTI_ITEM_ERROR records and flush in one bulk insert after the
+    # loop. Per-item upsert was causing one round-trip per flagged row.
+    pending_issue_records: list[dict] = []
 
     # Pre-build accepted INFOR_CL items by input_item_id via infor_pkid lineage.
     infor_matches = task_repo.get_match_results(task_id, matched_source="INFOR_CL")
@@ -982,12 +981,12 @@ def run_item_labeling(task_id: str, state_machine: TaskStateMachine) -> dict:
             else:
                 update["infor_item_number"] = ", ".join(sorted(items_found))
                 update["status"] = Status.MULTI_ITEM_ERROR
-                task_repo.upsert_preprocess_issue(
-                    task_id=task_id,
-                    item_id=item.item_id,
-                    issue_type="MULTI_ITEM_ERROR",
-                    severity="ERROR",
-                    detail=json.dumps({
+                pending_issue_records.append({
+                    "task_id": task_id,
+                    "item_id": item.item_id,
+                    "issue_type": "MULTI_ITEM_ERROR",
+                    "severity": "ERROR",
+                    "detail": json.dumps({
                         "candidates": sorted(items_found),
                         "sources": {
                             "mdm_item":        update.get("infor_item_1"),
@@ -995,7 +994,7 @@ def run_item_labeling(task_id: str, state_machine: TaskStateMachine) -> dict:
                             "infor_cl":        update.get("infor_item_3"),
                         },
                     }),
-                )
+                })
 
             final_items = _split_multi_value_items(update.get("infor_item_number"))
             for final_item in final_items:
@@ -1017,6 +1016,7 @@ def run_item_labeling(task_id: str, state_machine: TaskStateMachine) -> dict:
     # Bulk update items
     if updates:
         task_repo.update_items_bulk(updates)
+    task_repo.add_preprocess_issues_bulk(pending_issue_records)
     task_repo.delete_item_matches_for_task(task_id)
     if item_match_rows:
         task_repo.add_item_matches_bulk(item_match_rows)
@@ -1057,6 +1057,9 @@ def run_buy_uom_check(task_id: str, state_machine: TaskStateMachine) -> dict:
     status_by_item_id = {item.item_id: getattr(item, "status", None) for item in input_items}
     candidate_updates: list[dict] = []
     matched_candidate_count = 0
+    # Buffer BUY_UOM_ERROR/WARN records and bulk-insert at the end. Per-item
+    # upsert was firing one round-trip per flagged row.
+    pending_issue_records: list[dict] = []
 
     with _sql_session() as sess:
         uom_cache: dict[str, list[str]] = {}
@@ -1122,23 +1125,24 @@ def run_buy_uom_check(task_id: str, state_machine: TaskStateMachine) -> dict:
             new_status = Status.BUY_UOM_WARN if is_expire else Status.BUY_UOM_ERROR
             severity = "WARN" if is_expire else "ERROR"
             update_map[item.item_id]["status"] = new_status
-            task_repo.upsert_preprocess_issue(
-                task_id=task_id,
-                item_id=item.item_id,
-                issue_type="BUY_UOM_ERROR",
-                severity=severity,
-                detail=json.dumps({
+            pending_issue_records.append({
+                "task_id": task_id,
+                "item_id": item.item_id,
+                "issue_type": "BUY_UOM_ERROR",
+                "severity": severity,
+                "detail": json.dumps({
                     "expected": expected_option,
                     "available": sorted(option_values),
                     "infor_item_number": getattr(item, "infor_item_number", None),
                     "intention": item_intention,
                 }),
-            )
+            })
 
     if updates:
         task_repo.update_items_bulk(updates)
     if candidate_updates:
         task_repo.update_item_matches_bulk(candidate_updates)
+    task_repo.add_preprocess_issues_bulk(pending_issue_records)
 
     state["buy_uom_check_done"] = True
     state["status"] = Status.PENDING_FINALIZATION

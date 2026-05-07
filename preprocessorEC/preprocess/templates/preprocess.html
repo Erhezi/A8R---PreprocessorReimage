@@ -287,6 +287,7 @@
         <div class="d-flex gap-2">
           <button class="btn btn-sm btn-outline-success" id="btnAcceptSelected" disabled>Mark Selected as True Match</button>
           <button class="btn btn-sm btn-outline-danger" id="btnRejectSelected" disabled>Mark Selected as False Positive</button>
+          <button class="btn btn-sm btn-outline-primary" id="btnLlmPending" disabled title="No PENDING matches">Send PENDING to LLM</button>
         </div>
       </div>
       <div class="table-responsive" style="max-height:600px; overflow-y:auto">
@@ -684,6 +685,21 @@ function updateFinalizeGate() {
     btn.disabled = false;
     btn.title = "";
   }
+  updateLlmPendingButton(pendingTotal);
+}
+
+function updateLlmPendingButton(pendingTotal) {
+  const btn = document.getElementById("btnLlmPending");
+  if (!btn || btn.dataset.busy === "1") return;
+  if (pendingTotal > 0) {
+    btn.disabled = false;
+    btn.textContent = `Send ${pendingTotal} PENDING to LLM`;
+    btn.title = `Send ${pendingTotal} PENDING match(es) to the LLM for ACCEPT/REJECT review.`;
+  } else {
+    btn.disabled = true;
+    btn.textContent = "Send PENDING to LLM";
+    btn.title = "No PENDING matches";
+  }
 }
 
 async function loadContracts() {
@@ -987,6 +1003,43 @@ document.getElementById("btnAcceptSelected").addEventListener("click", async () 
   selectedMatchIds = new Set();
   loadContracts();
   loadMatches();
+});
+
+document.getElementById("btnLlmPending").addEventListener("click", async () => {
+  const btn = document.getElementById("btnLlmPending");
+  if (btn.disabled) return;
+  let pendingTotal = 0;
+  for (const c of contractSummaryData) {
+    pendingTotal += Number(c.pending || 0);
+  }
+  if (pendingTotal === 0) return;
+  if (!confirm(`Send ${pendingTotal} PENDING match(es) to the LLM? The LLM will set each to ACCEPTED or REJECTED.`)) return;
+
+  btn.dataset.busy = "1";
+  btn.disabled = true;
+  const originalText = btn.textContent;
+  btn.textContent = "Reviewing…";
+  try {
+    const resp = await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/llm-review-pending`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+    });
+    if (!resp.ok) {
+      alert("LLM review failed. See server logs for details.");
+      btn.textContent = originalText;
+      return;
+    }
+    const data = await resp.json();
+    alert(`LLM reviewed ${data.reviewed || 0} PENDING match(es).`);
+  } catch (err) {
+    alert(`LLM review failed: ${err}`);
+    btn.textContent = originalText;
+  } finally {
+    btn.dataset.busy = "0";
+    selectedMatchIds = new Set();
+    await loadContracts();
+    await loadMatches();
+  }
 });
 
 // ---- Finalize ------------------------

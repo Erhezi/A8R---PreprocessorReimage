@@ -89,6 +89,8 @@ SELECT
     COALESCE(tid.contract_id_input,    t.contract_number) AS contract_id_input,
     COALESCE(tid.erp_vendor_id_input,  t.vendor_id)       AS erp_vendor_id_input,
     COALESCE(tid.organization_input,   t.organization)    AS organization_input,
+    t.contract_start_date                                 AS effective_date_input,
+    t.contract_end_date                                   AS expiration_date_input,
     COALESCE(tid.infor_item_number,    ti.infor_item_number) AS infor_item_number,
     pim.infor_buy_uom_options                             AS infor_buy_uom_options,
     tid.dedup_id,

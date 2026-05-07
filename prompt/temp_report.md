@@ -107,7 +107,7 @@ v1.0 compatible report
     - sheet name: view_by_input
     - this sheet will take all the input lines as the left set of columns, and left join to the matched CCX ACCEPTED records, the columns arrangement will be:
     - column header with light blue background:
-    Mfg Part Num (Input) | Vendor Part Num (Input) | Description (Input) | Contract Price (Input) | UOM (Input) | QOE (Input) | Contract ID (Input) | ERP Vendor ID (Input) | Organization (Input) | Infor Item # | Infor Item BuyUOM Options| Valid BuyUOM (Y/N) | Input Ref |Dup Matched (Y/N) | Total Matched Lines |
+    Mfg Part Num (Input) | Vendor Part Num (Input) | Buyer Part Num (Input) | Description (Input) | Contract Price (Input) | UOM (Input) | QOE (Input) | Effective Date (Input) | Expiration Date (Input) | Contract ID (Input) | ERP Vendor ID (Input) | Organization (Input) | Infor Item # | Infor Item BuyUOM Options| Valid BuyUOM (Y/N) | Input Ref |Dup Matched (Y/N) | Total Matched Lines |
     - column header with yellow background:
     Mfg Part Number | Vendor Part Number | Buyer Part Num | Description | Contract Price | UOM | QOE | Effective Date | Expiration Date | Contract ID | ERP Vendor ID | Organization |
 
@@ -116,3 +116,10 @@ v1.0 compatible report
     - Input Ref column will be the input file row number that is under the column 'file_row' on PreprocessorTaskItem (should be easily obtained by task_id and input_item_id)
     - Infor Item BuyUOM Options column will be populated with the available buy UOM options for the matched Infor item, which can be obtained from the infor_item_uom_options column on PreprocessorItemMatching table using task_id, input_item_id (item_id) and the infor_item_num
     - Valid BuyUOM (Y/N) column will be populated with "Yes" if the input line UOM (Infor Mapped)*QOE is in the available buy UOM options for the matched Infor item, otherwise "No", highlilght the row if the the column marked as 'No'
+
+- replacement contract special
+  - when a matched contract is marked as 'to be replaced by input' in the dedup logic, the output tab for that specific contract(s) will take the same column arragement, but we will find the rest of the records that are on the same contract that did not match to input so we know if we use the input to 'replace' the old contract, what items are covered (matched) and what items are not covered (unmatched).
+  - for unmatched records:
+    - Action: Only seen on to-be replaced contract [contract_id]
+    - Notes: check if the item is discontinued, or evaluate if we need put this to the new contract
+    

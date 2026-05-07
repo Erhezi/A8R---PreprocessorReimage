@@ -427,17 +427,97 @@ def update_items_bulk(updates: list[dict], **kwargs) -> None:
     *updates* is a list of dicts, each containing an ``item_id`` key and
     the column values to set.  If called with plain ``item_ids`` + keyword
     args (legacy), the keyword values are applied uniformly.
+
+    The list-of-dicts path uses ``bulk_update_mappings`` so a 5,000-row
+    payload doesn't issue 5,000 SELECT+UPDATE round-trips.
+    """
+    if not updates:
+        return
+    now = ny_now()
+    with _session() as s:
+        if isinstance(updates[0], dict):
+            allowed = {c.key for c in TaskItem.__table__.columns}
+            payload = []
+            for entry in updates:
+                iid = entry.get("item_id")
+                if iid is None:
+                    continue
+                row = {k: v for k, v in entry.items() if k in allowed}
+                row["item_id"] = iid
+                row.setdefault("updated_at", now)
+                payload.append(row)
+            if payload:
+                s.bulk_update_mappings(TaskItem, payload)
+        else:
+            # Legacy path: list of bare item_ids + uniform kwargs
+            for iid in updates:
+                item = s.get(TaskItem, iid)
+                if item:
+                    for k, v in kwargs.items():
+                        if hasattr(item, k):
+                            setattr(item, k, v)
+                    item.updated_at = now
+        s.commit()
+
+
+def bulk_reset_items_to_uploaded(task_id: str) -> None:
+    """Reset every non-soft-deleted item on *task_id* to UPLOADED.
+
+    Single UPDATE statement; replaces a per-item loop that would otherwise
+    issue one round-trip per row at the start of every PC1 run. We filter by
+    status rather than passing an ``item_id IN (...)`` list because SQL Server
+    caps a single statement at 2,100 parameters, which a 5k-row task blows
+    past.
     """
     with _session() as s:
-        for entry in updates:
-            iid = entry.get("item_id") if isinstance(entry, dict) else entry
-            fields = {k: v for k, v in entry.items() if k != "item_id"} if isinstance(entry, dict) else kwargs
-            item = s.get(TaskItem, iid)
-            if item:
-                for k, v in fields.items():
-                    if hasattr(item, k):
-                        setattr(item, k, v)
-                item.updated_at = ny_now()
+        s.query(TaskItem).filter(
+            TaskItem.task_id == task_id,
+            TaskItem.status != Status.DELETED_PC1,
+        ).update(
+            {"status": Status.UPLOADED, "error_message": None, "updated_at": ny_now()},
+            synchronize_session=False,
+        )
+        s.commit()
+
+
+def bulk_resolve_precheck_errors(task_id: str, phase: str, resolved_by: str) -> None:
+    """Mark every unresolved error for (task, phase) as resolved in one query."""
+    with _session() as s:
+        s.query(PreCheckError).filter(
+            PreCheckError.task_id == task_id,
+            PreCheckError.phase == phase,
+            PreCheckError.resolved == False,  # noqa: E712
+        ).update(
+            {"resolved": True, "resolved_by": resolved_by, "resolved_at": ny_now()},
+            synchronize_session=False,
+        )
+        s.commit()
+
+
+def bulk_update_item_statuses(updates: list[dict]) -> None:
+    """Apply per-item ``(status, error_message)`` updates in one session.
+
+    Each dict needs ``item_id`` and ``status``; ``error_message`` is optional
+    (defaults to ``None``). Uses ``bulk_update_mappings`` so the per-row
+    overhead is a prepared-statement parameter pack rather than a SELECT.
+    """
+    if not updates:
+        return
+    now = ny_now()
+    payload = [
+        {
+            "item_id": u["item_id"],
+            "status": u["status"],
+            "error_message": u.get("error_message"),
+            "updated_at": now,
+        }
+        for u in updates
+        if u.get("item_id") is not None
+    ]
+    if not payload:
+        return
+    with _session() as s:
+        s.bulk_update_mappings(TaskItem, payload)
         s.commit()
 
 
@@ -527,6 +607,20 @@ def add_precheck_error(
         s.refresh(err)
         s.expunge(err)
         return err
+
+
+def add_precheck_errors_bulk(records: list[dict]) -> None:
+    """Insert many PreCheckError rows in one round-trip.
+
+    Each dict must contain ``task_id``, ``phase``, ``error_type``; ``item_id``
+    and ``error_detail`` are optional. Used by intake_service.run_precheck to
+    avoid issuing one INSERT per validation issue on large files.
+    """
+    if not records:
+        return
+    with _session() as s:
+        s.bulk_insert_mappings(PreCheckError, records)
+        s.commit()
 
 
 def get_precheck_errors(task_id: str, phase: Optional[str] = None, resolved: Optional[bool] = None) -> list[PreCheckError]:
@@ -1049,6 +1143,32 @@ def resolve_preprocess_issue(
         s.refresh(issue)
         s.expunge(issue)
         return issue
+
+
+def add_preprocess_issues_bulk(records: list[dict]) -> None:
+    """Insert many PreprocessIssue rows in one round-trip.
+
+    Each dict must contain ``task_id``, ``item_id``, ``issue_type``,
+    ``severity``; ``detail`` is optional. Used by the preprocess pipeline
+    after deleting unresolved issues of the same type so that a 5,000-row
+    rerun doesn't issue one INSERT per flagged row.
+
+    ``resolved`` / ``created_at`` / ``updated_at`` are set explicitly because
+    ``bulk_insert_mappings`` skips Python-side ``default=`` callables.
+    """
+    if not records:
+        return
+    now = ny_now()
+    payload = []
+    for r in records:
+        row = dict(r)
+        row.setdefault("resolved", False)
+        row.setdefault("created_at", now)
+        row.setdefault("updated_at", now)
+        payload.append(row)
+    with _session() as s:
+        s.bulk_insert_mappings(PreprocessIssue, payload)
+        s.commit()
 
 
 def delete_preprocess_issues_for_task(task_id: str) -> int:

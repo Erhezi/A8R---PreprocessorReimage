@@ -27,12 +27,18 @@ def init_engines(app) -> None:
     global _sqlserver_engine, _sqlite_workstate_engine
 
     # --- SQL Server (primary data store) ---
+    # fast_executemany packs executemany() params into one TDS round-trip.
+    # Without it, bulk_insert_mappings/bulk_update_mappings still issue one
+    # round-trip per row over pyodbc, which is what made PC1 take ~20 min on
+    # 5,000-row uploads. Toggle off via DB_FAST_EXECUTEMANY=False if a driver
+    # version regression appears.
     _sqlserver_engine = create_engine(
         app.config["DB_CONN_STRING"],
         poolclass=QueuePool,
         pool_size=app.config.get("DB_POOL_SIZE", 10),
         max_overflow=app.config.get("DB_MAX_OVERFLOW", 20),
         pool_pre_ping=app.config.get("DB_POOL_PRE_PING", True),
+        fast_executemany=app.config.get("DB_FAST_EXECUTEMANY", True),
     )
     # Keep backward compat: old code reads app.config['DB_ENGINE']
     app.config["DB_ENGINE"] = _sqlserver_engine

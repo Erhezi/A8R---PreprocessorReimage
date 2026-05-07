@@ -266,6 +266,17 @@ def api_llm_review(task_id: str):
     return jsonify(result)
 
 
+@preprocess_bp.route("/api/preprocess/<task_id>/llm-review-pending", methods=["POST"])
+@login_required
+def api_llm_review_pending(task_id: str):
+    """Send every remaining PENDING match (any bucket, any source) to the LLM.
+
+    Used after manual review to auto-decide leftover PENDING rows in one batch.
+    """
+    result = preprocess_service.run_llm_review_pending_all(task_id, _sm())
+    return jsonify(result)
+
+
 @preprocess_bp.route("/api/preprocess/<task_id>/finalize", methods=["POST"])
 @login_required
 def api_finalize(task_id: str):

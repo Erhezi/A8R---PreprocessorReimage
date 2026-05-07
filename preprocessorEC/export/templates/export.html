@@ -337,8 +337,11 @@
       return resp.json();
     })
     .then((data) => {
-      if (!data.sheets || data.sheets.length === 0) {
-        renderEmpty("No CCX/ACCEPTED matches to export for this task.");
+      const hasSheets = Array.isArray(data.sheets) && data.sheets.length > 0;
+      const hasViewByInputRows =
+        data.view_by_input && (data.view_by_input.row_count || 0) > 0;
+      if (!hasSheets && !hasViewByInputRows) {
+        renderEmpty("No input lines to export for this task.");
         return;
       }
       previewData = data;
