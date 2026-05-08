@@ -234,6 +234,94 @@ def _matched_row_dict(row) -> dict:
     }
 
 
+def _augment_groups_with_replacements(
+    groups: "OrderedDict[str, dict]",
+    unmatched_rows: list[dict],
+) -> "OrderedDict[str, dict]":
+    """Attach unmatched-CCX rows to per-contract sheet groups for REPLACE
+    scopes, creating new groups for REPLACE contracts that have no ACCEPTED
+    matches at all.
+
+    Rows are tagged ``__replacement__: True`` so the formatting step routes
+    them through ``_replacement_unmatched_row_dict`` instead of the regular
+    matched-row path (which expects input-side columns that aren't present
+    on these CCX-only rows).
+    """
+    if not unmatched_rows:
+        return groups
+
+    by_key: "OrderedDict[tuple, list[dict]]" = OrderedDict()
+    for row in unmatched_rows:
+        key = (
+            row.get("organization_eid_matched") or "",
+            row.get("contract_id_matched") or "",
+            row.get("erp_vendor_id_matched") or "",
+        )
+        tagged = dict(row)
+        tagged["__replacement__"] = True
+        by_key.setdefault(key, []).append(tagged)
+
+    sheet_name_by_key = {
+        (
+            payload["key"]["organization_eid"],
+            payload["key"]["contract_id"],
+            payload["key"]["erp_vendor_id"],
+        ): sheet_name
+        for sheet_name, payload in groups.items()
+    }
+
+    contract_total: dict[str, int] = {}
+    for sheet_name, payload in groups.items():
+        contract_total[payload["key"]["contract_id"]] = (
+            contract_total.get(payload["key"]["contract_id"], 0) + 1
+        )
+    for key in by_key:
+        if key in sheet_name_by_key:
+            continue
+        contract_total[key[1]] = contract_total.get(key[1], 0) + 1
+
+    contract_counter: dict[str, int] = {}
+    used_names = set(groups.keys())
+
+    for key, repl_rows in by_key.items():
+        org_eid, contract_id, erp_vendor = key
+        existing_sheet = sheet_name_by_key.get(key)
+        if existing_sheet:
+            groups[existing_sheet]["rows"].extend(repl_rows)
+            continue
+
+        # No ACCEPTED matches under this REPLACE scope — create a fresh sheet
+        # carrying only unmatched rows. Reuse the same naming convention as
+        # _build_sheet_groups so a contract appearing under multiple scopes
+        # gets _1/_2 suffixes.
+        base_name = contract_id or "no_contract"
+        if contract_total.get(contract_id, 0) > 1:
+            contract_counter[contract_id] = contract_counter.get(contract_id, 0) + 1
+            base_name = f"{base_name}_{contract_counter[contract_id]}"
+        sheet_name = _normalize_sheet_name(base_name)
+        candidate = sheet_name
+        suffix = 1
+        while candidate in used_names:
+            suffix += 1
+            candidate = _normalize_sheet_name(f"{sheet_name}_{suffix}")
+        used_names.add(candidate)
+
+        first = repl_rows[0]
+        groups[candidate] = {
+            "key": {
+                "organization_eid": org_eid,
+                "contract_id": contract_id,
+                "erp_vendor_id": erp_vendor,
+                "organization": first.get("organization_matched") or "",
+                "contract_id_input": "",
+                "erp_vendor_id_input": "",
+                "organization_input": "",
+            },
+            "rows": list(repl_rows),
+        }
+    return groups
+
+
 def _build_sheet_groups(rows: list[dict]) -> "OrderedDict[str, dict]":
     """Partition rows by (Organization, ContractID, ERPVendorID) and
     pick a unique sheet name per group.
@@ -294,6 +382,54 @@ def _fetch_review_rows(session: Session, task_id: str) -> list[dict]:
 def _fetch_view_by_input_rows(session: Session, task_id: str) -> list[dict]:
     stmt = load_query("export", "dedup_review", query="view_by_input_rows")
     return [dict(r) for r in session.execute(stmt, {"task_id": task_id}).mappings().all()]
+
+
+def _fetch_replacement_unmatched_rows(session: Session, task_id: str) -> list[dict]:
+    """CCX lines on REPLACE-marked contracts that did NOT match any input."""
+    stmt = load_query("export", "dedup_review", query="replacement_unmatched_lines")
+    return [dict(r) for r in session.execute(stmt, {"task_id": task_id}).mappings().all()]
+
+
+REPLACEMENT_UNMATCHED_NOTES = (
+    "check if the item is discontinued, or evaluate if we need put this to "
+    "the new contract"
+)
+
+
+def _replacement_unmatched_row_dict(row) -> dict:
+    """Format a CCX-only "unmatched on to-be-replaced contract" row.
+
+    Matched columns come from CCX; input columns are blank because there is
+    no input line for these items. Action / Notes carry the replacement
+    explanation called out in the report spec.
+    """
+    matched_contract_id = _safe_str(row.get("contract_id_matched"))
+    return {
+        "Mfg Part Number": _safe_str(row.get("manufacturer_number_matched")),
+        "Vendor Part Number": _safe_str(row.get("vendor_item_matched")),
+        "Buyer Part Num": "",
+        "Description": _safe_str(row.get("item_desc_matched")),
+        "Contract Price": _safe_number(row.get("contract_price_matched")),
+        "UOM": _safe_str(row.get("uom_matched")),
+        "QOE": _safe_number(row.get("qoe_matched")),
+        "Effective Date": _to_date_str(row.get("effective_date_matched")),
+        "Expiration Date": _to_date_str(row.get("expiration_date_matched")),
+        "Contract ID": matched_contract_id,
+        "ERP Vendor ID": _safe_str(row.get("erp_vendor_id_matched")),
+        "Organization": _safe_str(row.get("organization_matched")),
+        "Action": f"Only seen on to-be replaced contract {matched_contract_id}",
+        "Notes": REPLACEMENT_UNMATCHED_NOTES,
+        "Mfg Part Num (Input)": "",
+        "Vendor Part Num (Input)": "",
+        "Description (Input)": "",
+        "Contract Price (Input)": "",
+        "UOM (Input)": "",
+        "QOE (Input)": "",
+        "Contract ID (Input)": "",
+        "ERP Vendor ID (Input)": "",
+        "Organization (Input)": "",
+        "Infor Item #": "",
+    }
 
 
 def _view_by_input_row_dict(row) -> dict:
@@ -386,6 +522,8 @@ def get_review_data(task_id: str) -> dict:
     with _session() as session:
         rows = _fetch_review_rows(session, task_id)
         groups = _build_sheet_groups(rows)
+        unmatched_repl_raw = _fetch_replacement_unmatched_rows(session, task_id)
+        groups = _augment_groups_with_replacements(groups, unmatched_repl_raw)
         totals = _fetch_contract_totals(
             session, [g["key"]["contract_id"] for g in groups.values()]
         )
@@ -422,12 +560,18 @@ def get_review_data(task_id: str) -> dict:
     sheets: list[dict] = []
     for sheet_name, payload in groups.items():
         key = payload["key"]
-        formatted_rows = [_matched_row_dict(r) for r in payload["rows"]]
+        formatted_rows: list[dict] = []
+        matched_lines = 0
+        for raw in payload["rows"]:
+            if raw.get("__replacement__"):
+                formatted_rows.append(_replacement_unmatched_row_dict(raw))
+            else:
+                formatted_rows.append(_matched_row_dict(raw))
+                matched_lines += 1
         total_lines = totals.get(
             (key["organization_eid"], key["contract_id"], key["erp_vendor_id"]),
             0,
         )
-        matched_lines = len(formatted_rows)
         summary.append({
             "sheet_name": sheet_name,
             "contract_id": key["contract_id"],
@@ -444,7 +588,7 @@ def get_review_data(task_id: str) -> dict:
             "sheet_name": sheet_name,
             "key": key,
             "rows": formatted_rows,
-            "row_count": matched_lines,
+            "row_count": len(formatted_rows),
         })
 
     filename = _build_filename(task)

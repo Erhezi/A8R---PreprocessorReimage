@@ -21,6 +21,7 @@ from ..models import (
     ItemMatchCandidate,
     PreprocessIssue,
     TaskItemForDecision,
+    ContractDecision,
 )
 from ..state import Status
 from ..common.utils import ny_now
@@ -1197,6 +1198,88 @@ def delete_unresolved_preprocess_issues(task_id: str, issue_types: list[str]) ->
         )
         s.commit()
         return count
+
+
+# ---------------------------------------------------------------------------
+# ContractDecision — per-(task, contract scope) tri-state reviewer choice
+# (INCLUDE | EXCLUDE | REPLACE). See migration 026.
+# ---------------------------------------------------------------------------
+CONTRACT_DECISION_VALUES = ("INCLUDE", "EXCLUDE", "REPLACE")
+
+
+def _contract_decision_scope(
+    organization_eid: Optional[str],
+    contract_id: str,
+    erp_vendor_id: Optional[str],
+) -> tuple[str, str, str]:
+    return (
+        (organization_eid or ""),
+        (contract_id or ""),
+        (erp_vendor_id or ""),
+    )
+
+
+def upsert_contract_decision(
+    task_id: str,
+    organization_eid: Optional[str],
+    contract_id: str,
+    erp_vendor_id: Optional[str],
+    decision: str,
+    decided_by: str,
+) -> ContractDecision:
+    if decision not in CONTRACT_DECISION_VALUES:
+        raise ValueError(f"decision must be one of {CONTRACT_DECISION_VALUES}")
+    org_eid, cid, vendor = _contract_decision_scope(organization_eid, contract_id, erp_vendor_id)
+    with _session() as s:
+        row = (
+            s.query(ContractDecision)
+            .filter(
+                ContractDecision.task_id == task_id,
+                ContractDecision.organization_eid == org_eid,
+                ContractDecision.contract_id == cid,
+                ContractDecision.erp_vendor_id == vendor,
+            )
+            .one_or_none()
+        )
+        if row is None:
+            row = ContractDecision(
+                task_id=task_id,
+                organization_eid=org_eid,
+                contract_id=cid,
+                erp_vendor_id=vendor,
+                decision=decision,
+                decided_by=decided_by,
+                decided_at=ny_now(),
+            )
+            s.add(row)
+        else:
+            row.decision = decision
+            row.decided_by = decided_by
+            row.decided_at = ny_now()
+        s.commit()
+        s.refresh(row)
+        s.expunge(row)
+        return row
+
+
+def get_contract_decisions(task_id: str) -> list[ContractDecision]:
+    with _session() as s:
+        rows = (
+            s.query(ContractDecision)
+            .filter(ContractDecision.task_id == task_id)
+            .all()
+        )
+        for row in rows:
+            s.expunge(row)
+        return rows
+
+
+def get_contract_decisions_map(task_id: str) -> dict[tuple[str, str, str], str]:
+    """Return {(organization_eid, contract_id, erp_vendor_id): decision}."""
+    return {
+        (row.organization_eid, row.contract_id, row.erp_vendor_id): row.decision
+        for row in get_contract_decisions(task_id)
+    }
 
 
 # ---------------------------------------------------------------------------

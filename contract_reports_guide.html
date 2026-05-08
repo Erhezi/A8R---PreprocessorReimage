@@ -1,0 +1,713 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Sourcing Guide — Reading the Dedup Review and Pre-Check Reports</title>
+<style>
+  :root {
+    --yellow: #FFF2CC;
+    --yellow-border: #E0C56A;
+    --blue: #D9E1F2;
+    --blue-border: #8FAEDC;
+    --orange: #FCE4D6;
+    --orange-border: #E0A57A;
+    --green: #E2EFDA;
+    --green-border: #8FC79B;
+    --gray: #F2F2F2;
+    --text: #222;
+    --muted: #666;
+    --accent: #1F4E79;
+  }
+  body {
+    font-family: "Segoe UI", Calibri, Arial, sans-serif;
+    color: var(--text);
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 32px 28px 80px 28px;
+    line-height: 1.55;
+    background: #fff;
+  }
+  h1 {
+    color: var(--accent);
+    border-bottom: 3px solid var(--accent);
+    padding-bottom: 8px;
+    margin-top: 0;
+  }
+  h2 {
+    color: var(--accent);
+    margin-top: 2.2em;
+    border-bottom: 1px solid #cfd8e3;
+    padding-bottom: 4px;
+  }
+  h3 {
+    color: #2C5C8A;
+    margin-top: 1.6em;
+  }
+  h4 {
+    color: #2C5C8A;
+    margin-top: 1.2em;
+    margin-bottom: 0.4em;
+  }
+  p, li { font-size: 15px; }
+  code {
+    background: var(--gray);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 0.92em;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 12px 0 18px 0;
+    font-size: 14px;
+  }
+  th, td {
+    border: 1px solid #b8b8b8;
+    padding: 6px 10px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th {
+    background: var(--gray);
+    font-weight: 600;
+  }
+  th.yellow, td.yellow { background: var(--yellow); }
+  th.blue, td.blue { background: var(--blue); }
+  .legend {
+    display: flex;
+    gap: 16px;
+    margin: 8px 0 18px 0;
+    flex-wrap: wrap;
+  }
+  .swatch {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    margin-right: 6px;
+    vertical-align: middle;
+    border: 1px solid #999;
+  }
+  .callout {
+    border-left: 4px solid;
+    padding: 10px 14px;
+    margin: 14px 0;
+    border-radius: 3px;
+  }
+  .callout.tip       { background: var(--green);  border-color: var(--green-border); }
+  .callout.warn      { background: var(--orange); border-color: var(--orange-border); }
+  .callout.note      { background: var(--blue);   border-color: var(--blue-border); }
+  .callout.matched   { background: var(--yellow); border-color: var(--yellow-border); }
+  .callout strong { display: block; margin-bottom: 4px; }
+  .toc {
+    background: var(--gray);
+    padding: 14px 22px;
+    border-radius: 6px;
+    margin-bottom: 24px;
+  }
+  .toc ol { margin: 0; padding-left: 22px; }
+  .toc li { margin: 4px 0; }
+  .key-table th { width: 35%; }
+  .narrow td:first-child { width: 28%; font-weight: 600; }
+  .small { font-size: 13px; color: var(--muted); }
+  .term {
+    font-weight: 600;
+    color: var(--accent);
+  }
+  ul.checks { list-style: none; padding-left: 0; }
+  ul.checks li::before {
+    content: "\2713\00a0\00a0";
+    color: #2E7D32;
+    font-weight: bold;
+  }
+  ul.x li::before {
+    content: "\2717\00a0\00a0";
+    color: #C62828;
+    font-weight: bold;
+  }
+  ul.x { list-style: none; padding-left: 0; }
+  hr {
+    border: none;
+    border-top: 1px dashed #aaa;
+    margin: 28px 0;
+  }
+  .filename {
+    font-family: Consolas, "Courier New", monospace;
+    background: #f8f8f8;
+    border: 1px solid #ddd;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 0.92em;
+  }
+  .pill {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 10px;
+    font-size: 12px;
+    font-weight: 600;
+    margin-right: 4px;
+  }
+  .pill.ss    { background: #E8F0FE; color: #1A4480; }
+  .pill.dv    { background: #FFF4E5; color: #8B5A00; }
+  .pill.odo   { background: #EDE7F6; color: #4527A0; }
+  .pill.tccd  { background: #E8F5E9; color: #1B5E20; }
+  .pill.ceccd { background: #FCE4EC; color: #880E4F; }
+  .pill.expire { background: #ECEFF1; color: #455A64; }
+</style>
+</head>
+<body>
+
+<h1>Sourcing Guide: Reading the Dedup Review &amp; Pre-Check Reports</h1>
+<p class="small">Audience: Sourcing reviewers. No technical background assumed. This guide explains what the system is checking, why it matters, and how to act on what you see in the two Excel files the tool produces.</p>
+
+<div class="toc">
+  <strong>Contents</strong>
+  <ol>
+    <li><a href="#part1">What is an acceptable contract price document?</a></li>
+    <li><a href="#part2">The Dedup Review report — what it tells you and how to read it</a></li>
+    <li><a href="#part3">The Pre-Check report — what it tells you and how to read it</a></li>
+    <li><a href="#part4">Quick reference cheat sheet</a></li>
+  </ol>
+</div>
+
+<!-- =============== PART 1 =============== -->
+<h2 id="part1">1. What is an acceptable contract price document?</h2>
+
+<p>Before we look at the reports, it helps to be on the same page about what a "good" contract price document needs to contain. The reports below are essentially asking "is this contract clean enough to load, and does it conflict with anything we already have on file?" — so the rules below are the yardstick.</p>
+
+<h3>1.1 The minimum information a contract must carry</h3>
+<p>Every line on a contract price file must answer six questions. If any of them are missing, we cannot load it cleanly:</p>
+
+<table class="key-table narrow">
+  <thead>
+    <tr><th>Question</th><th>What it tells us</th><th>Field on the file</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Who are the contracting parties?</td>
+      <td>Which Montefiore organization is buying, and which vendor is selling.</td>
+      <td>Organization, ERP Vendor ID</td>
+    </tr>
+    <tr>
+      <td>Who makes the product?</td>
+      <td>The manufacturer responsible for producing the item.</td>
+      <td>Manufacturer, Mfg Part Number</td>
+    </tr>
+    <tr>
+      <td>What product is included?</td>
+      <td>The unique part number assigned by the manufacturer. This is how we know two lines refer to the same product.</td>
+      <td>Mfg Part Number</td>
+    </tr>
+    <tr>
+      <td>How do we order it?</td>
+      <td>The vendor's catalog number, the unit of measure (UOM), the quantity that comes in that unit (QOE), and the price.</td>
+      <td>Vendor Part Number, UOM, QOE, Contract Price</td>
+    </tr>
+    <tr>
+      <td>When does the price apply?</td>
+      <td>The window during which this price is valid.</td>
+      <td>Effective Date, Expiration Date</td>
+    </tr>
+    <tr>
+      <td>Which contract is this?</td>
+      <td>The contract identifier that ties the line to a specific agreement.</td>
+      <td>Contract ID</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="callout tip">
+  <strong>Why each field matters</strong>
+  These contracts are what buyers' requisitions resolve against when staff order supplies across the hospital system. If a line is missing required information, or the identifiers/packaging are off, the requisition can fail to find the contracted item — and the order ends up bypassing the contract entirely (wrong price, wrong terms, or the item simply not pulled from the right agreement).
+</div>
+
+<h3>1.2 No duplicates from an ordering perspective</h3>
+<p>On a single contract, the same product in the same packaging should appear <strong>only once</strong>. "Same product, same packaging" means:</p>
+<ul>
+  <li>same Manufacturer Part Number, <strong>and</strong></li>
+  <li>same UOM and QOE (so the unit you order is identical).</li>
+</ul>
+<p>If the same product shows up twice on the same contract (e.g., two lines, same Mfg Part Number, same UOM, same QOE, possibly different prices), the system has no way to know which one to use when a buyer places an order. That has to be cleaned up before loading.</p>
+<div class="callout note">
+  <strong>UOM aliases also count as duplicates</strong>
+  Some vendors use codes like <code>CS</code> and <code>CA</code> interchangeably to mean "case" — the same physical packaging, just labeled differently on different lines. The system treats these as equivalent, so two lines with the same Mfg Part Number and the same QOE, one labeled <code>CS</code> and the other <code>CA</code>, are flagged as duplicates and need to be reconciled to a single line.
+</div>
+
+<h3>1.3 The "one item, one contract" guidance</h3>
+<p>Montefiore's general rule is: <strong>the same product should live on only one contract</strong>. A "contract," in this context, is the combination of three things together:</p>
+
+<div class="callout note">
+  <strong>One contract = one (Organization, Vendor, Contract&nbsp;ID) trio</strong>
+  Two lines that share all three of those values are on the same contract. Change any one of them and you are looking at a different contract.
+</div>
+
+<p>Some additional nuance:</p>
+<ul>
+  <li>In some cases, a Member Entity (ME) organization and the MHS organization are carrying the same item on parallel contracts. <strong>That may need to be consolidated</strong> — usually onto the MHS-side contract — unless the organizations genuinely have different prices for the item.</li>
+  <li>When system constraints make it impossible to have a strict 1-product-1-contract relationship, the rule becomes:
+    <strong>across all the contracts that carry the same product in the same packaging, the data elements (Manufacturer, Mfg Part Number, Vendor Part Number, UOM, QOE) must be consistent with each other.</strong>
+    Prices may differ across contracts; the identifiers and packaging must not.
+  </li>
+</ul>
+
+<h4>When 1-product-1-contract is genuinely not achievable</h4>
+<p>A few real situations force the same product onto more than one contract:</p>
+<ul>
+  <li><strong>Two organizations, same vendor, different prices.</strong> Two organizations buy the same product from the same vendor but at different negotiated prices — each org needs its own contract line so its requisitions resolve to its own price.</li>
+  <li><strong>Same product available from two different vendors.</strong> We want the option to buy from either vendor. Each vendor sits on its own contract.</li>
+  <li><strong>Premier contract coexists with a better-priced local contract.</strong> We are obliged to keep the Premier line on file even when a local contract has a better price — so both have to remain.</li>
+</ul>
+
+<h4>What "consistent data elements" looks like in practice</h4>
+<p>The fields that have to match depend on <em>why</em> the duplication exists. A few examples:</p>
+<ul>
+  <li><strong>Same vendor, two different prices for the same product (e.g., MHS vs ME pricing):</strong>
+    Manufacturer, Mfg Part Number, Vendor Part Number, UOM, and QOE must all be identical across the two lines. Only the Contract Price (and the contract-header fields like Org and Contract&nbsp;ID) should differ.</li>
+  <li><strong>Same product bought from two different vendors, same packaging:</strong>
+    Manufacturer, Mfg Part Number, UOM, and QOE must be identical. The <em>Vendor Part Number can legitimately differ</em>, because each vendor uses its own catalog number for the same item.</li>
+  <li><strong>Same product offered in different packaging (e.g., one contract sells it by EA, another by CS):</strong>
+    Manufacturer and Mfg Part Number must be identical. UOM, QOE, Vendor Part Number, and price are allowed to differ to reflect the different packaging.</li>
+</ul>
+<p>The common thread: <strong>Manufacturer and Mfg Part Number always have to agree</strong> — they are how the system knows two lines refer to the same product in the first place. Everything else can vary only when there is a legitimate reason.</p>
+
+<h3>1.4 A short glossary</h3>
+<table class="narrow">
+  <tr><td>Organization (Org)</td><td>The Montefiore entity that the contract is signed for. Either MHS (the system-wide entity) or one of the Member Entities (ME).</td></tr>
+  <tr><td>MHS</td><td>The single system-wide Montefiore organization. There is exactly one MHS.</td></tr>
+  <tr><td>ME (Member Entity)</td><td>Any Montefiore organization that is not MHS.</td></tr>
+  <tr><td>Premier contract</td><td>A contract sourced through Premier (the GPO). Premier contracts cannot simply be dropped — even if a local contract has a better price, we are obliged to keep the Premier line on file.</td></tr>
+  <tr><td>Local contract</td><td>A contract negotiated outside of Premier. These can be dropped if a better-priced or higher-priority alternative exists.</td></tr>
+  <tr>
+    <td>Manufacturer contract</td>
+    <td>A contract signed directly with the company that makes the product. The "Manufacturer" field on each line is the same company we are buying from. These are the cleanest case — the manufacturer of the item is unambiguous.</td>
+  </tr>
+  <tr>
+    <td>Distributor contract</td>
+    <td>A contract signed with a distributor (e.g., Medline, Cardinal, McKesson) who resells products made by many different manufacturers. The vendor on the contract is the distributor; the actual <em>manufacturers</em> of the products vary line by line.
+    <br><br>
+    <strong>Important CCX limitation:</strong> CCX does not, on its own, separate "vendor" from "manufacturer" on a distributor contract. Without further manipulation, every line on a distributor contract is loaded as if the distributor itself manufactured the item. That is factually wrong, and it creates problems downstream — Infor cannot always consolidate a contracted line to the correct Item Master record, which can cause buyer requisitions to bypass the contract or to land on the wrong item entirely.
+    <br><br>
+    The number of items affected can look small relative to the full contract, but Item Master items typically represent <strong>high purchase volume</strong>, especially inventory items. So the day-to-day operational impact is larger than the raw count suggests. When you see a distributor contract come through, the manufacturer columns deserve extra scrutiny.</td>
+  </tr>
+  <tr><td>UOM</td><td>Unit of Measure (e.g., EA, BX, CS). Some vendors use <code>CS</code> and <code>CA</code> interchangeably for "case"; the system treats them as equivalent.</td></tr>
+  <tr><td>QOE</td><td>Quantity Of Each — how many of the base unit are inside one UOM. A box of 10 has QOE = 10.</td></tr>
+  <tr><td>Contract Price (a.k.a. Price)</td><td>The negotiated price for one UOM of the item on this contract. If UOM is <code>BX</code> and QOE is 10, the Contract Price is the price for one box of 10 — not per individual unit. Always read it together with the UOM and QOE on the same line, otherwise it's ambiguous.</td></tr>
+  <tr><td>EA price</td><td>Price per individual unit. Computed as <code>Contract Price &divide; QOE</code>. This is what we use to compare two lines fairly when their packaging differs.</td></tr>
+  <tr><td>Input file</td><td>The new spreadsheet you are uploading to load or update a contract.</td></tr>
+  <tr><td>CCX</td><td>The system of record we already have loaded. The dedup review compares your input against what's already in CCX.</td></tr>
+</table>
+
+<!-- =============== PART 2 =============== -->
+<h2 id="part2">2. The Dedup Review report</h2>
+
+<p>File name: <span class="filename">dedup_output_to_review_&lt;ContractID&gt;_&lt;VendorID&gt;_&lt;date&gt;.xlsx</span></p>
+
+<h3>2.1 What this report is for</h3>
+<p>After you upload a contract file, the system compares each line on your input against every contract line we already have loaded in CCX. Whenever it finds an overlap — meaning the same product (Mfg Part Number) is present on both sides — it records that as a "match" so you can decide what to do. The dedup review report is the human-readable list of those matches.</p>
+<p><strong>The system never drops or merges anything by itself.</strong> It surfaces conflicts and recommends an action. You make the call.</p>
+
+<h3>2.2 The color code (this is on every sheet)</h3>
+<div class="legend">
+  <div><span class="swatch" style="background: var(--yellow);"></span> <strong>Yellow</strong> = data already on file in CCX (the "matched" side)</div>
+  <div><span class="swatch" style="background: var(--blue);"></span> <strong>Light blue</strong> = data from your uploaded input file</div>
+</div>
+<p>If you only remember one thing about the colors: <em>yellow is what we already have, blue is what you're bringing in.</em></p>
+
+<h3>2.3 The sheets in the workbook</h3>
+<p>The workbook opens with two summary-style sheets, then one sheet per matched contract.</p>
+
+<h4>Sheet: <code>quick_line_count</code> (the cover sheet)</h4>
+<p>One row per contract that produced any matches. Use this to navigate.</p>
+<table>
+  <tr><th>Column</th><th>What it means</th></tr>
+  <tr><td>Contract&nbsp;ID, ERP&nbsp;Vendor&nbsp;ID, Organization (yellow)</td><td>Identifies the existing CCX contract that overlapped with your input.</td></tr>
+  <tr><td>Total Lines</td><td>How many lines that CCX contract has in total (across all products).</td></tr>
+  <tr><td>Matched Lines</td><td>How many of those lines overlap with your input file.</td></tr>
+  <tr><td>Contract&nbsp;ID, ERP&nbsp;Vendor&nbsp;ID, Organization (Input) (blue)</td><td>The input-side contract identifiers that produced the overlap.</td></tr>
+  <tr><td>Sheet</td><td>A clickable link that jumps to the per-contract sheet for these matches.</td></tr>
+</table>
+<div class="callout tip">
+  <strong>How to read the count</strong>
+  If a contract shows <em>Total Lines = 200</em> and <em>Matched Lines = 180</em>, your input is touching almost the entire contract. That's typical of a renewal. If <em>Total Lines = 200</em> and <em>Matched Lines = 5</em>, you're only nudging 5 items on a much larger contract.
+</div>
+
+<h4>Sheet: <code>view_by_input</code> (every input line, with or without a match)</h4>
+<p>This sheet flips the perspective: <strong>every line on your uploaded file gets a row</strong>, whether it matched anything in CCX or not. The blue (input) columns come first, the yellow (matched) columns come second. If your input line did not match anything, the yellow side is blank.</p>
+<table>
+  <tr><th>Notable column</th><th>How to use it</th></tr>
+  <tr><td>Dup Matched (Y/N)</td><td>"Yes" means this input line overlapped with at least one existing CCX line. "No" means this is a brand-new item from CCX's perspective.</td></tr>
+  <tr><td>Total Matched Lines</td><td>If "Yes," how many existing lines it overlapped with. More than 1 means the same product is sitting on multiple existing contracts already.</td></tr>
+  <tr><td>Infor Item #</td><td>The Item Master number we matched the input line to. Blank means we couldn't match it to an Infor item.</td></tr>
+  <tr><td>Infor Item BuyUOM Options</td><td>The UOM/QOE combinations that the Infor Item Master allows for ordering this item.</td></tr>
+  <tr><td>Valid BuyUOM (Y/N)</td><td>"Yes" if the input line's UOM &times; QOE matches one of the allowed Infor combinations. "No" means the item exists but the packaging on your line is not currently set up to be bought in that unit. Rows with "No" are visually flagged on this sheet so they're easy to spot.</td></tr>
+  <tr><td>Input Ref</td><td>The row number from your original spreadsheet, so you can find the line again in your file.</td></tr>
+</table>
+<div class="callout warn">
+  <strong>"Valid BuyUOM = No" — what it means in practice</strong>
+  The Infor Item Master knows about this product, but it is not set up to be ordered in the UOM/QOE you put on the line. Either the line's UOM/QOE is wrong, or the Item Master needs to be expanded to include this packaging. Either way it cannot be left as-is or buyers will not be able to order against it.
+</div>
+
+<h4>Sheets: one per matched contract (named by Contract ID)</h4>
+<p>This is where the real review happens. Each sheet is one CCX contract that overlapped with your input. The columns split cleanly down the middle:</p>
+
+<table>
+  <thead>
+    <tr>
+      <th class="yellow" colspan="2">Yellow — what's on file in CCX (the matched side)</th>
+      <th class="blue" colspan="2">Light blue — what's on your input</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="yellow">Mfg Part Number</td>
+      <td class="yellow">Vendor Part Number</td>
+      <td class="blue">Mfg Part Num (Input)</td>
+      <td class="blue">Vendor Part Num (Input)</td>
+    </tr>
+    <tr>
+      <td class="yellow">Description</td>
+      <td class="yellow">Contract Price</td>
+      <td class="blue">Description (Input)</td>
+      <td class="blue">Contract Price (Input)</td>
+    </tr>
+    <tr>
+      <td class="yellow">UOM, QOE</td>
+      <td class="yellow">Effective / Expiration Date</td>
+      <td class="blue">UOM (Input), QOE (Input)</td>
+      <td class="blue">Contract ID / ERP Vendor ID / Organization (Input)</td>
+    </tr>
+    <tr>
+      <td class="yellow">Contract ID, ERP Vendor ID, Organization</td>
+      <td class="yellow"><strong>Action</strong> and <strong>Notes</strong></td>
+      <td class="blue">Infor Item #</td>
+      <td class="blue">&nbsp;</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>Each row pairs <strong>one CCX line with one input line</strong> that overlapped on Mfg Part Number. The two most important columns are <strong>Action</strong> and <strong>Notes</strong> — the system's recommendation for that pair.</p>
+
+<h3>2.4 The five "groups" — what kind of overlap each row represents</h3>
+<p>Every match row is classified into one of five groups. The group is reflected in the wording of the Action column. You don't see the group code itself — but understanding the five groups makes the Action column self-explanatory:</p>
+
+<table>
+  <thead>
+    <tr><th>Group</th><th>What's the same?</th><th>What's different?</th><th>Plain-English summary</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><span class="pill ss">SS</span> Same Source</td>
+      <td>Org, Vendor, Contract&nbsp;ID, product</td>
+      <td>Nothing — input line lands on a line that already exists on the same contract</td>
+      <td>The input matched an existing line on the very same contract. Treat as an update to that line.</td>
+    </tr>
+    <tr>
+      <td><span class="pill dv">DV</span> Different Vendor</td>
+      <td>Product (Mfg Part Number)</td>
+      <td>Vendor</td>
+      <td>Same item being bought from two different vendors. Both lines stay.</td>
+    </tr>
+    <tr>
+      <td><span class="pill odo">ODO</span> Other Org, Same Contract&nbsp;ID</td>
+      <td>Vendor, Contract&nbsp;ID, product</td>
+      <td>Organization</td>
+      <td>Same contract being used by two different organizations.</td>
+    </tr>
+    <tr>
+      <td><span class="pill tccd">TCCD</span> Two Contracts, Same Org, Same Vendor</td>
+      <td>Org, Vendor, product</td>
+      <td>Contract&nbsp;ID</td>
+      <td>Same org buying the same item from the same vendor on two different contracts. The classic "consolidate or pick one" case.</td>
+    </tr>
+    <tr>
+      <td><span class="pill ceccd">CECCD</span> Different Org and Different Contract</td>
+      <td>Vendor, product</td>
+      <td>Org and Contract&nbsp;ID</td>
+      <td>Two different organizations, each with their own contract for the same product.</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="callout note">
+  <strong>SS overlaps when you're adding new items to an existing contract</strong>
+  If your input is meant to <em>add</em> new items to a contract that already exists, any SS rows you see are not pure renewals — they are products that <strong>already</strong> sit on the contract you are loading into. Don't ignore them. Review each SS row and decide whether to:
+  <ul style="margin-top: 4px;">
+    <li>update the price on the existing line, if your input has a newer price; or</li>
+    <li>remove the existing line, if it's being superseded; or</li>
+    <li>drop the line from your input, if the existing one is correct as-is.</li>
+  </ul>
+  Letting both stand without review is how you end up with conflicting duplicate lines on the same contract.
+</div>
+
+<h3>2.5 Reading the Action column</h3>
+<p>The Action column is the system's one-line recommendation. The exact wording depends on whether your input line is doing an UPDATE/NEW or an EXPIRE.</p>
+
+<table>
+  <thead>
+    <tr><th>If the input is</th><th>UPDATE / NEW</th><th>EXPIRE</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><span class="pill ss">SS</span></td>
+      <td>Same contract item, Update</td>
+      <td>Same contract item, Update expiration date to expire</td>
+    </tr>
+    <tr><td><span class="pill dv">DV</span></td>
+      <td>Buy from different vendor, keep both</td>
+      <td>Not affected by expiring the input line, keep the record</td>
+    </tr>
+    <tr><td><span class="pill odo">ODO</span></td>
+      <td>Buy for different organization using same contract ID, review</td>
+      <td>Not affected by expiring the input line, keep the record</td>
+    </tr>
+    <tr><td><span class="pill tccd">TCCD</span></td>
+      <td>Consider only keep one record, review</td>
+      <td>Not affected by expiring the input line, keep the record</td>
+    </tr>
+    <tr><td><span class="pill ceccd">CECCD</span></td>
+      <td>Buy for different organization using different contract, review</td>
+      <td>Not affected by expiring the input line, keep the record</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="callout note">
+  <strong>"Review" means a human decision is required.</strong> The system has flagged a real overlap and is telling you it doesn't have enough business context to pick a side. Use the Notes column for guidance.
+</div>
+
+<h3>2.6 Reading the Notes column</h3>
+<p>Notes is empty for SS, DV, and any EXPIRE row — those cases are unambiguous. Notes is populated for <strong>ODO, TCCD, and CECCD</strong> on UPDATE/NEW rows. The wording captures the two business levers that drive the decision:</p>
+
+<ul>
+  <li><strong>Price comparison</strong> — is the existing CCX line cheaper, the new input line cheaper, or are they equal? Comparison is on EA price (Contract Price &divide; QOE), so packaging differences are normalized out.</li>
+  <li><strong>Premier protection</strong> — if one side is on a Premier contract, we are obliged to keep that side. Premier lines cannot be dropped just because a local contract has a better price.</li>
+</ul>
+
+<h4>ODO — same contract, different organization</h4>
+<p>Two cases, price doesn't enter:</p>
+<ul>
+  <li><strong>Both sides are ME</strong>: <em>Different member entity contract item, keep both and make sure the data elements are consistent with each other.</em></li>
+  <li><strong>One side is MHS</strong>: <em>If not for tracking price difference between member entity and MHS, consider maintaining only the MHS contract and removing the member entity contract entirely. Otherwise, keep both and make sure the data elements are consistent with each other.</em></li>
+</ul>
+
+<h4>TCCD — same org, same vendor, two different contracts</h4>
+<p>The decision is shaped by <em>price relation</em> &times; <em>(matched contract type, input contract type)</em>. The underlying logic:</p>
+<ul>
+  <li><strong>Prefer the cheaper contract.</strong> If both are local, drop the more expensive side.</li>
+  <li><strong>Premier overrides cheaper.</strong> If the side that <em>would be</em> dropped is a Premier contract, we keep both instead and tell Infor to default to the cheaper price via priority.</li>
+  <li><strong>Equal price, both local</strong>: the spec defers to the reviewer ("review and keep only one record") — this is a judgment call.</li>
+</ul>
+
+<h4>CECCD — different orgs, different contracts</h4>
+<p>Three sub-cases based on the org pair:</p>
+<ul>
+  <li><strong>(ME, ME)</strong>: always keep both — different member entities can legitimately maintain separate contracts. When prices differ, the note will ask you to verify that the price gap is real.</li>
+  <li><strong>(MHS, ME) or (ME, MHS)</strong>: prefer the MHS-side line when prices match. If prices differ, the spec asks you to first verify the gap is genuine before falling back to "drop the ME line."</li>
+  <li><strong>Premier protection still applies.</strong> If dropping a side would mean dropping a Premier contract, keep both and make data elements consistent.</li>
+  <li><strong>(MHS, MHS) cannot happen</strong> — there is only one MHS organization.</li>
+</ul>
+
+<div class="callout matched">
+  <strong>How to act on a Notes recommendation</strong><br>
+  The notes use phrases like <em>"consider keep X and drop Y"</em>, <em>"keep both and ensure data elements are consistent,"</em> and <em>"verify the price difference is real."</em> These are guidance, not orders.
+  <br><br>
+  When the note says <em>"keep both and ensure data elements are consistent"</em>: confirm that both lines have the <strong>same Mfg Part Number, Vendor Part Number, UOM, and QOE</strong>. Prices may differ; identifiers and packaging may not.
+  <br><br>
+  When the note says <em>"consider keep X and drop Y"</em>: this is the system's recommendation under the standard rules. Override it only if you have a specific business reason.
+  <br><br>
+  When the note says <em>"verify the price difference is real"</em>: confirm with the vendor or the contract documents that the gap is intentional, not a data-entry error.
+</div>
+
+<h3>2.7 The "to-be-replaced" special case</h3>
+<p>If your input file is replacing an existing CCX contract (rather than just updating it), the per-contract sheet for that CCX contract will <strong>also include rows for items on the old contract that did NOT match anything on your input</strong>. These rows carry:</p>
+<ul>
+  <li>Action: <em>"Only seen on to-be-replaced contract &lt;ContractID&gt;"</em></li>
+  <li>Notes: <em>"Check if the item is discontinued, or evaluate if we need to put this on the new contract."</em></li>
+</ul>
+<p>This tells you what you would <strong>lose</strong> if the replacement went through as-is. For each such row, decide whether the item is genuinely going away (discontinued / no longer ordered) or whether it needs to be added to the new contract before you load it.</p>
+
+<h3>2.8 A worked example</h3>
+<p>Suppose your input file has 3M part number <code>1860</code> at $42.00/box of 50, on contract <code>NEW-2026-001</code>, organization MHS. CCX already has <code>1860</code> at $45.00/box of 50, on contract <code>OLD-2024-099</code>, also organization MHS, also vendor 3M. Both contracts are local.</p>
+<ul>
+  <li><strong>Group:</strong> TCCD (same org, same vendor, different Contract&nbsp;ID).</li>
+  <li><strong>Action:</strong> <em>Consider only keep one record, review.</em></li>
+  <li><strong>Notes:</strong> <em>Input contract has better price, both are local contract, review and keep the input record and drop the matched line.</em></li>
+  <li><strong>What you do:</strong> Confirm <code>OLD-2024-099</code> can be expired for this item, and let the input load. The two lines have identical Mfg Part / UOM / QOE, so packaging is not an issue — only price.</li>
+</ul>
+<p>Now flip it: same scenario, but the existing CCX line is on a Premier contract. Now the action is the same, but the note says: <em>"input contract has better price, but matched contract is premier while input contract is local, keep both and ensure the data elements are consistent with each other, consider setting priority based on price on Infor to default to the favorable pricing."</em> You'd keep both, double-check Mfg Part / Vendor Part / UOM / QOE match, and set Infor priority so buyers default to the cheaper line.</p>
+
+<!-- =============== PART 3 =============== -->
+<h2 id="part3">3. The Pre-Check report</h2>
+
+<p>File name: <span class="filename">precheck_report_&lt;ContractID&gt;_&lt;VendorID&gt;_&lt;date&gt;.xlsx</span></p>
+
+<h3>3.1 What this report is for</h3>
+<p>The pre-check runs <strong>before</strong> the dedup logic. Its job is to look at the input file on its own and answer one question: <em>is this file clean enough to be loaded?</em> Issues like missing required fields, malformed prices, duplicate items inside the same file, or vendor IDs that don't exist in our system show up here.</p>
+<p>If the file has too many issues to fix one-by-one in the web UI, you download this report, fix the underlying spreadsheet offline, and re-upload.</p>
+
+<h3>3.2 Errors vs. warnings</h3>
+<div class="callout warn">
+  <strong>Errors must be fixed before the file can be loaded.</strong> A line with an error will not move past the pre-check.
+</div>
+<div class="callout note">
+  <strong>Warnings are issues you should review but won't block the load.</strong> The system has applied a default or made a reasonable assumption; you should confirm it's correct.
+</div>
+<p>Common warning examples include unusual UOM/QOE combinations and duplicate manufacturer or vendor part numbers within the input file that the system has automatically reduced to a single line.</p>
+
+<h3>3.3 The columns on this report</h3>
+<p>The report has one tab, called <code>precheck_report</code>. Columns are organized into three blocks:</p>
+
+<h4>Block 1 — the input line itself (one row per input line)</h4>
+<table>
+  <tr><th>Column</th><th>What it is</th></tr>
+  <tr><td>Mfg Part Num (Input), Vendor Part Num (Input), Buyer Part Num (Input), Description (Input)</td><td>The product identifiers from the line.</td></tr>
+  <tr><td>Contract Price (Input), UOM (Input), QOE (Input)</td><td>The pricing and packaging from the line.</td></tr>
+  <tr><td>Effective Date (Input), Expiration Date (Input)</td><td>The contract validity window.</td></tr>
+  <tr><td>Contract ID (Input), ERP Vendor ID (Input), Organization (Input), Manufacturer (Input)</td><td>The contract header info — the same on every row, since the whole file is one contract.</td></tr>
+  <tr><td>Input Ref</td><td>The row number from your original spreadsheet. <strong>Use this to find the line again in your file.</strong> A value of <code>0</code> is a special "header-level issue" row (see below).</td></tr>
+</table>
+
+<h4>Block 2 — error indicators</h4>
+<table>
+  <tr><th>Column</th><th>What it is</th></tr>
+  <tr><td>With Error (Y/N)</td><td>"Y" if this line has at least one error.</td></tr>
+  <tr><td>Total Error Count</td><td>How many errors are stacked on this single line.</td></tr>
+  <tr><td>Errors</td><td>A short list of error type codes (one per line in the cell), e.g. <code>MISSING_PRICE</code>, <code>INVALID_UOM</code>.</td></tr>
+  <tr><td>Error Notes</td><td>The human-readable explanation of each error in the same order as the codes above.</td></tr>
+</table>
+
+<h4>Block 3 — warning indicators</h4>
+<table>
+  <tr><th>Column</th><th>What it is</th></tr>
+  <tr><td>With Warnings (Y/N)</td><td>"Y" if this line has at least one warning.</td></tr>
+  <tr><td>Total Warning Count</td><td>How many warnings are stacked on this single line.</td></tr>
+  <tr><td>Warnings</td><td>Short warning codes, e.g. <code>QOE_UOM_WARNING</code>, <code>DUPLICATE_MFG_REDUCED</code>.</td></tr>
+  <tr><td>Warning Notes</td><td>Human-readable explanation of each warning, in the same order as the codes.</td></tr>
+</table>
+
+<h3>3.4 The "header-level issues" row (Input Ref = 0)</h3>
+<p>Some problems are not tied to a specific line — for example, an unrecognized ERP Vendor ID, or a missing contract effective date. These are reported as a single synthetic row at the top of the report with <strong>Input Ref = 0</strong> and Description = "(header-level issues)".</p>
+<p>If you see one, fix the contract-level fields before worrying about line-level issues.</p>
+
+<h3>3.5 How to use the report</h3>
+<ol>
+  <li><strong>Sort or filter by "With Error (Y/N) = Y"</strong> first. Address every error before re-uploading. Errors are non-negotiable.</li>
+  <li><strong>For each error row</strong>: read the Error Notes column for the human-readable explanation. Use the <em>Input Ref</em> column to find that exact row in your original spreadsheet. Fix the cell, save, and move on.</li>
+  <li><strong>Then review the warnings</strong>. A warning means the system loaded the line but applied a default or condensed duplicates. If the default was wrong, fix it; otherwise leave it.</li>
+  <li><strong>Re-upload the corrected file.</strong> The pre-check runs fresh against the new upload — you should see the error count drop. Iterate until "With Error (Y/N) = Y" returns zero rows.</li>
+</ol>
+
+<div class="callout tip">
+  <strong>Working efficiently when there are many errors</strong>
+  Group your fixes by error type. If you have 50 rows all complaining about <code>MISSING_QOE</code>, fix them as a batch — the underlying cause is usually the same column missing in your source data.
+</div>
+
+<h3>3.6 What "good" looks like</h3>
+<ul class="checks">
+  <li>Every active line has Total Error Count = 0.</li>
+  <li>The header-level row (Input Ref = 0) does not exist, or has no errors.</li>
+  <li>Any remaining warnings have been reviewed and confirmed to be acceptable defaults (e.g., the QOE/UOM combo is unusual but correct).</li>
+</ul>
+<p>When you can say all three of those, the file is clean enough to move past pre-check. The dedup review (Part 2 of this guide) is the next stop.</p>
+
+<!-- =============== PART 4 =============== -->
+<h2 id="part4">4. Quick reference cheat sheet</h2>
+
+<h3>The two reports at a glance</h3>
+<table>
+  <thead>
+    <tr><th>&nbsp;</th><th>Pre-Check report</th><th>Dedup Review report</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>Question it answers</strong></td>
+      <td>Is my file clean enough to load?</td>
+      <td>Does my file conflict with anything already on file?</td>
+    </tr>
+    <tr>
+      <td><strong>What it compares</strong></td>
+      <td>The input file against itself + system rules.</td>
+      <td>The input file against everything in CCX.</td>
+    </tr>
+    <tr>
+      <td><strong>What blocks the load</strong></td>
+      <td>Errors. Must be zero before moving on.</td>
+      <td>Nothing automatically — sourcing reviews and approves.</td>
+    </tr>
+    <tr>
+      <td><strong>How to act</strong></td>
+      <td>Fix the source spreadsheet using the row pointers (Input Ref). Re-upload.</td>
+      <td>Read Action and Notes for each match. Make the keep/drop/consolidate call per row.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>Color reminder</h3>
+<div class="legend">
+  <div><span class="swatch" style="background: var(--yellow);"></span> Yellow = matched (already in CCX)</div>
+  <div><span class="swatch" style="background: var(--blue);"></span> Light blue = input (your upload)</div>
+</div>
+
+<h3>The five overlap groups</h3>
+<table>
+  <tr><th>Group</th><th>Same on both sides</th><th>Different</th><th>Default direction</th></tr>
+  <tr><td><span class="pill ss">SS</span></td><td>Org, Vendor, Contract&nbsp;ID, Product</td><td>Nothing</td><td>Update the existing line.</td></tr>
+  <tr><td><span class="pill dv">DV</span></td><td>Product</td><td>Vendor</td><td>Keep both.</td></tr>
+  <tr><td><span class="pill odo">ODO</span></td><td>Vendor, Contract&nbsp;ID, Product</td><td>Org</td><td>If MHS is involved, consider consolidating to MHS. ME-only: keep both, ensure consistency.</td></tr>
+  <tr><td><span class="pill tccd">TCCD</span></td><td>Org, Vendor, Product</td><td>Contract&nbsp;ID</td><td>Pick the cheaper. Premier wins ties; keep both if the loser would be Premier.</td></tr>
+  <tr><td><span class="pill ceccd">CECCD</span></td><td>Vendor, Product</td><td>Org and Contract&nbsp;ID</td><td>(ME, ME) keep both. (MHS, ME): MHS preferred when prices match; verify gap is real when prices differ.</td></tr>
+</table>
+
+<h3>"Premier cannot be dropped" — in plain English</h3>
+<p>If keeping the cheaper line means dropping a Premier line, don't drop it. Keep both, ensure all identifiers and packaging match, and set Infor priority so buyers default to the cheaper price. We stay compliant with our Premier obligation while still getting the better price at the point of order.</p>
+
+<h3>"Data elements must be consistent" — in plain English</h3>
+<p>If the same product ends up coexisting on more than one contract, the fields that have to match depend on <em>why</em> the duplication exists. <strong>Manufacturer and Mfg Part Number always have to agree</strong> — that's how the system knows two lines are the same product. The other fields can vary only when there's a legitimate reason.</p>
+<table>
+  <thead>
+    <tr>
+      <th>Scenario</th>
+      <th>Manufacturer</th>
+      <th>Mfg Part #</th>
+      <th>Vendor Part #</th>
+      <th>UOM</th>
+      <th>QOE</th>
+      <th>Price</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Same vendor, two different prices for the same product (e.g., MHS vs ME pricing)</td>
+      <td>same</td>
+      <td>same</td>
+      <td>same</td>
+      <td>same</td>
+      <td>same</td>
+      <td>may differ</td>
+    </tr>
+    <tr>
+      <td>Same product bought from two different vendors, same packaging</td>
+      <td>same</td>
+      <td>same</td>
+      <td>may differ</td>
+      <td>same</td>
+      <td>same</td>
+      <td>may differ</td>
+    </tr>
+    <tr>
+      <td>Same product offered in different packaging (e.g., one contract sells by EA, another by CS)</td>
+      <td>same</td>
+      <td>same</td>
+      <td>may differ</td>
+      <td>may differ</td>
+      <td>may differ</td>
+      <td>may differ</td>
+    </tr>
+  </tbody>
+</table>
+<p>If a row should say "same" but doesn't, fix the input file before loading.</p>
+
+<hr>
+<p class="small">If anything in this guide doesn't match what you see in the report, the report is the source of truth — flag the discrepancy back to the team so this guide can be updated.</p>
+
+</body>
+</html>

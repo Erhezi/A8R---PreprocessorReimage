@@ -6,13 +6,13 @@ v1.0 compatible report
   - dedup review sheets:
     - each sheet will named by the matched contract_id (if multiple contract under same contract_id, then add suffix _1, _2, etc)
       - each sheet will contains the matched records and the input records for reference for review, arrange them in this way:
-        - Mfg Part Number | Vendor Part Number | Buyer Part Num | Description | Contract Price | UOM | QOE | Effective Date | Expiration Date | Contract ID | ERP Vendor ID | Organization | Action | Notes | Mfg Part Num (Input) | Vendor Part Num (Input) | Description (Input) | Contract Price (Input) | UOM (Input) | QOE (Input) | Contract ID (Input) | ERP Vendor ID (Input) | Organization (Input) | Infor Item # |
+        - Mfg Part Num | Vendor Part Num | Buyer Part Num | Description | Contract Price | UOM | QOE | Effective Date | Expiration Date | Contract ID | ERP Vendor ID | Organization | Action | Notes | Mfg Part Num (Input) | Vendor Part Num (Input) | Description (Input) | Contract Price (Input) | UOM (Input) | QOE (Input) | Contract ID (Input) | ERP Vendor ID (Input) | Organization (Input) | Infor Item # |
         - the "Action" column will be populated as "dup review" for all records in the sheet
         - the "Notes" column will be left blank for now
         - the Infor Item # is the the item master item number matched to input record, under column infor_item_num on table PreprocessorTaskItemForDecision
 - style: header row with bold font
     - column header with yellow backround color for:
-    Mfg Part Number | Vendor Part Number | Buyer Part Num | Description | Contract Price | UOM | QOE | Effective Date | Expiration Date | Contract ID | ERP Vendor ID | Organization | Action | Notes |
+    Mfg Part Num | Vendor Part Num | Buyer Part Num | Description | Contract Price | UOM | QOE | Effective Date | Expiration Date | Contract ID | ERP Vendor ID | Organization | Action | Notes |
     - column header with light blue background color for:
     Mfg Part Num (Input) | Vendor Part Num (Input) | Description (Input) | Contract Price (Input) | UOM (Input) | QOE (Input) | Contract ID (Input) | ERP Vendor ID (Input) | Organization (Input) | Infor Item # |
 - "Action" column real fill
@@ -109,7 +109,7 @@ v1.0 compatible report
     - column header with light blue background:
     Mfg Part Num (Input) | Vendor Part Num (Input) | Buyer Part Num (Input) | Description (Input) | Contract Price (Input) | UOM (Input) | QOE (Input) | Effective Date (Input) | Expiration Date (Input) | Contract ID (Input) | ERP Vendor ID (Input) | Organization (Input) | Infor Item # | Infor Item BuyUOM Options| Valid BuyUOM (Y/N) | Input Ref |Dup Matched (Y/N) | Total Matched Lines |
     - column header with yellow background:
-    Mfg Part Number | Vendor Part Number | Buyer Part Num | Description | Contract Price | UOM | QOE | Effective Date | Expiration Date | Contract ID | ERP Vendor ID | Organization |
+    Mfg Part Num | Vendor Part Num| Buyer Part Num | Description | Contract Price | UOM | QOE | Effective Date | Expiration Date | Contract ID | ERP Vendor ID | Organization |
 
     - the "Dup Matched (Y/N)" column will be populated with "Yes" if there is at least one matched CCX ACCEPTED record for this input line, otherwise "No"
     - the "Total Matched Lines" column will be populated with the total matched CCX ACCEPTED lines count for this input line

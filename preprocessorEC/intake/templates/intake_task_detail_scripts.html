@@ -24,6 +24,15 @@ function renderRecheckModeControl(task) {
   `;
 }
 
+function modeLabel(mode) {
+  return ({
+    default: "Default",
+    distributor: "Distributor",
+    strict: "Strict",
+    explicit: "Explicit",
+  }[mode] || mode);
+}
+
 function renderIntakeActionButtons(task, issues) {
   const inIntake = task.phase === "INTAKE";
   if (!inIntake) {
@@ -34,6 +43,19 @@ function renderIntakeActionButtons(task, issues) {
   const intakeStatuses = ["PENDING_PRECHECK", "DRAFT", "ON_HOLD_PC1", "PENDING_NUVIA"];
   const allUploaded = currentItems.length > 0 && currentItems.every(item => item.status === "UPLOADED");
   const hasHeaderErrors = issues.some(issue => issue.item_id === null || issue.item_id === undefined);
+  const requiredModes = (currentIntakeState && currentIntakeState.required_modes) || ["default"];
+  const passedModes = (currentIntakeState && currentIntakeState.pc1_passed_modes) || [];
+  const missingModes = (currentIntakeState && currentIntakeState.missing_modes)
+    || requiredModes.filter(m => !passedModes.includes(m));
+  // "Mode-only blocked" = pre-check has run at least once, no error/warn
+  // items remain, but a required mode (e.g. distributor) hasn't run cleanly
+  // yet. precheckHasRun guards against firing on the initial upload where
+  // pc1_passed_modes is empty by definition.
+  const noItemIssues = currentItems.length > 0
+    && !currentItems.some(item => item.status === "ERROR_PC1" || item.status === "WARN_PC1");
+  const precheckHasRun = currentItems.length > 0
+    && !currentItems.every(item => item.status === "UPLOADED");
+  const modeBlocked = precheckHasRun && noItemIssues && missingModes.length > 0;
 
   if (intakeStatuses.includes(task.status)) {
     if (!task.parent_task_id) {
@@ -54,6 +76,20 @@ function renderIntakeActionButtons(task, issues) {
       buttons += `<button class="btn btn-sm btn-outline-info d-block mb-1 w-100" onclick="recheckAll(this)">Re-run Pre-check</button>`;
       buttons += renderRecheckModeControl(task);
     }
+    const issueCount = (issues || []).filter(issue => !issue.resolved).length;
+    if (issueCount > 0) {
+      buttons += `<a class="btn btn-sm btn-outline-secondary d-block mb-1 w-100" href="${PREFIX}/api/intake/${TASK_ID}/error-report.xlsx" download><i class="bi bi-file-earmark-excel"></i> Export Error/Warning Report</a>`;
+    }
+  }
+
+  if (modeBlocked && !hasHeaderErrors) {
+    // No row-level issues remain, but a required pre-check mode hasn't run
+    // cleanly since the last data change (typical: DISTRIBUTOR contracts after
+    // a clean default pass). Surface the next mode as a dedicated CTA.
+    const nextMode = missingModes[0];
+    const nextLabel = modeLabel(nextMode);
+    buttons += `<div class="small text-muted mb-1"><i class="bi bi-info-circle me-1"></i>${modeLabel(passedModes[passedModes.length - 1] || "default")} pre-check passed. ${nextLabel}-mode pre-check is required before advancing.</div>`;
+    buttons += `<button class="btn btn-sm btn-primary d-block mb-1 w-100" onclick="recheckAll(this, '${nextMode}')">Run ${nextLabel} Pre-check</button>`;
   }
 
   if (!hasHeaderErrors && (task.status === "ON_HOLD_PC1" || task.status === "PENDING_NUVIA")) {
@@ -66,6 +102,9 @@ function renderIntakeActionButtons(task, issues) {
         buttons += `<button class="btn btn-sm btn-outline-secondary d-block mb-1 w-100" disabled title="Resolve every WARN_PC1 item (fix or manually pass) before advancing">Proceed (blocked — ${warnCount} warning${warnCount === 1 ? '' : 's'})</button>`;
       } else if (isPremier && errorCount > 0) {
         buttons += `<button class="btn btn-sm btn-outline-secondary d-block mb-1 w-100" disabled title="PREMIER contracts require all items to pass">Proceed (blocked — PREMIER)</button>`;
+      } else if (missingModes.length > 0) {
+        const tip = `Pre-check still needs to pass cleanly in: ${missingModes.map(modeLabel).join(", ")}`;
+        buttons += `<button class="btn btn-sm btn-outline-secondary d-block mb-1 w-100" disabled title="${tip}">Proceed (blocked — ${missingModes.map(modeLabel).join(" + ")} pre-check pending)</button>`;
       } else if (errorCount > 0) {
         buttons += `<button class="btn btn-sm btn-success d-block mb-1 w-100" onclick="proceedWithPassing()">Advance ${passedCount} & Split ${errorCount} Error(s)</button>`;
       } else {
@@ -500,9 +539,9 @@ async function softDeleteItem(itemId) {
   }
 }
 
-async function recheckAll(btn) {
+async function recheckAll(btn, modeOverride) {
   const select = document.getElementById("recheckModeSelect");
-  const mode = select ? select.value : "default";
+  const mode = modeOverride || (select ? select.value : "default");
   const itemCount = (typeof currentItems !== "undefined" && currentItems) ? currentItems.length : 0;
   showPrecheckRunning(btn, "Re-running pre-check", itemCount);
   let resp, data;

@@ -17,12 +17,12 @@ from __future__ import annotations
 import io
 import os
 
-from flask import jsonify, request, render_template, abort, current_app
+from flask import jsonify, request, render_template, abort, current_app, send_file
 from flask_login import login_required, current_user
 
 from . import intake_bp
 from ..db import task_repo, workstate_repo
-from ..services import intake_service
+from ..services import intake_service, precheck_report
 from ..state import TaskStateMachine, Phase, Status
 
 
@@ -56,6 +56,11 @@ def api_intake_state(task_id: str):
         for k, ids in _dup_map.items() if len(set(ids)) > 1
     ]
 
+    state = workstate_repo.load_state(task_id) or {}
+    pc1_passed_modes = list(state.get("pc1_passed_modes") or [])
+    required_modes = intake_service.required_pc1_modes(task)
+    missing_modes = [m for m in required_modes if m not in pc1_passed_modes]
+
     return jsonify({
         "task_id": task_id,
         "phase": task.phase,
@@ -66,6 +71,9 @@ def api_intake_state(task_id: str):
         "items": [i.to_dict() for i in items],
         "errors": [e.to_dict() for e in errors],
         "dup_groups": dup_groups,
+        "required_modes": required_modes,
+        "pc1_passed_modes": pc1_passed_modes,
+        "missing_modes": missing_modes,
     })
 
 
@@ -79,6 +87,7 @@ def api_delete_item(task_id: str, item_id: int):
     ok = task_repo.soft_delete_item(item_id)
     if not ok:
         return jsonify({"error": "Item not found"}), 404
+    intake_service.clear_pc1_passed_modes(task_id, _sm())
     return jsonify({"deleted": item_id, "status": Status.DELETED_PC1})
 
 
@@ -252,6 +261,10 @@ def api_upload_items(task_id: str):
         # Move task status to PENDING_PRECHECK
         task_repo.update_task_phase(task_id, Phase.INTAKE, Status.PENDING_PRECHECK)
 
+        # Fresh data — drop any prior mode passes so the gate must reclose
+        # against the new rows.
+        intake_service.clear_pc1_passed_modes(task_id, _sm())
+
         return jsonify({"uploaded": len(items_to_add), "task_id": task_id}), 201
 
     except Exception as exc:
@@ -350,6 +363,7 @@ def api_edit_item(task_id: str, item_id: int):
     data = request.get_json(force=True)
     try:
         result = intake_service.update_item_fields(task_id, item_id, data)
+        intake_service.clear_pc1_passed_modes(task_id, _sm())
         return jsonify(result)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
@@ -367,6 +381,25 @@ def api_manual_pass(task_id: str, item_id: int):
         return jsonify({"error": str(exc)}), 400
 
 
+@intake_bp.route("/api/intake/<task_id>/error-report.xlsx", methods=["GET"])
+@login_required
+def api_download_error_report(task_id: str):
+    """Download an xlsx summarizing every PC1 error/warning per input row."""
+    task = task_repo.get_task(task_id)
+    if not task:
+        return jsonify({"error": "Task not found"}), 404
+    try:
+        filename, buffer = precheck_report.build_excel(task_id)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return send_file(
+        buffer,
+        as_attachment=True,
+        download_name=filename,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
 @intake_bp.route("/api/intake/<task_id>/recheck-all", methods=["POST"])
 @login_required
 def api_recheck_all(task_id: str):
@@ -379,7 +412,16 @@ def api_recheck_all(task_id: str):
     sm = _sm()
     items = task_repo.get_items(task_id)
     error_warn_ids = [i.item_id for i in items if i.status in (Status.ERROR_PC1, Status.WARN_PC1)]
-    if not error_warn_ids:
+
+    # Recheck must also be allowed when all items currently pass but a
+    # required mode (e.g. distributor) hasn't run cleanly yet — that's the
+    # whole point of the multi-mode gate.
+    state = workstate_repo.load_state(task_id) or {}
+    passed_modes = list(state.get("pc1_passed_modes") or [])
+    required = intake_service.required_pc1_modes(task_repo.get_task(task_id))
+    pending_mode_run = any(m not in passed_modes for m in required)
+
+    if not error_warn_ids and not pending_mode_run:
         return jsonify({"error": "No items to re-check"}), 400
     result = intake_service.recheck_items(task_id, error_warn_ids, sm)
     return jsonify(result)

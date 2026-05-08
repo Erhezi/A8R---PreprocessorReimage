@@ -152,6 +152,17 @@ def api_get_contracts(task_id: str):
     return jsonify({"contracts": state.get("contract_review", [])})
 
 
+def _resolve_contract_decision(data: dict) -> str:
+    """Accept either the tri-state ``decision`` field (INCLUDE | EXCLUDE |
+    REPLACE) or the legacy boolean ``include`` (True → INCLUDE, False → EXCLUDE)."""
+    raw = data.get("decision")
+    if raw:
+        return str(raw).upper()
+    if "include" in data:
+        return "INCLUDE" if bool(data.get("include")) else "EXCLUDE"
+    return "INCLUDE"
+
+
 @preprocess_bp.route("/api/preprocess/<task_id>/contract-decision", methods=["POST"])
 @login_required
 def api_contract_decision(task_id: str):
@@ -161,21 +172,24 @@ def api_contract_decision(task_id: str):
     has_erp_vendor_id = "erp_vendor_id" in data
     organization_eid = data.get("organization_eid")
     erp_vendor_id = data.get("erp_vendor_id")
-    include = data.get("include", True)
+    decision = _resolve_contract_decision(data)
     if not contract_number:
         return jsonify({"error": "contract_number required"}), 400
     if not has_organization_eid or not has_erp_vendor_id:
         return jsonify({"error": "organization_eid and erp_vendor_id required"}), 400
     user = current_user.username if current_user.is_authenticated else "system"
-    result = preprocess_service.submit_contract_decision(
-        task_id,
-        contract_number,
-        organization_eid,
-        erp_vendor_id,
-        include,
-        user,
-        _sm(),
-    )
+    try:
+        result = preprocess_service.submit_contract_decision(
+            task_id,
+            contract_number,
+            organization_eid,
+            erp_vendor_id,
+            decision,
+            user,
+            _sm(),
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     return jsonify(result)
 
 
@@ -296,6 +310,7 @@ def api_finalize(task_id: str):
 def api_contract_summary(task_id: str):
     """Return contract-level match summary with per-bucket counts."""
     matches = task_repo.get_match_results(task_id)
+    decisions = task_repo.get_contract_decisions_map(task_id)
     contracts: dict[tuple[str, str, str, str, str], dict] = {}
 
     with get_sqlserver_engine().connect() as conn:
@@ -327,6 +342,10 @@ def api_contract_summary(task_id: str):
                     "rejected": 0,
                     "pending": 0,
                     "included": True,
+                    "decision": decisions.get(
+                        (organization_eid, cid, erp_vendor_id),
+                        "",
+                    ),
                 }
 
             c = contracts[key]
@@ -508,9 +527,12 @@ def api_update_true_matches(task_id: str):
 @preprocess_bp.route("/api/preprocess/<task_id>/toggle-contract", methods=["POST"])
 @login_required
 def api_toggle_contract(task_id: str):
-    """Include or exclude all matches under a contract.
+    """Apply a tri-state contract decision to all matches under a contract.
 
-    Body: {"contract_number": "X", "organization_eid": "Y", "erp_vendor_id": "Z", "include": true|false}
+    Body: ``{"contract_number": "X", "organization_eid": "Y",
+    "erp_vendor_id": "Z", "decision": "INCLUDE" | "EXCLUDE" | "REPLACE"}``.
+    Legacy boolean ``include`` is still accepted (True → INCLUDE,
+    False → EXCLUDE).
     """
     data = request.get_json(force=True)
     contract_number = data.get("contract_number")
@@ -518,36 +540,33 @@ def api_toggle_contract(task_id: str):
     has_erp_vendor_id = "erp_vendor_id" in data
     organization_eid = data.get("organization_eid")
     erp_vendor_id = data.get("erp_vendor_id")
-    include = data.get("include", True)
+    decision = _resolve_contract_decision(data)
     if not contract_number:
         return jsonify({"error": "contract_number required"}), 400
     if not has_organization_eid or not has_erp_vendor_id:
         return jsonify({"error": "organization_eid and erp_vendor_id required"}), 400
 
     user = current_user.username if current_user.is_authenticated else "system"
-    new_status = "ACCEPTED" if include else "REJECTED"
-    contract_filter = _normalize_scope_value(contract_number)
-    organization_filter = _normalize_scope_value(organization_eid)
-    vendor_filter = _normalize_scope_value(erp_vendor_id)
-
-    matches = task_repo.get_match_results(task_id)
-    updated = 0
-    for m in matches:
-        if (
-            _normalize_scope_value(m.contract_number) == contract_filter
-            and _normalize_scope_value(m.organization_eid_matched) == organization_filter
-            and _normalize_scope_value(m.erp_vendor_id_matched) == vendor_filter
-        ):
-            task_repo.update_match_decision(m.match_id, new_status, user)
-            updated += 1
-
+    try:
+        result = preprocess_service.submit_contract_decision(
+            task_id,
+            contract_number,
+            organization_eid,
+            erp_vendor_id,
+            decision,
+            user,
+            _sm(),
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     return jsonify(
         {
             "contract_number": contract_number,
             "organization_eid": organization_eid,
             "erp_vendor_id": erp_vendor_id,
-            "status": new_status,
-            "updated": updated,
+            "decision": result["decision"],
+            "status": result["match_status"],
+            "updated": result["affected"],
         }
     )
 

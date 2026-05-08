@@ -55,6 +55,50 @@ ORDER BY
     tid.dedup_id ASC;
 
 
+-- name: replacement_unmatched_lines
+-- For every (organization_eid, contract_id, erp_vendor_id) that the reviewer
+-- marked as REPLACE, return all CCX-synced contract lines on that contract
+-- *minus* the ones already ACCEPTED into the dedup workspace for this task.
+-- The remainder represents "items the input file would not cover if it
+-- replaces the matched contract" -- the export step appends these rows to
+-- the per-contract sheet with a special Action/Notes pair.
+SELECT
+    ccx.OrganizationEID                  AS organization_eid_matched,
+    ccx.Organization                     AS organization_matched,
+    ccx.ContractID                       AS contract_id_matched,
+    ccx.ERPVendorID                      AS erp_vendor_id_matched,
+    ccx.ManufacturerNumber_CCX           AS manufacturer_number_matched,
+    ccx.VendorItem_CCX                   AS vendor_item_matched,
+    ccx.ItemDescription_CCX              AS item_desc_matched,
+    ccx.ContractPrice_CCX                AS contract_price_matched,
+    ccx.UOM_CCX                          AS uom_matched,
+    ccx.QOE_CCX                          AS qoe_matched,
+    ccx.EffectiveDate_CCX                AS effective_date_matched,
+    ccx.ExpirationDate_CCX               AS expiration_date_matched
+FROM [Preprocessor].[CCXSyncedContractLine] ccx
+INNER JOIN [Preprocessor].[PreprocessorContractDecision] cd
+    ON cd.task_id  = :task_id
+   AND cd.decision = 'REPLACE'
+   AND ISNULL(cd.organization_eid, '') = ISNULL(ccx.OrganizationEID, '')
+   AND ISNULL(cd.contract_id, '')      = ISNULL(ccx.ContractID, '')
+   AND ISNULL(cd.erp_vendor_id, '')    = ISNULL(ccx.ERPVendorID, '')
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM [Preprocessor].[PreprocessorTaskItemForDecision] tid
+    INNER JOIN [Preprocessor].[PreprocessorMatchResult] mr
+        ON tid.match_id = mr.match_id
+    WHERE tid.task_id       = :task_id
+      AND tid.matched_source = 'CCX'
+      AND tid.match_status   = 'ACCEPTED'
+      AND mr.ccx_pkid        = ccx.CCX_pkid
+)
+ORDER BY
+    ccx.OrganizationEID ASC,
+    ccx.ContractID ASC,
+    ccx.ERPVendorID ASC,
+    ccx.ManufacturerNumber_CCX ASC;
+
+
 -- name: contract_line_counts
 -- Total CCX-synced line count per matched (Org, Contract, ERPVendor)
 -- key. Used to populate the "quick_line_count" sheet alongside the

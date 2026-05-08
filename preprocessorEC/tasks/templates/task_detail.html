@@ -58,6 +58,7 @@ const PHASES = ["INTAKE", "IDENTITY", "PREPROCESS", "DEDUP", "EXPORT", "MONITORI
 let currentTask = null;
 let currentItems = [];
 let currentDupGroups = [];
+let currentIntakeState = null;
 let activeItemFilter = "all";
 let focusedItemIds = new Set();
 
@@ -217,6 +218,7 @@ async function loadTask() {
   const inIntakeOrIdentity = inIntake || currentTask.phase === "IDENTITY";
 
   currentDupGroups = [];
+  currentIntakeState = null;
   if (inIntake) {
     const intakeResp = await fetch(`${PREFIX}/api/intake/${TASK_ID}`);
     if (intakeResp.ok) {
@@ -224,6 +226,7 @@ async function loadTask() {
       currentItems = intakeData.items || currentItems;
       data.errors = intakeData.errors || data.errors;
       currentDupGroups = intakeData.dup_groups || [];
+      currentIntakeState = intakeData;
     }
   }
 

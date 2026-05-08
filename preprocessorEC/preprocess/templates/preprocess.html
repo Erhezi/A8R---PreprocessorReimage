@@ -629,10 +629,19 @@ function renderContracts(contracts) {
       <td class="text-secondary">${c.low}</td>
       <td>${c.accepted}</td><td>${c.rejected}</td><td>${c.pending}</td>
       <td>
+        ${(() => {
+          // Tri-state: INCLUDE / EXCLUDE / REPLACE. If no explicit decision is
+          // recorded yet, fall back to the derived `included` flag so the row
+          // visually defaults to Include (matches today's behavior on first load).
+          const decision = (c.decision || (c.included ? 'INCLUDE' : 'EXCLUDE')).toUpperCase();
+          const cls = (active, solid, outline) => active ? solid : outline;
+          return `
         <div class="contract-action-group">
-          <button class="btn btn-sm ${c.included ? 'btn-success' : 'btn-outline-success'} toggle-contract contract-action-btn" data-contract="${esc(c.contract_id || '')}" data-organization-eid="${esc(c.organization_eid || '')}" data-erp-vendor-id="${esc(c.erp_vendor_id || '')}" data-action="include" title="Accept all">Include</button>
-          <button class="btn btn-sm ${c.included ? 'btn-outline-danger' : 'btn-danger'} toggle-contract contract-action-btn" data-contract="${esc(c.contract_id || '')}" data-organization-eid="${esc(c.organization_eid || '')}" data-erp-vendor-id="${esc(c.erp_vendor_id || '')}" data-action="exclude" title="Reject all">Exclude</button>
-        </div>
+          <button class="btn btn-sm ${cls(decision === 'INCLUDE', 'btn-success', 'btn-outline-success')} toggle-contract contract-action-btn" data-contract="${esc(c.contract_id || '')}" data-organization-eid="${esc(c.organization_eid || '')}" data-erp-vendor-id="${esc(c.erp_vendor_id || '')}" data-decision="INCLUDE" title="Accept all">Include</button>
+          <button class="btn btn-sm ${cls(decision === 'EXCLUDE', 'btn-danger', 'btn-outline-danger')} toggle-contract contract-action-btn" data-contract="${esc(c.contract_id || '')}" data-organization-eid="${esc(c.organization_eid || '')}" data-erp-vendor-id="${esc(c.erp_vendor_id || '')}" data-decision="EXCLUDE" title="Reject all">Exclude</button>
+          <button class="btn btn-sm ${cls(decision === 'REPLACE', 'btn-warning', 'btn-outline-warning')} toggle-contract contract-action-btn" data-contract="${esc(c.contract_id || '')}" data-organization-eid="${esc(c.organization_eid || '')}" data-erp-vendor-id="${esc(c.erp_vendor_id || '')}" data-decision="REPLACE" title="Use input to replace this contract — the export will also list unmatched lines from the matched contract">Mark repl.</button>
+        </div>`;
+        })()}
       </td>
     </tr>
   `).join("");
@@ -651,10 +660,10 @@ function renderContracts(contracts) {
     });
   });
 
-  // Wire include/exclude buttons
+  // Wire include / exclude / mark-replacement buttons
   tbody.querySelectorAll(".toggle-contract").forEach(btn => {
     btn.addEventListener("click", async () => {
-      const include = btn.dataset.action === "include";
+      const decision = btn.dataset.decision || "INCLUDE";
       await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/toggle-contract`, {
         method: "POST",
         headers: {"Content-Type": "application/json"},
@@ -662,7 +671,7 @@ function renderContracts(contracts) {
           contract_number: btn.dataset.contract,
           organization_eid: btn.dataset.organizationEid || "",
           erp_vendor_id: btn.dataset.erpVendorId || "",
-          include,
+          decision,
         })
       });
       loadContracts();

@@ -702,6 +702,42 @@ class IMCheckResult(Base):
 
 
 # ---------------------------------------------------------------------------
+# ContractDecision — per-(task, contract scope) reviewer decision used by
+# the preprocess contract-review step. INCLUDE/EXCLUDE map to flipping the
+# underlying matches ACCEPTED/REJECTED (same as today's derived toggle);
+# REPLACE means "also append unmatched CCX lines for this contract to the
+# per-contract review sheet at export time" — see migration 026.
+# ---------------------------------------------------------------------------
+class ContractDecision(Base):
+    __tablename__ = "PreprocessorContractDecision"
+    __table_args__ = (
+        Index("ix_contractdecision_task_id", "task_id"),
+        {"schema": SCHEMA},
+    )
+
+    decision_id = Column(Integer, primary_key=True, autoincrement=True)
+    task_id = Column(String(4), ForeignKey(f"{SCHEMA}.PreprocessorTask.task_id"), nullable=False)
+    organization_eid = Column(String(10), nullable=False)
+    contract_id = Column(String(100), nullable=False)
+    erp_vendor_id = Column(String(20), nullable=False)
+    decision = Column(String(10), nullable=False)  # INCLUDE | EXCLUDE | REPLACE
+    decided_by = Column(String(120), nullable=False)
+    decided_at = Column(DateTime, default=ny_now, nullable=False)
+
+    def to_dict(self) -> dict:
+        return {
+            "decision_id": self.decision_id,
+            "task_id": self.task_id,
+            "organization_eid": self.organization_eid,
+            "contract_id": self.contract_id,
+            "erp_vendor_id": self.erp_vendor_id,
+            "decision": self.decision,
+            "decided_by": self.decided_by,
+            "decided_at": self.decided_at.isoformat() if self.decided_at else None,
+        }
+
+
+# ---------------------------------------------------------------------------
 # TaskStatusLog — audit trail: who moved a task between phases/statuses
 # ---------------------------------------------------------------------------
 class TaskStatusLog(Base):

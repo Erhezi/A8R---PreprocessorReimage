@@ -155,6 +155,10 @@ class TaskState(TypedDict, total=False):
     clean_items: list[dict]
     pc1_errors: list[dict]
     pc1_passed: bool
+    # Modes that have run cleanly since the last data change. DISTRIBUTOR
+    # contracts require both "default" and "distributor" before advance;
+    # everyone else just needs "default". Reset at the top of every PC1 run.
+    pc1_passed_modes: list[str]
 
     # Phase 2 — Identity
     standardized_items: list[dict]
@@ -199,6 +203,7 @@ def empty_task_state(task_id: str) -> TaskState:
         clean_items=[],
         pc1_errors=[],
         pc1_passed=False,
+        pc1_passed_modes=[],
         standardized_items=[],
         manufacturer_code="",
         vendor_verified=False,

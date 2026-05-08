@@ -1222,11 +1222,23 @@ def submit_contract_decision(
     contract_number: str,
     organization_eid: str | None,
     erp_vendor_id: str | None,
-    include: bool,
+    decision: str,
     decided_by: str,
     state_machine: TaskStateMachine,
 ) -> dict:
-    """Accept or reject matches for one contract summary row."""
+    """Apply a tri-state contract decision (INCLUDE | EXCLUDE | REPLACE).
+
+    INCLUDE / REPLACE flip every match under the scope to ACCEPTED;
+    EXCLUDE flips them to REJECTED. REPLACE additionally persists a
+    PreprocessorContractDecision row so the export step knows to also
+    append unmatched CCX lines on this contract to the review sheet.
+    """
+    decision = (decision or "").upper()
+    if decision not in task_repo.CONTRACT_DECISION_VALUES:
+        raise ValueError(
+            f"decision must be one of {task_repo.CONTRACT_DECISION_VALUES}"
+        )
+
     contract_filter = _normalize_scope_value(contract_number)
     organization_filter = _normalize_scope_value(organization_eid)
     vendor_filter = _normalize_scope_value(erp_vendor_id)
@@ -1237,9 +1249,18 @@ def submit_contract_decision(
         and _normalize_scope_value(match.organization_eid_matched) == organization_filter
         and _normalize_scope_value(match.erp_vendor_id_matched) == vendor_filter
     ]
-    decision = "ACCEPTED" if include else "REJECTED"
+    match_status = "REJECTED" if decision == "EXCLUDE" else "ACCEPTED"
     for m in matches:
-        task_repo.update_match_decision(m.match_id, decision, decided_by)
+        task_repo.update_match_decision(m.match_id, match_status, decided_by)
+
+    task_repo.upsert_contract_decision(
+        task_id,
+        organization_eid,
+        contract_number,
+        erp_vendor_id,
+        decision,
+        decided_by,
+    )
 
     state = state_machine.get_state(task_id)
     state["ccx_decisions_done"] = True
@@ -1250,6 +1271,7 @@ def submit_contract_decision(
         "organization_eid": organization_eid,
         "erp_vendor_id": erp_vendor_id,
         "decision": decision,
+        "match_status": match_status,
         "affected": len(matches),
     }
 

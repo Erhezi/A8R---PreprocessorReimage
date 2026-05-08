@@ -262,6 +262,20 @@ def _check_mfg_dup(
         return "pass", None
 
 
+# Friendly display segment for a DUPLICATE_* error_type used inside the unified
+# detail string ("Duplicate Vendor Item - row 5, 9"). Default falls back to a
+# Title-cased version of the type body; overrides catch acronyms/compound words
+# that don't title-case cleanly.
+_DUP_TYPE_DISPLAY_OVERRIDES = {
+    "VENDORITEM": "Vendor Item",
+}
+
+
+def _dup_type_display(dup_type: str) -> str:
+    body = (dup_type or "").replace("DUPLICATE_", "").replace("_REDUCED", "")
+    return _DUP_TYPE_DISPLAY_OVERRIDES.get(body, body.replace("_", " ").title())
+
+
 def _check_vendor_dup(
     reduced_vendor: str,
     clean_vendor: str,
@@ -287,19 +301,49 @@ def _check_vendor_dup(
             dup_groups.setdefault(vkey, [prev_id])
             dup_groups[vkey].append(item_id)
             return "error", (
-                "DUPLICATE_VENDOR",
-                f"Duplicate Vendor Cat # — dup group {dup_groups[vkey]}",
+                "DUPLICATE_VENDORITEM",
+                f"Duplicate Vendor Item — dup group {dup_groups[vkey]}",
             )
         wkey = f"_warn_vendor_{reduced_vendor}"
         members = dup_warn_groups.setdefault(wkey, [prev_id])
         if item_id not in members:
             members.append(item_id)
         return "warn", (
-            "DUPLICATE_VENDOR_REDUCED",
-            f"Reduced Vendor Cat # matches file row {prev_row} but full Vendor Cat differs — verify these are not duplicates",
+            "DUPLICATE_VENDORITEM_REDUCED",
+            f"Reduced Vendor Item matches file row {prev_row} but full Vendor Item differs — verify these are not duplicates",
         )
     seen[reduced_vendor] = (row_ref, clean_vendor, item_id)
     return "pass", None
+
+
+# ---------------------------------------------------------------------------
+# Required PC1 modes per task type
+# ---------------------------------------------------------------------------
+def required_pc1_modes(task) -> list[str]:
+    """Modes that must run cleanly before a task can advance to IDENTITY.
+
+    DISTRIBUTOR contracts need both ``default`` (catches reduced-mfg dups) and
+    ``distributor`` (catches vendor-side dups). Everyone else only needs
+    ``default``. ``strict`` and ``explicit`` are user-initiated drill-downs;
+    they record passes for visibility but never gate advancement.
+    """
+    process_type = (getattr(task, "process_type", "") or "").upper()
+    if "DISTRIBUTOR" in process_type:
+        return ["default", "distributor"]
+    return ["default"]
+
+
+def clear_pc1_passed_modes(task_id: str, state_machine: TaskStateMachine) -> None:
+    """Wipe the list of cleanly-passed PC1 modes.
+
+    Called whenever the data backing a task changes (upload, re-upload, item
+    edit, soft-delete). Stale mode passes would otherwise let the gate close
+    against rows that haven't actually been re-validated.
+    """
+    state = state_machine.get_state(task_id)
+    state["pc1_passed_modes"] = []
+    state["pc1_passed"] = False
+    state_machine.save_state(task_id, state)
 
 
 # ---------------------------------------------------------------------------
@@ -571,7 +615,7 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
         for mid in sorted_ids:
             obj = item_by_id.get(mid)
             file_rows.append(str(obj.file_row if obj and obj.file_row else mid))
-        unified_detail = f"Duplicate {dup_type.replace('DUPLICATE_', '').replace('_', ' ').title()} - row {', '.join(file_rows)}"
+        unified_detail = f"Duplicate {_dup_type_display(dup_type)} - row {', '.join(file_rows)}"
 
         # Ensure every member has at least one dup error record. The records
         # haven't been written to the DB yet — we mutate the buffers in place.
@@ -622,7 +666,7 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
                     e["item_id"] == wid
                     and (e["error_type"] or "").startswith("DUPLICATE")
                     and e["error_type"] not in {"DUPLICATE_MFG_DEFAULT", "DUPLICATE_MFG_STRICT",
-                                                  "DUPLICATE_MFG_UOM_EXPLICIT", "DUPLICATE_VENDOR"}
+                                                  "DUPLICATE_MFG_UOM_EXPLICIT", "DUPLICATE_VENDORITEM"}
                 ):
                     warn_type = e["error_type"]
                     break
@@ -637,7 +681,7 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
             obj = item_by_id.get(wid)
             warn_file_rows.append(str(obj.file_row if obj and obj.file_row else wid))
         unified_warn_detail = (
-            f"Reduced {warn_type.replace('DUPLICATE_', '').replace('_', ' ').title()} - "
+            f"Reduced {_dup_type_display(warn_type)} - "
             f"rows {', '.join(warn_file_rows)} (full catalog values differ — verify these are not duplicates)"
         )
 
@@ -694,16 +738,38 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
     state["clean_items"] = [{"item_id": i} for i in passed_ids]
     state["warned_items"] = [{"item_id": i} for i in warned_ids]
     state["pc1_errors"] = errors
-    state["pc1_passed"] = (failed == 0 and warned == 0 and passed == total and total > 0)
+
+    # ----- Update pc1_passed_modes based on this run's outcome -----
+    # The list represents modes that have run cleanly since the last data
+    # change. A clean run of mode X adds X; any non-clean run (errors or
+    # warnings) drops X so the gate doesn't close on stale results.
+    passed_modes = list(state.get("pc1_passed_modes") or [])
+    clean_run = (failed == 0 and warned == 0 and passed == total and total > 0)
+    if clean_run:
+        if precheck_mode not in passed_modes:
+            passed_modes.append(precheck_mode)
+    else:
+        passed_modes = [m for m in passed_modes if m != precheck_mode]
+    state["pc1_passed_modes"] = passed_modes
+
+    required_modes = required_pc1_modes(task)
+    missing_modes = [m for m in required_modes if m not in passed_modes]
+    state["pc1_passed"] = (clean_run and not missing_modes)
 
     # ----- Determine task status + auto-advance logic -----
-    if passed == total and total > 0:
-        # All items passed cleanly → auto-advance to IDENTITY
-        state["pc1_passed"] = True
+    if clean_run and not missing_modes:
+        # All items passed AND every required mode has run clean → advance
         state_machine.save_state(task_id, state)
         state_machine.advance(task_id, Phase.IDENTITY, changed_by="system",
-                              notes="All items passed PC1 — auto-advanced")
+                              notes=f"All items passed PC1 in modes {passed_modes} — auto-advanced")
         task_status = "AUTO_ADVANCED"
+    elif clean_run and missing_modes:
+        # This mode passed but other required mode(s) still need a clean run
+        # before advance (e.g. DISTRIBUTOR after default passes).
+        state["status"] = Status.PENDING_NUVIA
+        state_machine.save_state(task_id, state)
+        task_repo.update_task_phase(task_id, Phase.INTAKE, Status.PENDING_NUVIA)
+        task_status = Status.PENDING_NUVIA
     elif failed == 0 and warned > 0:
         # Only warnings, no errors → PENDING_NUVIA (user must manually pass or fix)
         state["status"] = Status.PENDING_NUVIA
@@ -734,6 +800,10 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
         "uom_mappings": uom_mappings,
         "uom_to_match_mappings": uom_to_match_mappings,
         "dup_groups": dup_groups_out,
+        "precheck_mode": precheck_mode,
+        "required_modes": required_modes,
+        "pc1_passed_modes": passed_modes,
+        "missing_modes": missing_modes,
     }
 
 
@@ -848,11 +918,23 @@ def proceed_with_passing(task_id: str, state_machine: TaskStateMachine, user: st
             f"{len(error_items)} item(s) still have errors."
         )
 
+    # Required-mode gate: every mode in required_pc1_modes must have run
+    # cleanly since the last data change. For DISTRIBUTOR contracts that
+    # means a clean default AND a clean distributor pass.
+    state = state_machine.get_state(task_id)
+    passed_modes = list(state.get("pc1_passed_modes") or [])
+    required_modes = required_pc1_modes(task)
+    missing_modes = [m for m in required_modes if m not in passed_modes]
+    if missing_modes:
+        raise ValueError(
+            f"Pre-check still needs to pass cleanly in mode(s): {', '.join(missing_modes)}. "
+            f"Modes passed since last data change: {', '.join(passed_modes) or 'none'}."
+        )
+
     sub_task_id = None
     if error_items and source_type != "PREMIER":
         sub_task_id = _spawn_error_pc1_subtask(task, error_items, user)
 
-    state = state_machine.get_state(task_id)
     state["pc1_passed"] = True
     # Refresh clean_items so it reflects only items still on this task.
     state["clean_items"] = [{"item_id": i.item_id} for i in passed_items]
