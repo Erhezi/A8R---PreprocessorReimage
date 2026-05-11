@@ -503,19 +503,74 @@ def run_contract_check(task_id: str, state_machine: TaskStateMachine) -> dict:
 # ---------------------------------------------------------------------------
 # Step 3 -- LLM review for MED/LOW matches
 # ---------------------------------------------------------------------------
-def _llm_review_matches(matches: list, item_by_id: dict) -> int:
+def _lookup_vendor_names(erp_vendor_ids: list[str]) -> dict[str, str]:
+    """Batch-load VendorName by ERPVendorID for the LLM review prompt.
+
+    Returns ``{erp_vendor_id: vendor_name}``. Missing IDs are simply absent
+    from the dict; callers should fall back to the raw ID.
+    """
+    cleaned = sorted({(vid or "").strip() for vid in erp_vendor_ids if (vid or "").strip()})
+    if not cleaned:
+        return {}
+
+    from sqlalchemy import bindparam
+
+    stmt = load_query("db", "common", query="get_vendor_names_by_erp_ids").bindparams(
+        bindparam("erp_vendor_ids", expanding=True)
+    )
+    name_by_id: dict[str, str] = {}
+    with _sql_session() as sess:
+        rows = sess.execute(stmt, {"erp_vendor_ids": cleaned}).all()
+        for row in rows:
+            erp_id = (row.ERPVendorID or "").strip()
+            name = (row.VendorName or "").strip()
+            if erp_id and name:
+                name_by_id[erp_id] = name
+    return name_by_id
+
+
+def _llm_review_matches(matches: list, item_by_id: dict, task=None) -> int:
     """Run review_match_pair against each match and persist the verdict.
 
     Returns the number of matches actually reviewed (skips orphans whose input
     item is no longer present).
     """
+    task_vendor_name = (task.erp_vendor_name or "").strip() if task else ""
+    task_vendor_id = (task.vendor_id or "").strip() if task else ""
+
+    # Pre-fetch vendor names for every distinct ERP vendor ID we will need:
+    # the task's own vendor (input side) plus every matched contract's vendor.
+    erp_ids_needed = {task_vendor_id} if task_vendor_id else set()
+    for m in matches:
+        mid = (m.erp_vendor_id_matched or "").strip()
+        if mid:
+            erp_ids_needed.add(mid)
+    vendor_name_by_id = _lookup_vendor_names(sorted(erp_ids_needed))
+
+    # Resolve the input-side vendor name once for the whole task.
+    input_vendor = (
+        task_vendor_name
+        or vendor_name_by_id.get(task_vendor_id, "")
+        or task_vendor_id
+    )
+
     reviewed = 0
     for match in matches:
         item = item_by_id.get(match.input_item_id)
         if not item:
             continue
 
+        match_erp_id = (match.erp_vendor_id_matched or "").strip()
+        match_vendor_name = vendor_name_by_id.get(match_erp_id, "")
+        if match_vendor_name:
+            match_vendor = match_vendor_name
+        elif match_erp_id:
+            match_vendor = f"ERPVendorID {match_erp_id}"
+        else:
+            match_vendor = ""
+
         input_dict = {
+            "vendor": input_vendor,
             "description": item.description or "",
             "mfg_catalog_num": item.mfg_catalog_num or "",
             "vendor_catalog_num": item.vendor_catalog_num or "",
@@ -525,6 +580,7 @@ def _llm_review_matches(matches: list, item_by_id: dict) -> int:
         }
         match_dict = {
             "matched_source": match.matched_source,
+            "vendor": match_vendor,
             "description": match.item_desc_matched or "",
             "mfg_catalog_num": match.manufacturer_number_matched or "",
             "vendor_catalog_num": match.vendor_item_matched or "",
@@ -535,7 +591,14 @@ def _llm_review_matches(matches: list, item_by_id: dict) -> int:
             "pair_type": match.pair_type or "",
         }
         result = review_match_pair(input_dict, match_dict)
-        new_status = "ACCEPTED" if result["decision"] == "ACCEPT" else "REJECTED"
+        decision = result["decision"]
+        if decision == "ACCEPT":
+            new_status = "ACCEPTED"
+        elif decision == "REJECT":
+            new_status = "REJECTED"
+        else:
+            # PENDING (or unknown) — leave for human review.
+            new_status = "LLM_REVIEW"
         task_repo.update_match_decision(
             match.match_id,
             new_status,
@@ -567,8 +630,9 @@ def run_llm_review(task_id: str, state_machine: TaskStateMachine) -> dict:
 
     input_items = task_repo.get_items_by_source(task_id, "INPUT")
     item_by_id = {it.item_id: it for it in input_items}
+    task = task_repo.get_task(task_id)
 
-    reviewed = _llm_review_matches(pending_matches, item_by_id)
+    reviewed = _llm_review_matches(pending_matches, item_by_id, task=task)
     return {"reviewed": reviewed}
 
 
@@ -815,8 +879,9 @@ def run_infor_residue_llm_review(task_id: str, state_machine: TaskStateMachine) 
 
     input_items = task_repo.get_items_by_source(task_id, "INPUT")
     item_by_id = {it.item_id: it for it in input_items}
+    task = task_repo.get_task(task_id)
 
-    reviewed = _llm_review_matches(pending, item_by_id)
+    reviewed = _llm_review_matches(pending, item_by_id, task=task)
     return {"reviewed": reviewed}
 
 
@@ -830,6 +895,7 @@ def run_llm_review_pending_all(task_id: str, state_machine: TaskStateMachine) ->
     """
     input_items = task_repo.get_items_by_source(task_id, "INPUT")
     item_by_id = {it.item_id: it for it in input_items}
+    task = task_repo.get_task(task_id)
 
     reviewed = 0
     for source in ("CCX", "INFOR_CL"):
@@ -839,7 +905,7 @@ def run_llm_review_pending_all(task_id: str, state_machine: TaskStateMachine) ->
         ]
         if not pending:
             continue
-        reviewed += _llm_review_matches(pending, item_by_id)
+        reviewed += _llm_review_matches(pending, item_by_id, task=task)
 
     return {"reviewed": reviewed}
 

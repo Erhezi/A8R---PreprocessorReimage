@@ -87,6 +87,7 @@ def api_delete_item(task_id: str, item_id: int):
     ok = task_repo.soft_delete_item(item_id)
     if not ok:
         return jsonify({"error": "Item not found"}), 404
+    intake_service.cleanup_dup_groups_after_delete(task_id)
     intake_service.clear_pc1_passed_modes(task_id, _sm())
     return jsonify({"deleted": item_id, "status": Status.DELETED_PC1})
 
@@ -376,6 +377,30 @@ def api_manual_pass(task_id: str, item_id: int):
     user = current_user.username if current_user.is_authenticated else "system"
     try:
         result = intake_service.manually_pass_item(task_id, item_id, user)
+        return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@intake_bp.route("/api/intake/<task_id>/items/bulk-pass", methods=["POST"])
+@login_required
+def api_bulk_manual_pass(task_id: str):
+    """Manually pass a set of WARN_PC1 items in one request."""
+    task = task_repo.get_task(task_id)
+    if not task:
+        return jsonify({"error": "Task not found"}), 404
+    data = request.get_json(force=True) or {}
+    raw_ids = data.get("item_ids") or []
+    if not isinstance(raw_ids, list) or not raw_ids:
+        return jsonify({"error": "item_ids (non-empty list) required"}), 400
+    try:
+        item_ids = [int(i) for i in raw_ids]
+    except (TypeError, ValueError):
+        return jsonify({"error": "item_ids must all be integers"}), 400
+
+    user = current_user.username if current_user.is_authenticated else "system"
+    try:
+        result = intake_service.bulk_manually_pass_items(task_id, item_ids, user)
         return jsonify(result)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400

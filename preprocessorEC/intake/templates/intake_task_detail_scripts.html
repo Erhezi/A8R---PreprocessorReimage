@@ -1,15 +1,28 @@
 <script>
 function getAvailablePrecheckModes(task) {
+  // The dropdown is only rendered when a previous PC1 run found issues, so
+  // every option here is "what to run on the next click" after that fail.
+  //
+  // DISTRIBUTOR: the user might want to re-run default (re-verify mfg side
+  // after fixes — auto-chains into distributor again on success) OR jump
+  // straight to distributor to validate the vendor-side after a fix there.
+  // Strict / explicit don't apply because the contract type drives the
+  // expected validation shape.
+  //
+  // MANUFACTURER: default already failed, so it's not in the list. Strict
+  // (exact mfg) and explicit (exact mfg + UOM) are the available drill-downs;
+  // a clean run in either is enough to advance (no specific mode is gated).
   const processType = ((task && task.process_type) || "").toUpperCase();
-  const modes = [
-    { value: "default", label: "Default: Reduced manufacturer" },
+  if (processType.includes("DISTRIBUTOR")) {
+    return [
+      { value: "default", label: "Default: Reduced manufacturer" },
+      { value: "distributor", label: "Distributor: Vendor part number" },
+    ];
+  }
+  return [
     { value: "strict", label: "Strict: Manufacturer part number" },
     { value: "explicit", label: "Explicit: Manufacturer part number + UOM" },
   ];
-  if (processType.includes("DISTRIBUTOR")) {
-    modes.push({ value: "distributor", label: "Distributor: Vendor part number" });
-  }
-  return modes;
 }
 
 function renderRecheckModeControl(task) {
@@ -24,15 +37,6 @@ function renderRecheckModeControl(task) {
   `;
 }
 
-function modeLabel(mode) {
-  return ({
-    default: "Default",
-    distributor: "Distributor",
-    strict: "Strict",
-    explicit: "Explicit",
-  }[mode] || mode);
-}
-
 function renderIntakeActionButtons(task, issues) {
   const inIntake = task.phase === "INTAKE";
   if (!inIntake) {
@@ -43,19 +47,6 @@ function renderIntakeActionButtons(task, issues) {
   const intakeStatuses = ["PENDING_PRECHECK", "DRAFT", "ON_HOLD_PC1", "PENDING_NUVIA"];
   const allUploaded = currentItems.length > 0 && currentItems.every(item => item.status === "UPLOADED");
   const hasHeaderErrors = issues.some(issue => issue.item_id === null || issue.item_id === undefined);
-  const requiredModes = (currentIntakeState && currentIntakeState.required_modes) || ["default"];
-  const passedModes = (currentIntakeState && currentIntakeState.pc1_passed_modes) || [];
-  const missingModes = (currentIntakeState && currentIntakeState.missing_modes)
-    || requiredModes.filter(m => !passedModes.includes(m));
-  // "Mode-only blocked" = pre-check has run at least once, no error/warn
-  // items remain, but a required mode (e.g. distributor) hasn't run cleanly
-  // yet. precheckHasRun guards against firing on the initial upload where
-  // pc1_passed_modes is empty by definition.
-  const noItemIssues = currentItems.length > 0
-    && !currentItems.some(item => item.status === "ERROR_PC1" || item.status === "WARN_PC1");
-  const precheckHasRun = currentItems.length > 0
-    && !currentItems.every(item => item.status === "UPLOADED");
-  const modeBlocked = precheckHasRun && noItemIssues && missingModes.length > 0;
 
   if (intakeStatuses.includes(task.status)) {
     if (!task.parent_task_id) {
@@ -82,16 +73,6 @@ function renderIntakeActionButtons(task, issues) {
     }
   }
 
-  if (modeBlocked && !hasHeaderErrors) {
-    // No row-level issues remain, but a required pre-check mode hasn't run
-    // cleanly since the last data change (typical: DISTRIBUTOR contracts after
-    // a clean default pass). Surface the next mode as a dedicated CTA.
-    const nextMode = missingModes[0];
-    const nextLabel = modeLabel(nextMode);
-    buttons += `<div class="small text-muted mb-1"><i class="bi bi-info-circle me-1"></i>${modeLabel(passedModes[passedModes.length - 1] || "default")} pre-check passed. ${nextLabel}-mode pre-check is required before advancing.</div>`;
-    buttons += `<button class="btn btn-sm btn-primary d-block mb-1 w-100" onclick="recheckAll(this, '${nextMode}')">Run ${nextLabel} Pre-check</button>`;
-  }
-
   if (!hasHeaderErrors && (task.status === "ON_HOLD_PC1" || task.status === "PENDING_NUVIA")) {
     const passedCount = currentItems.filter(item => item.status === "PASSED_PC1").length;
     if (passedCount > 0) {
@@ -102,9 +83,6 @@ function renderIntakeActionButtons(task, issues) {
         buttons += `<button class="btn btn-sm btn-outline-secondary d-block mb-1 w-100" disabled title="Resolve every WARN_PC1 item (fix or manually pass) before advancing">Proceed (blocked — ${warnCount} warning${warnCount === 1 ? '' : 's'})</button>`;
       } else if (isPremier && errorCount > 0) {
         buttons += `<button class="btn btn-sm btn-outline-secondary d-block mb-1 w-100" disabled title="PREMIER contracts require all items to pass">Proceed (blocked — PREMIER)</button>`;
-      } else if (missingModes.length > 0) {
-        const tip = `Pre-check still needs to pass cleanly in: ${missingModes.map(modeLabel).join(", ")}`;
-        buttons += `<button class="btn btn-sm btn-outline-secondary d-block mb-1 w-100" disabled title="${tip}">Proceed (blocked — ${missingModes.map(modeLabel).join(" + ")} pre-check pending)</button>`;
       } else if (errorCount > 0) {
         buttons += `<button class="btn btn-sm btn-success d-block mb-1 w-100" onclick="proceedWithPassing()">Advance ${passedCount} & Split ${errorCount} Error(s)</button>`;
       } else {
@@ -122,7 +100,8 @@ function renderItemsTable() {
   const inIntake = currentTask && currentTask.phase === "INTAKE";
   const body = document.getElementById("itemsBody");
   if (!currentItems.length) {
-    body.innerHTML = '<tr><td colspan="10" class="text-center text-muted">No items yet</td></tr>';
+    body.innerHTML = '<tr><td colspan="11" class="text-center text-muted">No items yet</td></tr>';
+    syncBulkPassControls();
     return;
   }
 
@@ -139,8 +118,18 @@ function renderItemsTable() {
     visible = currentItems;
   }
 
+  // Drop selections for rows that are no longer WARN_PC1 (edit / pass /
+  // delete invalidated them). Selections survive filter changes — only the
+  // master "select all visible" checkbox cares about the current view.
+  selectedWarnIds.forEach(id => {
+    const item = currentItems.find(it => it.item_id === id);
+    if (!item || item.status !== "WARN_PC1") {
+      selectedWarnIds.delete(id);
+    }
+  });
+
   if (!visible.length) {
-    body.innerHTML = '<tr><td colspan="10" class="text-center text-muted">No matching items</td></tr>';
+    body.innerHTML = '<tr><td colspan="11" class="text-center text-muted">No matching items</td></tr>';
   } else {
     const dupItemIds = new Set();
     currentDupGroups.forEach(group => (group.item_ids || []).forEach(id => dupItemIds.add(id)));
@@ -156,9 +145,15 @@ function renderItemsTable() {
         actionButtons = `<button class="btn btn-outline-primary btn-sm py-0 px-1 me-1" onclick="openEditModal(${item.item_id})" title="Edit"><i class="bi bi-pencil-square"></i> Edit</button>` +
           `<button class="btn btn-outline-success btn-sm py-0 px-1" onclick="manuallyPass(${item.item_id})" title="Pass">Pass</button>`;
       }
+      const isWarnSelectable = item.status === "WARN_PC1" && inIntake;
+      const checked = selectedWarnIds.has(item.item_id) ? " checked" : "";
+      const checkboxCell = isWarnSelectable
+        ? `<input type="checkbox" class="form-check-input warn-select" data-item-id="${item.item_id}" onclick="toggleWarnSelection(${item.item_id}, this.checked)"${checked}>`
+        : "";
       const rowHighlight = focusedItemIds.has(item.item_id) ? ' class="table-info"' : '';
       return `
         <tr data-item-id="${item.item_id}"${rowHighlight}>
+          <td>${checkboxCell}</td>
           <td>${item.file_row || "—"}</td>
           <td>${item.mfg_catalog_num || "—"}</td>
           <td>${item.vendor_catalog_num || "—"}</td>
@@ -172,6 +167,7 @@ function renderItemsTable() {
         </tr>`;
     }).join("");
   }
+  syncBulkPassControls(visible);
 
   const countEl = document.getElementById("itemCount");
   countEl.textContent = visible.length < currentItems.length
@@ -468,10 +464,21 @@ async function runPrecheck(btn) {
   }
   document.getElementById("precheckBody").innerHTML = `
     <p class="mb-1">${summary}</p>
-    ${data.uom_mappings && data.uom_mappings.length ? `<p class="small text-muted mb-0">UOM mappings: ${data.uom_mappings.map(mapping => mapping.from + " → " + mapping.to).join(", ")}</p>` : ""}
-    ${data.uom_to_match_mappings && data.uom_to_match_mappings.length ? `<p class="small text-muted mb-0">Infor UOM mappings: ${data.uom_to_match_mappings.map(mapping => mapping.from + " → " + mapping.to).join(", ")}</p>` : ""}
+    ${data.uom_mappings && data.uom_mappings.length ? `<p class="small text-muted mb-0">UOM mappings: ${formatUomMappings(data.uom_mappings)}</p>` : ""}
+    ${data.uom_to_match_mappings && data.uom_to_match_mappings.length ? `<p class="small text-muted mb-0">Infor UOM mappings: ${formatUomMappings(data.uom_to_match_mappings)}</p>` : ""}
   `;
   loadTask();
+}
+
+function formatUomMappings(mappings) {
+  // Backend returns deduped {from, to, count} entries sorted by frequency.
+  // Older callers passed the per-item shape ({from, to} only); fall back to
+  // omitting the count when count is missing so re-runs against an old cache
+  // don't blow up.
+  return mappings.map(m => {
+    const count = (m && typeof m.count === "number") ? m.count : null;
+    return count != null ? `${m.from} → ${m.to} (${count})` : `${m.from} → ${m.to}`;
+  }).join(", ");
 }
 
 function openEditModal(itemId) {
@@ -528,6 +535,121 @@ async function manuallyPass(itemId) {
   }
 }
 
+function toggleWarnSelection(itemId, checked) {
+  if (checked) {
+    selectedWarnIds.add(itemId);
+  } else {
+    selectedWarnIds.delete(itemId);
+  }
+  syncBulkPassControls();
+}
+
+function toggleSelectAllWarnings(checkbox) {
+  const visibleWarnRows = document.querySelectorAll("#itemsBody input.warn-select");
+  visibleWarnRows.forEach(cb => {
+    const itemId = parseInt(cb.dataset.itemId, 10);
+    if (Number.isNaN(itemId)) return;
+    cb.checked = checkbox.checked;
+    if (checkbox.checked) {
+      selectedWarnIds.add(itemId);
+    } else {
+      selectedWarnIds.delete(itemId);
+    }
+  });
+  syncBulkPassControls();
+}
+
+function clearWarnSelection() {
+  selectedWarnIds.clear();
+  document.querySelectorAll("#itemsBody input.warn-select").forEach(cb => { cb.checked = false; });
+  const master = document.getElementById("warnSelectAll");
+  if (master) master.checked = false;
+  syncBulkPassControls();
+}
+
+function syncBulkPassControls(visible) {
+  // Keep the "Pass N selected" CTA + master checkbox in sync with the
+  // selection set. Called after every render and selection change.
+  const controls = document.getElementById("bulkPassControls");
+  const countEl = document.getElementById("bulkPassCount");
+  const master = document.getElementById("warnSelectAll");
+  if (countEl) countEl.textContent = selectedWarnIds.size;
+  if (controls) controls.style.display = selectedWarnIds.size > 0 ? "" : "none";
+
+  // Master checkbox state reflects whether every visible WARN_PC1 row is
+  // currently selected. We compute against the rendered checkboxes so it
+  // stays correct under any filter / focus combination.
+  if (master) {
+    const visibleWarnCheckboxes = document.querySelectorAll("#itemsBody input.warn-select");
+    if (!visibleWarnCheckboxes.length) {
+      master.checked = false;
+      master.indeterminate = false;
+      master.disabled = true;
+    } else {
+      master.disabled = false;
+      const checkedCount = Array.from(visibleWarnCheckboxes).filter(cb => cb.checked).length;
+      master.checked = checkedCount === visibleWarnCheckboxes.length;
+      master.indeterminate = checkedCount > 0 && checkedCount < visibleWarnCheckboxes.length;
+    }
+  }
+}
+
+async function bulkPassSelected() {
+  const ids = Array.from(selectedWarnIds);
+  if (!ids.length) return;
+  if (!confirm(`Manually approve ${ids.length} warning item${ids.length === 1 ? '' : 's'}? They'll be marked as PASSED_PC1.`)) return;
+  const btn = document.getElementById("btnBulkPass");
+  setBulkPassBtnState(btn, "passing", ids.length);
+  let resp, data;
+  try {
+    resp = await fetch(`${PREFIX}/api/intake/${TASK_ID}/items/bulk-pass`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({item_ids: ids}),
+    });
+    data = await resp.json().catch(() => ({}));
+  } catch (err) {
+    alert("Bulk pass failed: " + (err.message || err));
+    setBulkPassBtnState(btn, "idle", ids.length);
+    return;
+  }
+  if (!resp.ok) {
+    alert("Bulk pass failed: " + (data.error || "Unknown error"));
+    setBulkPassBtnState(btn, "idle", ids.length);
+    return;
+  }
+  // The DB write is done. The slow part now is loadTask() pulling the full
+  // task + items + errors, so flip the button into a "refreshing" state so
+  // the user sees the work succeeded and we're just rebuilding the view.
+  setBulkPassBtnState(btn, "refreshing", ids.length);
+  selectedWarnIds.clear();
+  try {
+    await loadTask();
+  } catch (err) {
+    // loadTask shouldn't throw, but if it does the bulk-pass already
+    // committed — fall through to the reset below so the button is usable.
+  }
+  // Always restore idle HTML so the next time the controls reappear (when
+  // the user picks another set of warnings), the button has its normal
+  // markup back — not a stale spinner. syncBulkPassControls will re-show
+  // the div + populate the count when a new selection forms.
+  setBulkPassBtnState(btn, "idle", 0);
+}
+
+function setBulkPassBtnState(btn, state, count) {
+  if (!btn) return;
+  if (state === "passing") {
+    btn.disabled = true;
+    btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>Passing ${count}…`;
+  } else if (state === "refreshing") {
+    btn.disabled = true;
+    btn.innerHTML = `<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>Passed — refreshing…`;
+  } else {
+    btn.disabled = false;
+    btn.innerHTML = `Pass <span id="bulkPassCount">${count}</span> selected`;
+  }
+}
+
 async function softDeleteItem(itemId) {
   if (!confirm("Mark this duplicate item as DELETED_PC1? It will be excluded from future pre-checks and later phases.")) return;
   const resp = await fetch(`${PREFIX}/api/intake/${TASK_ID}/items/${itemId}`, {method: "DELETE"});
@@ -571,7 +693,7 @@ async function recheckAll(btn, modeOverride) {
   document.getElementById("precheckHeader").className = `card-header ${cls}`;
   document.getElementById("precheckBody").innerHTML = `
     <p class="mb-1"><strong>Total:</strong> ${data.total} &nbsp; <strong>Passed:</strong> ${data.passed} &nbsp; <strong>Warned:</strong> ${data.warned || 0} &nbsp; <strong>Failed:</strong> ${data.failed} &nbsp; <strong>Mode:</strong> ${mode.charAt(0).toUpperCase() + mode.slice(1)}</p>
-    ${data.uom_to_match_mappings && data.uom_to_match_mappings.length ? `<p class="small text-muted mb-0">Infor UOM mappings: ${data.uom_to_match_mappings.map(mapping => mapping.from + " → " + mapping.to).join(", ")}</p>` : ""}
+    ${data.uom_to_match_mappings && data.uom_to_match_mappings.length ? `<p class="small text-muted mb-0">Infor UOM mappings: ${formatUomMappings(data.uom_to_match_mappings)}</p>` : ""}
   `;
   loadTask();
 }

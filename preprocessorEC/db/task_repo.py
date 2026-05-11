@@ -495,6 +495,28 @@ def bulk_resolve_precheck_errors(task_id: str, phase: str, resolved_by: str) -> 
         s.commit()
 
 
+def bulk_resolve_precheck_errors_for_items(
+    task_id: str, phase: str, item_ids: list[int], resolved_by: str,
+) -> None:
+    """Mark every unresolved error for the given item_ids (within a phase) as
+    resolved in one query. Used by bulk-pass so a 50-item approval doesn't
+    issue 50+ resolve round-trips.
+    """
+    if not item_ids:
+        return
+    with _session() as s:
+        s.query(PreCheckError).filter(
+            PreCheckError.task_id == task_id,
+            PreCheckError.phase == phase,
+            PreCheckError.item_id.in_(item_ids),
+            PreCheckError.resolved == False,  # noqa: E712
+        ).update(
+            {"resolved": True, "resolved_by": resolved_by, "resolved_at": ny_now()},
+            synchronize_session=False,
+        )
+        s.commit()
+
+
 def bulk_update_item_statuses(updates: list[dict]) -> None:
     """Apply per-item ``(status, error_message)`` updates in one session.
 

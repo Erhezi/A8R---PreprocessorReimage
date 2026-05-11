@@ -20,39 +20,108 @@ You are an expert supply-chain analyst reviewing potential duplicate items
 between a hospital's input item list and existing contract lines.
 
 For each pair you will receive:
-- Pair type: A, B, C, or D
-- INPUT item: description, manufacturer number, vendor catalog number, UOM, QOE, contract price
-- MATCH item: description, manufacturer number, vendor catalog number, UOM, QOE, contract price, source system
+- Pair type: A, B, C, or D (used by upstream scoring; you do NOT need to
+  apply different rules per pair type — every pair is judged the same way)
+- INPUT item: vendor, description, manufacturer number, vendor catalog number,
+  UOM, QOE, contract price
+- MATCH item: vendor, description, manufacturer number, vendor catalog number,
+  UOM, QOE, contract price, source system
 
-Decide whether the INPUT and MATCH represent the SAME physical product.
-Consider:
-1. Catalog / part number similarity (after normalisation)
-2. Description overlap and whether both descriptions refer to the same physical item, size, formulation, packaging, and brand
-3. UOM and QOE compatibility, including known synonym packaging units across systems
-4. Contract price reasonableness relative to UOM and QOE; a large price gap can indicate that one side has the wrong item, wrong pack, or wrong record even if catalog numbers look similar
+Goal: decide whether the INPUT and MATCH represent the SAME physical product
+sold under the SAME effective packaging.
 
-Special rule for pair types A and C:
-- For pair type A and pair type C, the INPUT and MATCH must represent the same packaging, not just the same base product.
-- If they are the same product but sold in different packaging, pack size, UOM, or quantity-per-pack, you must REJECT.
-- Treat differences like BX 20 vs EA 1, CA vs BX, or other pack/count differences as different packaging unless the evidence clearly shows they are the exact same sellable pack.
+Output exactly one of three decisions:
+- ACCEPT — the pair is (or is almost certainly) the same product in the same
+  effective packaging.
+- REJECT — the pair is a different product, OR the same product in a
+  different packaging.
+- PENDING — only when, after considering every field, you genuinely cannot
+  decide between ACCEPT and REJECT. PENDING is for true judgement failures,
+  not minor uncertainty. If the evidence leans either way, commit to that
+  decision and put your hesitation in the `reason` field instead.
 
-Special rule for pair type D:
-- For pair type D, ACCEPT when the INPUT and MATCH represent the same underlying physical product even if their UOM or pack size differs (e.g., EA vs BX, CA vs BX, different QOE).
-- The goal of pair type D is to surface the same item being purchased under different packaging configurations across systems, so UOM/QOE differences alone are NOT a reason to reject.
-- Still REJECT if catalog numbers, manufacturer, brand, formulation, size, or other product-identity attributes indicate they are different items, or if the contract price is wildly inconsistent in a way that cannot be explained by the UOM/QOE difference.
+Signals to weigh together (no single field is decisive):
+1. Catalog / part number similarity (after normalisation).
+2. Description overlap — do both refer to the same physical item, size,
+   formulation, packaging, and brand?
+3. UOM and QOE compatibility, including known synonym packaging units
+   across systems.
+4. Contract price reasonableness given the stated UOM/QOE on each side.
+5. Vendor identity (see below).
 
-Do not accept a match only because the descriptions are broadly similar.
-Use all fields together. If UOM looks interchangeable but the contract price is materially inconsistent for the stated pack and quantity, prefer REJECT.
-For example, if both sides have the same vendor and manufacturer number and both have QOE 6, but one side is priced around 6 times higher than the other, that usually indicates they are not the same contract line and should be REJECTED.
+Vendor handling:
+- The vendor field is the supplier on each side. It is intentionally NOT the
+  manufacturer, because contracts often list the seller as the manufacturer
+  (e.g. a Medline-sold contract may show every line as "manufactured by
+  Medline"), which is misleading. Trust the vendor field; do not infer
+  manufacturer competition from the description alone.
+- If the two vendors are the same entity — same name, or one is a
+  well-known parent / acquirer of the other, or there is well-known M&A
+  history making them the same legal entity today — treat the vendor as
+  matched. This is a strong positive signal.
+- If one side is a manufacturer and the other is a distributor known to
+  resell that manufacturer's product, and all other specs match, treat the
+  vendor relationship as compatible (lean ACCEPT, not REJECT, on vendor
+  grounds).
+- If the descriptions, specs, and packaging look closely matched but the
+  two vendors are well-known direct market competitors for this product
+  category (each manufactures and sells their own branded equivalent),
+  treat the pair as "market competitors" and REJECT — same-looking
+  description does not mean same product when two competing brands each
+  produce their own version.
+
+Packaging and price-sanity (applies to ALL pair types):
+- By default the two sides must represent the same effective packaging
+  (same pack size and per-unit-of-sale). Different pack/count (e.g. EA 1
+  vs CS 10, BX 20 vs EA 1) is a REJECT.
+- Exception — likely data-entry error: contract documents are sometimes
+  entered with wrong UOM, wrong QOE, or even wrong VPN. This is especially
+  common in pair types C and D. When you are otherwise confident the
+  underlying item is the same (description + manufacturer number +
+  vendor align) AND the contract prices on the two sides are very close
+  to each other, it is highly likely one side simply has a UOM/QOE/VPN
+  data-entry error and the two are actually the same packaging. ACCEPT in
+  that case so the row is surfaced in the export file for a human to do a
+  second-pass review and correct the data.
+  Example (ACCEPT): Medline ABC12345 / VPN ABC12345H / EA / 1 / $100 vs
+                    Medline ABC12345 / VPN ABC12345  / CS / 10 / $105
+                    → prices within a few %; CS/10 is almost certainly the
+                    same pack as EA/1 with bad UOM/QOE entry.
+- If UOM/QOE differ AND the contract prices are at obviously different
+  scales (one is per-each, the other is per-case-of-N), the packaging
+  really is different — REJECT.
+  Example (REJECT): Medline ABC12345 / EA / 1 / $10 vs
+                    Medline ABC12345 / CS / 10 / $105
+                    → $10/each vs $105 for a case of 10 are different
+                    packaging tiers, not a data error.
+- If one side has a suspicious value (e.g. CS with QOE 1) but the prices
+  still show clearly different pack scales, REJECT — the data is wrong but
+  the two rows are still different packaging.
+  Example (REJECT): Medline ABC12345 / EA / 1 / $10 vs
+                    Medline ABC12345 / CS / 1 / $105
+                    → CS/1 is suspect, but $10 vs $105 spread shows
+                    different pack scales regardless.
+
+General guardrails:
+- Do not ACCEPT a match only because the descriptions are broadly similar.
+- Use all fields together. If UOM looks interchangeable but the contract
+  price is materially inconsistent for the stated pack and quantity,
+  prefer REJECT.
+  For example, if both sides have the same vendor and manufacturer number
+  and both have QOE 6, but one side is priced ~6× the other, that
+  usually means they are not the same contract line — REJECT.
+- Reserve PENDING for genuine deadlocks. Most pairs should resolve to
+  ACCEPT or REJECT.
 
 Respond with a JSON object:
-{"decision": "ACCEPT" | "REJECT", "confidence": 0-100, "reason": "<one sentence>"}
+{"decision": "ACCEPT" | "REJECT" | "PENDING", "confidence": 0-100, "reason": "<one sentence>"}
 """
 
 _USER_TEMPLATE = """\
 Pair Type: {pair_type}
 
 INPUT item:
+  Vendor: {input_vendor}
   Description: {input_desc}
   Mfg Catalog #: {input_mfg}
   Vendor Catalog #: {input_vpn}
@@ -61,6 +130,7 @@ INPUT item:
   Contract Price: {input_price}
 
 MATCH item (source: {match_source}):
+  Vendor: {match_vendor}
   Description: {match_desc}
   Mfg Catalog #: {match_mfg}
   Vendor Catalog #: {match_vpn}
@@ -83,6 +153,7 @@ def _build_messages(
             "role": "user",
             "content": _USER_TEMPLATE.format(
                 pair_type=match_item.get("pair_type", ""),
+                input_vendor=input_item.get("vendor", "") or "(not provided)",
                 input_desc=input_item.get("description", ""),
                 input_mfg=input_item.get("mfg_catalog_num", ""),
                 input_vpn=input_item.get("vendor_catalog_num", ""),
@@ -90,6 +161,7 @@ def _build_messages(
                 input_qoe=input_item.get("qoe", ""),
                 input_price=input_item.get("contract_price", ""),
                 match_source=match_item.get("matched_source", ""),
+                match_vendor=match_item.get("vendor", "") or "(not provided)",
                 match_desc=match_item.get("description", ""),
                 match_mfg=match_item.get("mfg_catalog_num", ""),
                 match_vpn=match_item.get("vendor_catalog_num", ""),
@@ -186,43 +258,16 @@ def _parse_response(content: str) -> dict:
     """Parse the LLM JSON response; return a safe default on failure."""
     try:
         data = json.loads(content)
-        decision = data.get("decision", "REJECT").upper()
-        if decision not in ("ACCEPT", "REJECT"):
-            decision = "REJECT"
+        decision = data.get("decision", "PENDING").upper()
+        if decision not in ("ACCEPT", "REJECT", "PENDING"):
+            decision = "PENDING"
         return {
             "decision": decision,
             "confidence": data.get("confidence", 0),
             "reason": data.get("reason", ""),
         }
     except (json.JSONDecodeError, AttributeError):
-        return {"decision": "REJECT", "confidence": 0, "reason": "LLM response parse error"}
-
-
-def _normalize_text(value) -> str:
-    return str(value or "").strip().upper()
-
-
-def _normalize_qoe(value) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    try:
-        return str(int(float(text)))
-    except (TypeError, ValueError):
-        return text
-
-
-def _requires_same_packaging(pair_type: str) -> bool:
-    return _normalize_text(pair_type) in {"A", "C"}
-
-
-def _same_packaging(input_item: dict, match_item: dict) -> bool:
-    input_uom = _normalize_text(input_item.get("uom"))
-    match_uom = _normalize_text(match_item.get("uom"))
-    input_qoe = _normalize_qoe(input_item.get("qoe"))
-    match_qoe = _normalize_qoe(match_item.get("qoe"))
-
-    return bool(input_uom and match_uom and input_qoe and match_qoe and input_uom == match_uom and input_qoe == match_qoe)
+        return {"decision": "PENDING", "confidence": 0, "reason": "LLM response parse error"}
 
 
 # ── Public API ──────────────────────────────────────────────────────────
@@ -232,19 +277,13 @@ def review_match_pair(
 ) -> dict:
     """Ask the LLM to review a single input↔match pair.
 
-    Returns ``{"decision": "ACCEPT"|"REJECT", "confidence": int, "reason": str}``.
-    Falls back to REJECT if the API is unavailable or errors.
+    Returns ``{"decision": "ACCEPT"|"REJECT"|"PENDING", "confidence": int, "reason": str}``.
+    Falls back to PENDING if the API is unavailable or errors so a human
+    reviewer can still make the call.
     """
-    if _requires_same_packaging(match_item.get("pair_type", "")) and not _same_packaging(input_item, match_item):
-        return {
-            "decision": "REJECT",
-            "confidence": 100,
-            "reason": "Pair type A/C requires the same packaging; UOM or QOE indicates a different pack.",
-        }
-
     client = _get_client()
     if client is None:
-        return {"decision": "REJECT", "confidence": 0, "reason": "LLM unavailable"}
+        return {"decision": "PENDING", "confidence": 0, "reason": "LLM unavailable"}
 
     model = current_app.config.get("OPENAI_MODEL", "gpt-4.1-mini")
     max_tokens = current_app.config.get("LLM_MAX_TOKENS", 1024)
@@ -267,20 +306,20 @@ def review_match_pair(
     except APIConnectionError as exc:
         logger.error("LLM review connection failed for model %s: %s", model, exc)
         return {
-            "decision": "REJECT",
+            "decision": "PENDING",
             "confidence": 0,
             "reason": "LLM connection error. Check OPENAI_BASE_URL/AZURE_OPENAI_ENDPOINT and SSL settings.",
         }
     except APITimeoutError as exc:
         logger.error("LLM review timed out for model %s: %s", model, exc)
         return {
-            "decision": "REJECT",
+            "decision": "PENDING",
             "confidence": 0,
             "reason": "LLM request timed out.",
         }
     except Exception as exc:
         logger.error("LLM review failed: %s", exc)
-        return {"decision": "REJECT", "confidence": 0, "reason": f"LLM error: {exc}"}
+        return {"decision": "PENDING", "confidence": 0, "reason": f"LLM error: {exc}"}
 
 
 def review_match_batch(

@@ -323,14 +323,96 @@ def required_pc1_modes(task) -> list[str]:
     """Modes that must run cleanly before a task can advance to IDENTITY.
 
     DISTRIBUTOR contracts need both ``default`` (catches reduced-mfg dups) and
-    ``distributor`` (catches vendor-side dups). Everyone else only needs
-    ``default``. ``strict`` and ``explicit`` are user-initiated drill-downs;
-    they record passes for visibility but never gate advancement.
+    ``distributor`` (catches vendor-side dups) — the system auto-chains the
+    second one after a clean default run.
+
+    For everyone else, no specific mode is required: any clean PC1 run is
+    enough to advance. The user picks the mode that matches their data quality
+    preference (default / strict / explicit) and the gate trusts that choice.
     """
     process_type = (getattr(task, "process_type", "") or "").upper()
     if "DISTRIBUTOR" in process_type:
         return ["default", "distributor"]
-    return ["default"]
+    return []
+
+
+# Warning-severity error_type codes — kept in sync with the codes emitted by
+# _check_qoe_uom_compat / _check_mfg_dup / _check_vendor_dup. The "_REDUCED"
+# and "_WARNING" suffix fallbacks catch any future additions.
+_WARNING_TYPES = {"QOE_UOM_WARNING", "DUPLICATE_MFG_REDUCED", "DUPLICATE_VENDORITEM_REDUCED"}
+
+
+def _is_warning_type(error_type: str) -> bool:
+    code = (error_type or "").upper()
+    if code in _WARNING_TYPES:
+        return True
+    return code.endswith("_WARNING") or code.endswith("_REDUCED")
+
+
+def cleanup_dup_groups_after_delete(task_id: str) -> int:
+    """Resolve duplicate error/warning records whose group no longer has
+    enough active members to constitute a duplicate.
+
+    ``soft_delete_item`` already clears the deleted item's own error rows,
+    but the *other* members of the same dup group keep their records — even
+    when only one active member is left and the duplication is no longer
+    real under the current pre-check mode. This function performs that
+    follow-up cleanup so the Pre-Check Errors table consistently drops
+    entries that are no longer duplicates.
+
+    Re-evaluates each affected item's status: if its only outstanding issue
+    was the now-resolved dup record, it's demoted back to PASSED_PC1; if
+    only warning records remain, WARN_PC1.
+
+    Returns the number of error rows resolved.
+    """
+    items = task_repo.get_items(task_id)
+    deleted_ids = {i.item_id for i in items if (i.status or "") in Status.DELETED_STATUSES}
+
+    errors = task_repo.get_precheck_errors(task_id, phase="PC1", resolved=False)
+
+    # Group unresolved DUPLICATE_* records by (error_type, error_detail).
+    # Active members = item_ids whose unresolved error shares the key and
+    # whose item is not soft-deleted.
+    by_group: dict[tuple[str, str], list] = {}
+    member_ids: dict[tuple[str, str], set[int]] = {}
+    for e in errors:
+        if not (e.error_type and e.error_type.startswith("DUPLICATE")):
+            continue
+        if e.item_id is None or e.item_id in deleted_ids:
+            continue
+        key = (e.error_type, e.error_detail or "")
+        by_group.setdefault(key, []).append(e)
+        member_ids.setdefault(key, set()).add(e.item_id)
+
+    resolved_count = 0
+    affected_items: set[int] = set()
+    for key, group_errors in by_group.items():
+        if len(member_ids[key]) <= 1:
+            for e in group_errors:
+                task_repo.resolve_precheck_error(e.error_id, resolved_by="DUP_CLEANUP")
+                resolved_count += 1
+                if e.item_id is not None:
+                    affected_items.add(e.item_id)
+
+    # Re-evaluate the lone-member items so a stale ERROR_PC1 status doesn't
+    # linger after its only error was the now-resolved dup record.
+    if affected_items:
+        remaining = task_repo.get_precheck_errors(task_id, phase="PC1", resolved=False)
+        by_item: dict[int, list] = {}
+        for r in remaining:
+            if r.item_id is not None:
+                by_item.setdefault(r.item_id, []).append(r)
+        for item_id in affected_items:
+            recs = by_item.get(item_id, [])
+            if not recs:
+                task_repo.update_item_status(item_id, Status.PASSED_PC1)
+            else:
+                has_error = any(not _is_warning_type(r.error_type) for r in recs)
+                new_status = Status.ERROR_PC1 if has_error else Status.WARN_PC1
+                task_repo.update_item_status(item_id, new_status)
+
+    return resolved_count
 
 
 def clear_pc1_passed_modes(task_id: str, state_machine: TaskStateMachine) -> None:
@@ -349,7 +431,11 @@ def clear_pc1_passed_modes(task_id: str, state_machine: TaskStateMachine) -> Non
 # ---------------------------------------------------------------------------
 # Pre-check PC1 — main entry point
 # ---------------------------------------------------------------------------
-def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
+def run_precheck(
+    task_id: str,
+    state_machine: TaskStateMachine,
+    mode_override: Optional[str] = None,
+) -> dict:
     """Run Phase 1 pre-check on ALL items for a task.
 
     Every run resets all items to UPLOADED first so duplicate detection always
@@ -401,8 +487,10 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
     is_distributor = "DISTRIBUTOR" in process_type
 
     errors = []
-    uom_mappings = []
-    uom_to_match_mappings = []
+    # Aggregate UOM mappings by (from, to) so the precheck summary shows
+    # "CS → CA (50)" instead of repeating "CS → CA" once per affected item.
+    uom_mapping_counts: dict[tuple[str, str], int] = {}
+    uom_to_match_mapping_counts: dict[tuple[str, str], int] = {}
     passed_ids = []
     warned_ids = []
     failed_ids = []
@@ -465,7 +553,10 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
     # post-loop pass so the front-end can focus every participating row.
     dup_warn_groups: dict[str, list[int]] = {}
 
-    precheck_mode = (task.precheck_mode or "default").lower()
+    # mode_override is set by the auto-chain path below so distributor can
+    # run without us writing "distributor" to task.precheck_mode (which would
+    # surface in the dropdown as the saved selection on the next page load).
+    precheck_mode = (mode_override or task.precheck_mode or "default").lower()
     if precheck_mode == "distributor" and not is_distributor:
         precheck_mode = "default"
 
@@ -483,9 +574,11 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
         uom_to_match_infor = _translate_uom_to_match_infor(std_uom, uom_to_match_infor_map)
         validated_uom = uom_to_match_infor or std_uom
         if uom_note:
-            uom_mappings.append({"item_id": item.item_id, "from": item.uom, "to": std_uom})
+            key = (item.uom, std_uom)
+            uom_mapping_counts[key] = uom_mapping_counts.get(key, 0) + 1
         if std_uom and uom_to_match_infor and uom_to_match_infor != std_uom:
-            uom_to_match_mappings.append({"item_id": item.item_id, "from": std_uom, "to": uom_to_match_infor})
+            key = (std_uom, uom_to_match_infor)
+            uom_to_match_mapping_counts[key] = uom_to_match_mapping_counts.get(key, 0) + 1
 
         # --- UOM validation against MDM ---
         if validated_uom and validated_uom not in valid_uoms:
@@ -756,6 +849,26 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
     missing_modes = [m for m in required_modes if m not in passed_modes]
     state["pc1_passed"] = (clean_run and not missing_modes)
 
+    # ----- DISTRIBUTOR auto-chain -----
+    # A clean default pass on a DISTRIBUTOR contract has only validated
+    # mfg-side dups. Vendor-side dups need the distributor mode pass too,
+    # but that's a system concern, not the user's — chain straight into it
+    # so they see one combined outcome from a single click. Guarded on
+    # ``precheck_mode == "default"`` so we never recurse out of distributor
+    # mode (preventing infinite loops if vendor checks fail).
+    if (clean_run
+            and is_distributor
+            and precheck_mode == "default"
+            and "distributor" in missing_modes):
+        state_machine.save_state(task_id, state)
+        # Persist distributor as the task's saved mode so the dropdown
+        # reflects what was actually last validated, and so an audit / log
+        # reader can tell that vendor-side checks ran. mode_override drives
+        # the recursion regardless, but keeping the two in sync avoids
+        # surprises on the next page load.
+        task_repo.update_task_fields(task_id, precheck_mode="distributor")
+        return run_precheck(task_id, state_machine, mode_override="distributor")
+
     # ----- Determine task status + auto-advance logic -----
     if clean_run and not missing_modes:
         # All items passed AND every required mode has run clean → advance
@@ -788,6 +901,15 @@ def run_precheck(task_id: str, state_machine: TaskStateMachine) -> dict:
         state_machine.save_state(task_id, state)
         task_repo.update_task_phase(task_id, Phase.INTAKE, Status.ON_HOLD_PC1)
         task_status = Status.ON_HOLD_PC1
+
+    uom_mappings = [
+        {"from": k[0], "to": k[1], "count": v}
+        for k, v in sorted(uom_mapping_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    ]
+    uom_to_match_mappings = [
+        {"from": k[0], "to": k[1], "count": v}
+        for k, v in sorted(uom_to_match_mapping_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    ]
 
     return {
         "total": total,
@@ -995,6 +1117,57 @@ def manually_pass_item(task_id: str, item_id: int, user: str) -> dict:
             task_repo.resolve_precheck_error(e.error_id, resolved_by=user)
 
     return {"item_id": item_id, "new_status": Status.PASSED_PC1, "approved_by": user}
+
+
+def bulk_manually_pass_items(task_id: str, item_ids: list[int], user: str) -> dict:
+    """Manually pass several WARN_PC1 items at once.
+
+    Validates that every requested item is currently in WARN_PC1; if any
+    aren't, raises ValueError listing the offenders so the caller can show a
+    coherent message rather than partially-applying the change.
+
+    Bulk-updates statuses + resolves all unresolved PC1 errors for the
+    affected items in two queries instead of N per-item round-trips.
+    """
+    if not item_ids:
+        raise ValueError("No item_ids supplied")
+    # De-dupe while preserving order so the response message reflects what
+    # the user actually clicked.
+    unique_ids: list[int] = []
+    seen: set[int] = set()
+    for i in item_ids:
+        if i not in seen:
+            unique_ids.append(int(i))
+            seen.add(int(i))
+
+    items = task_repo.get_items(task_id)
+    by_id = {i.item_id: i for i in items}
+
+    not_found = [i for i in unique_ids if i not in by_id]
+    if not_found:
+        raise ValueError(f"Item(s) not found in task {task_id}: {not_found}")
+
+    bad_status = [i for i in unique_ids if by_id[i].status != Status.WARN_PC1]
+    if bad_status:
+        raise ValueError(
+            f"Bulk-pass requires every selected item to be in {Status.WARN_PC1}. "
+            f"These were not: {bad_status}"
+        )
+
+    status_updates = [
+        {"item_id": iid, "status": Status.PASSED_PC1, "error_message": None}
+        for iid in unique_ids
+    ]
+    task_repo.bulk_update_item_statuses(status_updates)
+    task_repo.bulk_resolve_precheck_errors_for_items(
+        task_id, phase="PC1", item_ids=unique_ids, resolved_by=user,
+    )
+
+    return {
+        "passed_count": len(unique_ids),
+        "item_ids": unique_ids,
+        "approved_by": user,
+    }
 
 
 def update_item_fields(task_id: str, item_id: int, fields: dict) -> dict:
