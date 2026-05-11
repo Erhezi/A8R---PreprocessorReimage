@@ -155,9 +155,12 @@ class TaskState(TypedDict, total=False):
     clean_items: list[dict]
     pc1_errors: list[dict]
     pc1_passed: bool
-    # Modes that have run cleanly since the last data change. DISTRIBUTOR
-    # contracts require both "default" and "distributor" before advance;
-    # everyone else just needs "default". Reset at the top of every PC1 run.
+    # Modes that have finished PC1 with a fully clean outcome since the last
+    # data change. Drives the DISTRIBUTOR auto-chain (default → distributor)
+    # and is surfaced to the UI as "what's already been validated". Cleared
+    # on upload / re-upload / item edit / soft-delete; advance no longer
+    # gates on this list (the user's manual pass / fix actions are the
+    # authority on whether the data is ready to move forward).
     pc1_passed_modes: list[str]
 
     # Phase 2 — Identity

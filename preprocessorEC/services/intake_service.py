@@ -320,19 +320,22 @@ def _check_vendor_dup(
 # Required PC1 modes per task type
 # ---------------------------------------------------------------------------
 def required_pc1_modes(task) -> list[str]:
-    """Modes that must run cleanly before a task can advance to IDENTITY.
+    """Modes the system targets as the *terminal* PC1 mode for this task.
 
-    DISTRIBUTOR contracts need both ``default`` (catches reduced-mfg dups) and
-    ``distributor`` (catches vendor-side dups) — the system auto-chains the
-    second one after a clean default run.
+    Used by the UI / auto-chain to know which mode finishes PC1 — NOT as a
+    hard gate inside ``proceed_with_passing`` any more (the user's manual
+    pass / fix actions already establish that the data is acceptable).
 
-    For everyone else, no specific mode is required: any clean PC1 run is
-    enough to advance. The user picks the mode that matches their data quality
-    preference (default / strict / explicit) and the gate trusts that choice.
+    - DISTRIBUTOR: ``distributor`` is terminal. ``default`` runs first to
+      catch mfg-side dups, then auto-chains into ``distributor`` for the
+      vendor-side check. Once ``distributor`` is in ``pc1_passed_modes``
+      there is no reason to re-run ``default``.
+    - MANUFACTURER / everything else: no terminal mode. The user picks
+      default / strict / explicit and decides when to advance.
     """
     process_type = (getattr(task, "process_type", "") or "").upper()
     if "DISTRIBUTOR" in process_type:
-        return ["default", "distributor"]
+        return ["distributor"]
     return []
 
 
@@ -833,9 +836,10 @@ def run_precheck(
     state["pc1_errors"] = errors
 
     # ----- Update pc1_passed_modes based on this run's outcome -----
-    # The list represents modes that have run cleanly since the last data
-    # change. A clean run of mode X adds X; any non-clean run (errors or
-    # warnings) drops X so the gate doesn't close on stale results.
+    # The list records every PC1 mode that has finished with a fully clean
+    # outcome since the last data change. Used by the UI to know what's
+    # already been validated and by the DISTRIBUTOR auto-chain to decide
+    # whether the distributor pass still needs to run.
     passed_modes = list(state.get("pc1_passed_modes") or [])
     clean_run = (failed == 0 and warned == 0 and passed == total and total > 0)
     if clean_run:
@@ -847,7 +851,6 @@ def run_precheck(
 
     required_modes = required_pc1_modes(task)
     missing_modes = [m for m in required_modes if m not in passed_modes]
-    state["pc1_passed"] = (clean_run and not missing_modes)
 
     # ----- DISTRIBUTOR auto-chain -----
     # A clean default pass on a DISTRIBUTOR contract has only validated
@@ -859,7 +862,7 @@ def run_precheck(
     if (clean_run
             and is_distributor
             and precheck_mode == "default"
-            and "distributor" in missing_modes):
+            and "distributor" not in passed_modes):
         state_machine.save_state(task_id, state)
         # Persist distributor as the task's saved mode so the dropdown
         # reflects what was actually last validated, and so an audit / log
@@ -870,15 +873,29 @@ def run_precheck(
         return run_precheck(task_id, state_machine, mode_override="distributor")
 
     # ----- Determine task status + auto-advance logic -----
-    if clean_run and not missing_modes:
-        # All items passed AND every required mode has run clean → advance
+    # Auto-advance only fires for DISTRIBUTOR when the *terminal* distributor
+    # mode finishes clean (typically as the second half of the default →
+    # distributor chain above). MANUFACTURER tasks never auto-advance — the
+    # user explicitly chooses whether to proceed after default or to drill
+    # into strict / explicit first, so we leave them in PENDING_NUVIA and
+    # let them click "Advance to Identity" themselves.
+    should_auto_advance = (
+        clean_run
+        and is_distributor
+        and precheck_mode == "distributor"
+    )
+    state["pc1_passed"] = should_auto_advance
+    if should_auto_advance:
         state_machine.save_state(task_id, state)
         state_machine.advance(task_id, Phase.IDENTITY, changed_by="system",
-                              notes=f"All items passed PC1 in modes {passed_modes} — auto-advanced")
+                              notes=f"DISTRIBUTOR PC1 clean (modes {passed_modes}) — auto-advanced")
         task_status = "AUTO_ADVANCED"
-    elif clean_run and missing_modes:
-        # This mode passed but other required mode(s) still need a clean run
-        # before advance (e.g. DISTRIBUTOR after default passes).
+    elif clean_run:
+        # Clean PC1 run but no auto-advance — user picks the next move.
+        # Hits in two cases:
+        #   - MANUFACTURER on any clean run (default / strict / explicit).
+        #   - DISTRIBUTOR running distributor when default-side hasn't been
+        #     run yet (rare; UI normally chains from default).
         state["status"] = Status.PENDING_NUVIA
         state_machine.save_state(task_id, state)
         task_repo.update_task_phase(task_id, Phase.INTAKE, Status.PENDING_NUVIA)
@@ -1040,23 +1057,19 @@ def proceed_with_passing(task_id: str, state_machine: TaskStateMachine, user: st
             f"{len(error_items)} item(s) still have errors."
         )
 
-    # Required-mode gate: every mode in required_pc1_modes must have run
-    # cleanly since the last data change. For DISTRIBUTOR contracts that
-    # means a clean default AND a clean distributor pass.
-    state = state_machine.get_state(task_id)
-    passed_modes = list(state.get("pc1_passed_modes") or [])
-    required_modes = required_pc1_modes(task)
-    missing_modes = [m for m in required_modes if m not in passed_modes]
-    if missing_modes:
-        raise ValueError(
-            f"Pre-check still needs to pass cleanly in mode(s): {', '.join(missing_modes)}. "
-            f"Modes passed since last data change: {', '.join(passed_modes) or 'none'}."
-        )
+    # The mode-pass gate was removed deliberately: the user has already
+    # cleared every error and manually accepted every warning, which is the
+    # contract for advancing. The DISTRIBUTOR auto-chain in ``run_precheck``
+    # still runs ``distributor`` automatically on a clean default, so the
+    # typical happy path validates vendor-side dups before this point. When
+    # a user advances after manually passing warnings they are explicitly
+    # taking that decision; we don't second-guess it here.
 
     sub_task_id = None
     if error_items and source_type != "PREMIER":
         sub_task_id = _spawn_error_pc1_subtask(task, error_items, user)
 
+    state = state_machine.get_state(task_id)
     state["pc1_passed"] = True
     # Refresh clean_items so it reflects only items still on this task.
     state["clean_items"] = [{"item_id": i.item_id} for i in passed_items]

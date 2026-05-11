@@ -436,17 +436,14 @@ def api_recheck_all(task_id: str):
 
     sm = _sm()
     items = task_repo.get_items(task_id)
+    live_items = [i for i in items if i.status not in Status.DELETED_STATUSES]
     error_warn_ids = [i.item_id for i in items if i.status in (Status.ERROR_PC1, Status.WARN_PC1)]
 
-    # Recheck must also be allowed when all items currently pass but a
-    # required mode (e.g. distributor) hasn't run cleanly yet — that's the
-    # whole point of the multi-mode gate.
-    state = workstate_repo.load_state(task_id) or {}
-    passed_modes = list(state.get("pc1_passed_modes") or [])
-    required = intake_service.required_pc1_modes(task_repo.get_task(task_id))
-    pending_mode_run = any(m not in passed_modes for m in required)
-
-    if not error_warn_ids and not pending_mode_run:
+    # Re-run is allowed as long as there's at least one live item to validate.
+    # We intentionally don't block on "all items already pass" — the user may
+    # be drilling into a stricter mode (strict / explicit for MANUFACTURER,
+    # distributor for DISTRIBUTOR) after a clean default run.
+    if not live_items:
         return jsonify({"error": "No items to re-check"}), 400
     result = intake_service.recheck_items(task_id, error_warn_ids, sm)
     return jsonify(result)

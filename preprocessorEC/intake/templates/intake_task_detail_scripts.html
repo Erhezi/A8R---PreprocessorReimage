@@ -1,17 +1,17 @@
 <script>
 function getAvailablePrecheckModes(task) {
-  // The dropdown is only rendered when a previous PC1 run found issues, so
-  // every option here is "what to run on the next click" after that fail.
+  // Options the user can pick on the next Re-run Pre-check click.
   //
-  // DISTRIBUTOR: the user might want to re-run default (re-verify mfg side
-  // after fixes — auto-chains into distributor again on success) OR jump
-  // straight to distributor to validate the vendor-side after a fix there.
-  // Strict / explicit don't apply because the contract type drives the
+  // DISTRIBUTOR: default (re-verify mfg side — auto-chains into distributor
+  // again on success) or distributor (validate vendor-side directly after a
+  // fix). Strict / explicit don't apply: the contract type drives the
   // expected validation shape.
   //
-  // MANUFACTURER: default already failed, so it's not in the list. Strict
-  // (exact mfg) and explicit (exact mfg + UOM) are the available drill-downs;
-  // a clean run in either is enough to advance (no specific mode is gated).
+  // MANUFACTURER: strict (exact mfg) and explicit (exact mfg + UOM) — the
+  // available drill-downs after a default run. We omit "default" because
+  // either it already passed (no reason to re-run it) or it failed and the
+  // user is choosing to use a different lens; either way these two are the
+  // useful next steps.
   const processType = ((task && task.process_type) || "").toUpperCase();
   if (processType.includes("DISTRIBUTOR")) {
     return [
@@ -62,11 +62,14 @@ function renderIntakeActionButtons(task, issues) {
   }
 
   if (task.status === "ON_HOLD_PC1" || task.status === "PENDING_NUVIA") {
-    const hasErrorWarn = currentItems.some(item => item.status === "ERROR_PC1" || item.status === "WARN_PC1");
-    if (hasErrorWarn) {
-      buttons += `<button class="btn btn-sm btn-outline-info d-block mb-1 w-100" onclick="recheckAll(this)">Re-run Pre-check</button>`;
-      buttons += renderRecheckModeControl(task);
-    }
+    // Always offer Re-run Pre-check + the mode dropdown while the task sits
+    // in INTAKE post-PC1: the user might be clearing errors/warnings, or —
+    // for MANUFACTURER tasks after a clean default — drilling into strict /
+    // explicit before advancing. DISTRIBUTOR tasks that finished cleanly
+    // auto-advance out of these statuses, so we never show this for a
+    // fully-validated DISTRIBUTOR.
+    buttons += `<button class="btn btn-sm btn-outline-info d-block mb-1 w-100" onclick="recheckAll(this)">Re-run Pre-check</button>`;
+    buttons += renderRecheckModeControl(task);
     const issueCount = (issues || []).filter(issue => !issue.resolved).length;
     if (issueCount > 0) {
       buttons += `<a class="btn btn-sm btn-outline-secondary d-block mb-1 w-100" href="${PREFIX}/api/intake/${TASK_ID}/error-report.xlsx" download><i class="bi bi-file-earmark-excel"></i> Export Error/Warning Report</a>`;
