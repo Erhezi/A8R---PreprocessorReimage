@@ -21,7 +21,7 @@ EA_TOLERANCE = 0.0001
 # Action strings — keep verbatim with the spec.
 ACTION_SS_UPSERT = "Same contract item, Update"
 ACTION_SS_EXPIRE = "Same contract item, Update expiration date to expire"
-ACTION_DV_UPSERT = "Buy from different vendor, keep both"
+ACTION_DV_UPSERT = "Buy from different vendor, keep both (if we want to buy from either vendor)"
 ACTION_ODO_UPSERT = "Buy for different organization using same contract ID, review"
 ACTION_TCCD_UPSERT = "Consider only keep one record, review"
 ACTION_CECCD_UPSERT = "Buy for different organization using different contract, review"
@@ -176,9 +176,8 @@ def _tccd_notes(pr: str, mt_p: bool, in_p: bool, cid: str) -> str:
         if mt_p and in_p:
             return (
                 f"contract {cid} has better price, both are premier contract, "
-                f"keep both and ensure the data elements are consistent with each other, "
-                f"consider setting priority based on price on Infor to default to the "
-                f"favorable pricing"
+                f"go back to Premier to make a custom tier on the input contract "
+                f"reflecting the desirable lower price of contract {cid}"
             )
         if mt_p and not in_p:
             return (
@@ -189,9 +188,8 @@ def _tccd_notes(pr: str, mt_p: bool, in_p: bool, cid: str) -> str:
         if not mt_p and in_p:
             return (
                 f"contract {cid} has better price, but input is premier contract, "
-                f"keep both and ensure the data elements are consistent with each other, "
-                f"consider setting priority based on price on Infor to default to the "
-                f"favorable pricing"
+                f"go back to Premier to make a custom tier on the input contract "
+                f"reflecting the desirable lower price of matched contract {cid}"
             )
         # both local
         return (
@@ -202,17 +200,16 @@ def _tccd_notes(pr: str, mt_p: bool, in_p: bool, cid: str) -> str:
     # IN_BETTER
     if mt_p and in_p:
         return (
-            "input contract has better price, both are premier contract, "
-            "keep both and ensure the data elements are consistent with each other, "
-            "consider setting priority based on price on Infor to default to the "
-            "favorable pricing"
+            f"input contract has better price, both are premier contract, "
+            f"go back to Premier to make a custom tier on matched contract {cid} "
+            f"reflecting the desirable lower price of the input contract"
         )
     if mt_p and not in_p:
         return (
-            "input contract has better price, but matched contract is premier while "
-            "input contract is local, keep both and ensure the data elements are "
-            "consistent with each other, consider setting priority based on price on "
-            "Infor to default to the favorable pricing"
+            f"input contract has better price, but matched contract is premier while "
+            f"input contract is local, go back to Premier to make a custom tier on "
+            f"matched contract {cid} reflecting the desirable lower price of the "
+            f"input contract"
         )
     if not mt_p and in_p:
         return (
@@ -295,9 +292,10 @@ def _ceccd_mhs_me(pr: str, mt_p: bool, in_p: bool, cid: str) -> str:
         if mt_p and in_p:
             return (
                 f"MHS contract {cid} has better price, both are premier contract, "
-                f"keep both and ensure the data elements are consistent with each other, "
                 f"verify the price difference is due to member entity truely have to pay "
-                f"higher price than MHS for the item"
+                f"higher price than MHS for the item, otherwise go back to Premier to "
+                f"make a custom tier on the input ME contract reflecting the desirable "
+                f"lower price of MHS contract {cid}"
             )
         if not mt_p and not in_p:
             return (
@@ -309,9 +307,10 @@ def _ceccd_mhs_me(pr: str, mt_p: bool, in_p: bool, cid: str) -> str:
         if not mt_p and in_p:
             return (
                 f"MHS contract {cid} has better price, but input ME contract is premier, "
-                f"keep both and ensure the data elements are consistent with each other, "
                 f"verify the price difference is due to member entity truely have to pay "
-                f"higher price than MHS for the item"
+                f"higher price than MHS for the item, otherwise go back to Premier to "
+                f"make a custom tier on the input ME contract reflecting the desirable "
+                f"lower price of MHS contract {cid}"
             )
         # mt_p, not in_p
         return (
@@ -408,10 +407,11 @@ def _ceccd_me_mhs(pr: str, mt_p: bool, in_p: bool, cid: str) -> str:
     # IN_BETTER (input MHS has better price)
     if mt_p and in_p:
         return (
-            "input MHS contract has better price, both are premier contract, "
-            "keep both and ensure the data elements are consistent with each other, "
-            "verify the price difference is due to member entity truely have to pay "
-            "higher price than MHS for the item"
+            f"input MHS contract has better price, both are premier contract, "
+            f"verify the price difference is due to member entity truely have to pay "
+            f"higher price than MHS for the item, otherwise go back to Premier to make "
+            f"a custom tier on matched ME contract {cid} reflecting the desirable lower "
+            f"price of the input MHS contract"
         )
     if not mt_p and not in_p:
         return (
@@ -429,7 +429,9 @@ def _ceccd_me_mhs(pr: str, mt_p: bool, in_p: bool, cid: str) -> str:
         )
     # mt_p, not in_p
     return (
-        "input MHS contract has better price, keep both and ensure the data elements are "
-        "consistent with each other, verify the price difference is due to member entity "
-        "truely have to pay higher price than MHS for the item"
+        f"input MHS contract has better price, but matched ME contract is premier, "
+        f"verify the price difference is due to member entity truely have to pay "
+        f"higher price than MHS for the item, otherwise go back to Premier to make "
+        f"a custom tier on matched ME contract {cid} reflecting the desirable lower "
+        f"price of the input MHS contract"
     )

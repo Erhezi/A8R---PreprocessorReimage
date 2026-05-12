@@ -187,6 +187,19 @@ class TaskItem(Base):
     created_at = Column(DateTime, default=ny_now)
     updated_at = Column(DateTime, default=ny_now, onupdate=ny_now)
 
+    # Edit tracking — baseline snapshot of the six user-editable fields, set
+    # once on the first PC1 pass and never overwritten. Pair with `edits` (a
+    # JSON log of each individual edit) to drive the CCX disposition: an MPN
+    # or UOM change against this snapshot means EXPIRE+INSERT (split); changes
+    # to VPN/QOE/Price/Description alone collapse into a single UPDATE.
+    original_mfg_catalog_num = Column(String(255), nullable=True)
+    original_vendor_catalog_num = Column(String(255), nullable=True)
+    original_description = Column(Text, nullable=True)
+    original_uom = Column(String(50), nullable=True)
+    original_qoe = Column(Integer, nullable=True)
+    original_unit_price = Column(Numeric(18, 4), nullable=True)
+    edits = Column(Text, nullable=True)  # JSON list of {field, original, current, edited_by, edited_at}
+
     task = relationship("Task", back_populates="items")
     item_match_candidates = relationship("ItemMatchCandidate", back_populates="item", cascade="all, delete-orphan")
 
@@ -233,6 +246,13 @@ class TaskItem(Base):
             "contract_id": self.contract_id,
             "item_price_start_date": str(self.item_price_start_date) if self.item_price_start_date else None,
             "item_price_end_date": str(self.item_price_end_date) if self.item_price_end_date else None,
+            "original_mfg_catalog_num": self.original_mfg_catalog_num,
+            "original_vendor_catalog_num": self.original_vendor_catalog_num,
+            "original_description": self.original_description,
+            "original_uom": self.original_uom,
+            "original_qoe": self.original_qoe,
+            "original_unit_price": float(self.original_unit_price) if self.original_unit_price is not None else None,
+            "edits": self.edits,
         }
 
 

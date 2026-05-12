@@ -362,8 +362,9 @@ def api_proceed(task_id: str):
 def api_edit_item(task_id: str, item_id: int):
     """In-place edit of an ERROR_PC1 item's fields."""
     data = request.get_json(force=True)
+    user = current_user.username if current_user.is_authenticated else "system"
     try:
-        result = intake_service.update_item_fields(task_id, item_id, data)
+        result = intake_service.update_item_fields(task_id, item_id, data, user=user)
         intake_service.clear_pc1_passed_modes(task_id, _sm())
         return jsonify(result)
     except ValueError as exc:

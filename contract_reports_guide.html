@@ -405,13 +405,13 @@
       <td><span class="pill dv">DV</span> Different Vendor</td>
       <td>Product (Mfg Part Number)</td>
       <td>Vendor</td>
-      <td>Same item being bought from two different vendors. Both lines stay.</td>
+      <td>Same item being bought from two different vendors. Both lines stay by default.</td>
     </tr>
     <tr>
       <td><span class="pill odo">ODO</span> Other Org, Same Contract&nbsp;ID</td>
       <td>Vendor, Contract&nbsp;ID, product</td>
       <td>Organization</td>
-      <td>Same contract being used by two different organizations.</td>
+      <td>Same contract product being used by two different organizations. If different pricing, both lines stay by default, if truely different in pricing, both lines have to stay.</td>
     </tr>
     <tr>
       <td><span class="pill tccd">TCCD</span> Two Contracts, Same Org, Same Vendor</td>
@@ -423,7 +423,7 @@
       <td><span class="pill ceccd">CECCD</span> Different Org and Different Contract</td>
       <td>Vendor, product</td>
       <td>Org and Contract&nbsp;ID</td>
-      <td>Two different organizations, each with their own contract for the same product.</td>
+      <td>Two different organizations, each with their own contract for the same product. Consolidation or leave as it-is depending on pricing.</td>
     </tr>
   </tbody>
 </table>
@@ -493,7 +493,7 @@
 <p>The decision is shaped by <em>price relation</em> &times; <em>(matched contract type, input contract type)</em>. The underlying logic:</p>
 <ul>
   <li><strong>Prefer the cheaper contract.</strong> If both are local, drop the more expensive side.</li>
-  <li><strong>Premier overrides cheaper.</strong> If the side that <em>would be</em> dropped is a Premier contract, we keep both instead and tell Infor to default to the cheaper price via priority.</li>
+  <li><strong>Premier overrides cheaper.</strong> If the side that <em>would be</em> dropped is a Premier contract, we go back to Premier to make a custom tier that reflect the desirable lower price (*as of 2026 May Policy Guidance, may change in the future)</li>
   <li><strong>Equal price, both local</strong>: the spec defers to the reviewer ("review and keep only one record") — this is a judgment call.</li>
 </ul>
 
@@ -502,7 +502,7 @@
 <ul>
   <li><strong>(ME, ME)</strong>: always keep both — different member entities can legitimately maintain separate contracts. When prices differ, the note will ask you to verify that the price gap is real.</li>
   <li><strong>(MHS, ME) or (ME, MHS)</strong>: prefer the MHS-side line when prices match. If prices differ, the spec asks you to first verify the gap is genuine before falling back to "drop the ME line."</li>
-  <li><strong>Premier protection still applies.</strong> If dropping a side would mean dropping a Premier contract, keep both and make data elements consistent.</li>
+  <li><strong>Premier protection still applies.</strong> If dropping a side would mean dropping a Premier contract, go back to Premier to make a custom tier that reflect the desirable lower price (*as of 2026 May Policy Guidance, may change in the future).</li>
   <li><strong>(MHS, MHS) cannot happen</strong> — there is only one MHS organization.</li>
 </ul>
 
@@ -533,7 +533,7 @@
   <li><strong>Notes:</strong> <em>Input contract has better price, both are local contract, review and keep the input record and drop the matched line.</em></li>
   <li><strong>What you do:</strong> Confirm <code>OLD-2024-099</code> can be expired for this item, and let the input load. The two lines have identical Mfg Part / UOM / QOE, so packaging is not an issue — only price.</li>
 </ul>
-<p>Now flip it: same scenario, but the existing CCX line is on a Premier contract. Now the action is the same, but the note says: <em>"input contract has better price, but matched contract is premier while input contract is local, keep both and ensure the data elements are consistent with each other, consider setting priority based on price on Infor to default to the favorable pricing."</em> You'd keep both, double-check Mfg Part / Vendor Part / UOM / QOE match, and set Infor priority so buyers default to the cheaper line.</p>
+<p>Now flip it: same scenario, but the existing CCX line is on a Premier contract. The action is the same, but the note now says: <em>"input contract has better price, but matched contract is premier while input contract is local, go back to Premier to make a custom tier on matched contract OLD-2024-099 reflecting the desirable lower price of the input contract."</em> Per the May 2026 policy guidance, the Premier side cannot be dropped &mdash; instead, work with Premier to add a custom tier on <code>OLD-2024-099</code> at the input's lower price, then let the cheaper line load against that updated tier.</p>
 
 <!-- =============== PART 3 =============== -->
 <h2 id="part3">3. The Pre-Check report</h2>
@@ -542,7 +542,7 @@
 
 <h3>3.1 What this report is for</h3>
 <p>The pre-check runs <strong>before</strong> the dedup logic. Its job is to look at the input file on its own and answer one question: <em>is this file clean enough to be loaded?</em> Issues like missing required fields, malformed prices, duplicate items inside the same file, or vendor IDs that don't exist in our system show up here.</p>
-<p>If the file has too many issues to fix one-by-one in the web UI, you download this report, fix the underlying spreadsheet offline, and re-upload.</p>
+<p>If the file has too many issues to fix one-by-one in the web UI, you will receive the excel report, fix the underlying spreadsheet offline, we will re-upload and proceed.</p>
 
 <h3>3.2 Errors vs. warnings</h3>
 <div class="callout warn">

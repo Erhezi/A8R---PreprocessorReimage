@@ -7,6 +7,7 @@ Later: becomes a LangGraph node implementation.
 
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from decimal import Decimal, InvalidOperation
@@ -648,7 +649,7 @@ def run_precheck(
         # --- Record errors/warnings and buffer the writes ---
         all_issues = item_errors + item_warnings
         # Cleaned fields are written for every item regardless of outcome.
-        pending_field_updates.append({
+        field_update = {
             "item_id": item.item_id,
             "description": clean_desc,
             "mfg_catalog_num": clean_mfg,
@@ -658,7 +659,21 @@ def run_precheck(
             "qoe": qoe_val or item.qoe,
             "reduced_mfg_num": reduced_mfg,
             "reduced_vendor_num": reduced_vendor,
-        })
+        }
+        # Baseline snapshot — set once per INPUT item on its first PC1 pass.
+        # Subsequent PC1 runs see the columns populated and skip this branch,
+        # preserving the post-first-clean baseline against which later edits
+        # are diffed for the CCX update/split decision.
+        if (item.source_dataset or "INPUT").upper() == "INPUT" and item.original_mfg_catalog_num is None:
+            field_update.update({
+                "original_mfg_catalog_num": clean_mfg,
+                "original_vendor_catalog_num": clean_vendor,
+                "original_description": clean_desc,
+                "original_uom": std_uom,
+                "original_qoe": qoe_val if qoe_val is not None else item.qoe,
+                "original_unit_price": price_val if price_val is not None else item.unit_price,
+            })
+        pending_field_updates.append(field_update)
 
         if item_errors:
             failed_ids.append(item.item_id)
@@ -1183,12 +1198,93 @@ def bulk_manually_pass_items(task_id: str, item_ids: list[int], user: str) -> di
     }
 
 
-def update_item_fields(task_id: str, item_id: int, fields: dict) -> dict:
+# Fields the user can edit in Phase 1 after PC1. Order here drives the order
+# `compute_ccx_disposition` reports changes in.
+EDITABLE_TRACKED_FIELDS = (
+    "mfg_catalog_num",
+    "vendor_catalog_num",
+    "description",
+    "uom",
+    "qoe",
+    "unit_price",
+)
+
+# Fields whose change forces an EXPIRE+INSERT split at CCX export time. Edits
+# to anything else in EDITABLE_TRACKED_FIELDS collapse into an in-place UPDATE.
+SPLIT_TRIGGER_FIELDS = ("mfg_catalog_num", "uom")
+
+
+def _normalize_editable_field(field: str, value):
+    """Apply the same canonical form PC1 will assign on its next run.
+
+    Edits arrive raw from the UI; if we logged them verbatim the diff against
+    the cleaned baseline would flag superficial differences (case, whitespace,
+    UOM aliases) that PC1 would otherwise reconcile. Normalizing here keeps
+    the diff semantically meaningful.
+    """
+    if value is None or value == "":
+        return None
+    if field in ("mfg_catalog_num", "vendor_catalog_num", "description"):
+        return _clean_text(value)
+    if field == "uom":
+        std, _ = _standardize_uom(str(value))
+        return std
+    if field == "qoe":
+        parsed, _ = _parse_qoe(value)
+        return parsed if parsed is not None else value
+    if field == "unit_price":
+        parsed, _ = _parse_price(value)
+        return parsed if parsed is not None else value
+    return value
+
+
+def _coerce_decimal(value) -> Optional[Decimal]:
+    """Best-effort Decimal conversion for compare-only purposes."""
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return value
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return None
+
+
+def _values_equal(field: str, a, b) -> bool:
+    """Field-aware equality so Decimal/int/None compare cleanly."""
+    if a is None and b is None:
+        return True
+    if a is None or b is None:
+        return False
+    if field == "unit_price":
+        da, db = _coerce_decimal(a), _coerce_decimal(b)
+        return da is not None and db is not None and da == db
+    if field == "qoe":
+        try:
+            return int(a) == int(b)
+        except (TypeError, ValueError):
+            return str(a) == str(b)
+    return str(a) == str(b)
+
+
+def _serialize_for_edit_log(value):
+    """Render Decimal as float for JSON; pass other primitives through."""
+    if isinstance(value, Decimal):
+        return float(value)
+    return value
+
+
+def update_item_fields(task_id: str, item_id: int, fields: dict, user: str = "system") -> dict:
     """Update editable fields on an ERROR_PC1 or WARN_PC1 item (in-place editing).
 
     Allowed fields: mfg_catalog_num, vendor_catalog_num, description, uom, qoe, unit_price.
+
+    Each actual change (normalized requested value differs from current) is
+    appended to the item's ``edits`` JSON log so future CCX export can replay
+    the per-edit history. The current values themselves are also written so
+    `compute_ccx_disposition` can diff current vs original.
     """
-    ALLOWED_FIELDS = {"mfg_catalog_num", "vendor_catalog_num", "description", "uom", "qoe", "unit_price"}
+    ALLOWED_FIELDS = set(EDITABLE_TRACKED_FIELDS)
     EDITABLE_STATUSES = {Status.ERROR_PC1, Status.WARN_PC1}
     filtered = {k: v for k, v in fields.items() if k in ALLOWED_FIELDS}
     if not filtered:
@@ -1205,5 +1301,103 @@ def update_item_fields(task_id: str, item_id: int, fields: dict) -> dict:
     if item.status not in EDITABLE_STATUSES:
         raise ValueError(f"Item {item_id} is not in an editable status (current: {item.status})")
 
-    task_repo.update_items_bulk([item_id], **filtered)
-    return {"item_id": item_id, "updated_fields": list(filtered.keys())}
+    # Diff against current values using normalized representations so that the
+    # log records semantic changes (e.g., "BOX" -> "BX" is not an edit because
+    # both normalize to "BX") rather than cosmetic ones.
+    normalized = {k: _normalize_editable_field(k, v) for k, v in filtered.items()}
+    new_entries: list[dict] = []
+    now_iso = ny_now().isoformat()
+    for fname in EDITABLE_TRACKED_FIELDS:
+        if fname not in normalized:
+            continue
+        current_val = getattr(item, fname, None)
+        new_val = normalized[fname]
+        if _values_equal(fname, current_val, new_val):
+            continue
+        new_entries.append({
+            "field": fname,
+            "original": _serialize_for_edit_log(current_val),
+            "current": _serialize_for_edit_log(new_val),
+            "edited_by": user,
+            "edited_at": now_iso,
+        })
+
+    update_payload: dict = {k: v for k, v in normalized.items()}
+    if new_entries:
+        existing_log = []
+        if item.edits:
+            try:
+                parsed = json.loads(item.edits)
+                if isinstance(parsed, list):
+                    existing_log = parsed
+            except (TypeError, ValueError):
+                existing_log = []
+        existing_log.extend(new_entries)
+        update_payload["edits"] = json.dumps(existing_log)
+
+    task_repo.update_items_bulk([{"item_id": item_id, **update_payload}])
+    return {
+        "item_id": item_id,
+        "updated_fields": list(filtered.keys()),
+        "edits_recorded": len(new_entries),
+    }
+
+
+def compute_ccx_disposition(item) -> dict:
+    """Classify an INPUT item's edits vs its post-PC1 baseline.
+
+    Returns a dict with:
+      - ``disposition``: ``"unchanged"`` | ``"update"`` | ``"split"``
+      - ``changed_fields``: ordered list of tracked fields that differ
+      - ``split_triggers``: subset of changed_fields restricted to
+        ``SPLIT_TRIGGER_FIELDS`` (MPN, UOM) — non-empty iff split
+      - ``original`` / ``current``: snapshots of the six tracked fields for
+        whichever side the caller wants to emit (CCX builder reads these to
+        build the EXPIRE row from ``original`` and the INSERT row from
+        ``current``).
+
+    Items missing a baseline (e.g., non-INPUT rows, or rows that never ran
+    through PC1) report ``unchanged`` so the export builder can skip them.
+    """
+    if (getattr(item, "source_dataset", "INPUT") or "INPUT").upper() != "INPUT":
+        return {"disposition": "unchanged", "changed_fields": [], "split_triggers": [],
+                "original": {}, "current": {}}
+    if item.original_mfg_catalog_num is None and item.original_uom is None:
+        # Baseline never set; treat as unchanged so downstream skips it.
+        return {"disposition": "unchanged", "changed_fields": [], "split_triggers": [],
+                "original": {}, "current": {}}
+
+    original = {
+        "mfg_catalog_num": item.original_mfg_catalog_num,
+        "vendor_catalog_num": item.original_vendor_catalog_num,
+        "description": item.original_description,
+        "uom": item.original_uom,
+        "qoe": item.original_qoe,
+        "unit_price": item.original_unit_price,
+    }
+    current = {
+        "mfg_catalog_num": item.mfg_catalog_num,
+        "vendor_catalog_num": item.vendor_catalog_num,
+        "description": item.description,
+        "uom": item.uom,
+        "qoe": item.qoe,
+        "unit_price": item.unit_price,
+    }
+    changed = [
+        f for f in EDITABLE_TRACKED_FIELDS
+        if not _values_equal(f, original[f], current[f])
+    ]
+    triggers = [f for f in changed if f in SPLIT_TRIGGER_FIELDS]
+    if not changed:
+        disposition = "unchanged"
+    elif triggers:
+        disposition = "split"
+    else:
+        disposition = "update"
+    return {
+        "disposition": disposition,
+        "changed_fields": changed,
+        "split_triggers": triggers,
+        "original": {k: _serialize_for_edit_log(v) for k, v in original.items()},
+        "current": {k: _serialize_for_edit_log(v) for k, v in current.items()},
+    }

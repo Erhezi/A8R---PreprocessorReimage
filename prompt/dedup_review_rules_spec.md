@@ -81,19 +81,20 @@ Two cases only — price doesn't enter:
 | EQ | (P, L) | `both contracts have the same price, but matched contract is premier while input contract is local, consider keep the matched record and drop the input line` |
 | EQ | (L, P) | `both contracts have the same price, but input contract is premier while matched contract is local, consider keep the input record and drop the matched line` |
 | EQ | (L, L) | `both contracts have the same price, both are local contract, review and keep only one record` |
-| MT_BETTER | (P, P) | `contract {cid} has better price, both are premier contract, keep both and ensure the data elements are consistent with each other, consider setting priority based on price on Infor to default to the favorable pricing` |
+| MT_BETTER | (P, P) | `contract {cid} has better price, both are premier contract, go back to Premier to make a custom tier on the input contract reflecting the desirable lower price of contract {cid}` |
 | MT_BETTER | (P, L) | `contract {cid} has better price, matched contract is premier while input contract is local, consider keep the matched record and drop the input line` |
-| MT_BETTER | (L, P) | `contract {cid} has better price, but input is premier contract, keep both and ensure the data elements are consistent with each other, consider setting priority based on price on Infor to default to the favorable pricing` |
+| MT_BETTER | (L, P) | `contract {cid} has better price, but input is premier contract, go back to Premier to make a custom tier on the input contract reflecting the desirable lower price of matched contract {cid}` |
 | MT_BETTER | (L, L) | `contract {cid} has better price, both are local contract, review and keep the matched record and drop the input line` |
-| IN_BETTER | (P, P) | `input contract has better price, both are premier contract, keep both and ensure the data elements are consistent with each other, consider setting priority based on price on Infor to default to the favorable pricing` |
-| IN_BETTER | (P, L) | `input contract has better price, but matched contract is premier while input contract is local, keep both and ensure the data elements are consistent with each other, consider setting priority based on price on Infor to default to the favorable pricing` |
+| IN_BETTER | (P, P) | `input contract has better price, both are premier contract, go back to Premier to make a custom tier on matched contract {cid} reflecting the desirable lower price of the input contract` |
+| IN_BETTER | (P, L) | `input contract has better price, but matched contract is premier while input contract is local, go back to Premier to make a custom tier on matched contract {cid} reflecting the desirable lower price of the input contract` |
 | IN_BETTER | (L, P) | `input contract has better price, input contract is premier while matched contract is local, consider keep the input record and drop the matched line` |
 | IN_BETTER | (L, L) | `input contract has better price, both are local contract, review and keep the input record and drop the matched line` |
 
 **Underlying logic.** Prefer the lower-price contract. Override with the
 "premier cannot be dropped" constraint: when the side that would be dropped
-is premier, keep both, ensure data elements are consistent, and use Infor
-priority to default to the favorable pricing.
+is premier, go back to Premier to negotiate a custom tier on the premier
+contract that reflects the desirable lower price (2026 May Policy Guidance,
+may change).
 
 ### 4.3 CECCD (different org, different contract)
 
@@ -118,9 +119,9 @@ elements consistent, and (when prices differ) verify the price gap is real.
 | EQ | (L, L) | `both contracts have the same price, both are local contract, consider keep the matched MHS record and drop the input ME record` |
 | EQ | (L, P) | `both contracts have the same price, but input ME contract is premier, keep both and ensure the data elements are consistent with each other` |
 | EQ | (P, L) | `both contracts have the same price, input ME contract is local, consider keep the matched MHS record and drop the input ME record` |
-| MT_BETTER | (P, P) | `MHS contract {cid} has better price, both are premier contract, keep both and ensure the data elements are consistent with each other, verify the price difference is due to member entity truely have to pay higher price than MHS for the item` |
+| MT_BETTER | (P, P) | `MHS contract {cid} has better price, both are premier contract, verify the price difference is due to member entity truely have to pay higher price than MHS for the item, otherwise go back to Premier to make a custom tier on the input ME contract reflecting the desirable lower price of MHS contract {cid}` |
 | MT_BETTER | (L, L) | `MHS contract {cid} has better price, both are local contract, verify the price difference is due to member entity truely have to pay higher price than MHS for the item, otherwise consider keep the matched MHS record and drop the input ME record` |
-| MT_BETTER | (L, P) | `MHS contract {cid} has better price, but input ME contract is premier, keep both and ensure the data elements are consistent with each other, verify the price difference is due to member entity truely have to pay higher price than MHS for the item` |
+| MT_BETTER | (L, P) | `MHS contract {cid} has better price, but input ME contract is premier, verify the price difference is due to member entity truely have to pay higher price than MHS for the item, otherwise go back to Premier to make a custom tier on the input ME contract reflecting the desirable lower price of MHS contract {cid}` |
 | MT_BETTER | (P, L) | `MHS contract {cid} has better price, verify the price difference is due to member entity truely have to pay higher price than MHS for the item, otherwise consider keep the matched MHS record and drop the input ME record` |
 | IN_BETTER | (P, P) | `input ME contract has better price, both are premier contract, keep both and ensure the data elements are consistent with each other, verify the price difference is due to member entity truely have to pay lower price than MHS for the item` |
 | IN_BETTER | (L, L) | `input ME contract has better price, both are local contract, verify the price difference is due to member entity truely have to pay lower price than MHS for the item, keep both and ensure the data elements are consistent with each other, otherwise consider keep the matched MHS record and drop the input ME record` |
@@ -139,14 +140,14 @@ elements consistent, and (when prices differ) verify the price gap is real.
 | MT_BETTER | (L, L) | `member entity contract {cid} has better price, both are local contract, verify the price difference is due to member entity truely have to pay lower price than MHS for the item, otherwise consider keep the input MHS record and drop the matched ME record` |
 | MT_BETTER | (L, P) | `member entity contract {cid} has better price, keep both and ensure the data elements are consistent with each other, verify the price difference is due to member entity truely have to pay lower price than MHS for the item, otherwise consider keep the input MHS record and drop the matched ME record` |
 | MT_BETTER | (P, L) | `member entity contract {cid} has better price, keep both and ensure the data elements are consistent with each other, verify the price difference is due to member entity truely have to pay lower price than MHS for the item` |
-| IN_BETTER | (P, P) | `input MHS contract has better price, both are premier contract, keep both and ensure the data elements are consistent with each other, verify the price difference is due to member entity truely have to pay higher price than MHS for the item` |
+| IN_BETTER | (P, P) | `input MHS contract has better price, both are premier contract, verify the price difference is due to member entity truely have to pay higher price than MHS for the item, otherwise go back to Premier to make a custom tier on matched ME contract {cid} reflecting the desirable lower price of the input MHS contract` |
 | IN_BETTER | (L, L) | `input MHS contract has better price, both are local contract, verify the price difference is due to member entity truely have to pay higher price than MHS for the item, otherwise consider keep the input MHS record and drop the matched ME record` |
 | IN_BETTER | (L, P) | `input MHS contract has better price, keep both and ensure the data elements are consistent with each other, verify the price difference is due to member entity truely have to pay higher price than MHS for the item, otherwise consider keep the input MHS record and drop the matched ME record` |
-| IN_BETTER | (P, L) | `input MHS contract has better price, keep both and ensure the data elements are consistent with each other, verify the price difference is due to member entity truely have to pay higher price than MHS for the item` |
+| IN_BETTER | (P, L) | `input MHS contract has better price, but matched ME contract is premier, verify the price difference is due to member entity truely have to pay higher price than MHS for the item, otherwise go back to Premier to make a custom tier on matched ME contract {cid} reflecting the desirable lower price of the input MHS contract` |
 
 **Underlying logic.**
 - (ME, ME): always keep both — different member entities legitimately have different lines.
-- (MHS, ME) / (ME, MHS): prefer the MHS record when prices match. Override with the "premier cannot be dropped" constraint. When prices differ, the spec recommends *first verifying* whether the ME-side price gap is real before falling back to drop-ME logic; if both sides are premier, neither can be dropped, so keep-both with data integrity stands.
+- (MHS, ME) / (ME, MHS): prefer the MHS record when prices match. Override with the "premier cannot be dropped" constraint. When prices differ, the spec recommends *first verifying* whether the ME-side price gap is real before falling back to drop-ME logic. If verification finds the gap shouldn't exist and the ME side that would be dropped is premier, the May 2026 Policy Guidance replaces the old "keep both + Infor priority" advice with "go back to Premier to make a custom tier on the ME contract reflecting the desirable lower price" (may change in the future). Equal-price premier-protected cases stay on keep-both with data integrity, since there is no lower price to negotiate.
 
 ## 5. Worked examples
 
@@ -156,7 +157,7 @@ elements consistent, and (when prices differ) verify the price gap is real.
 | DV NEW | `group=DV, intent=NEW` | `Buy from different vendor, keep both` | _empty_ |
 | ODO MHS-side | `group=ODO, intent=UPDATE, mt_org=MHS, in_org=ME` | `Buy for different organization using same contract ID, review` | `If not for tracking price difference between...` |
 | TCCD same price both premier | `group=TCCD, intent=UPDATE, mt_p=T, in_p=T, ea_mt≈ea_in` | `Consider only keep one record, review` | `both contracts have the same price, both are premier contract, keep both and ensure the data elements are consistent with each other` |
-| TCCD matched better, input premier | `group=TCCD, intent=UPDATE, ea_mt < ea_in, mt_p=F, in_p=T, cid='C123'` | `Consider only keep one record, review` | `contract C123 has better price, but input is premier contract, keep both and ensure the data elements are consistent with each other, consider setting priority based on price on Infor to default to the favorable pricing` |
+| TCCD matched better, input premier | `group=TCCD, intent=UPDATE, ea_mt < ea_in, mt_p=F, in_p=T, cid='C123'` | `Consider only keep one record, review` | `contract C123 has better price, but input is premier contract, go back to Premier to make a custom tier on the input contract reflecting the desirable lower price of matched contract C123` |
 | CECCD (MHS,ME) input ME better, both local | `group=CECCD, intent=UPDATE, mt_org=MHS, in_org=ME, mt_p=F, in_p=F, ea_in < ea_mt` | `Buy for different organization using different contract, review` | `input ME contract has better price, both are local contract, verify the price difference is due to...` (drop ME otherwise) |
 | Any EXPIRE non-SS | `group∈{DV,ODO,TCCD,CECCD}, intent=EXPIRE` | `Not affected by expiring the input line, keep the record` | _empty_ |
 
