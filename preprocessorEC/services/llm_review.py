@@ -45,7 +45,8 @@ Signals to weigh together (no single field is decisive):
 2. Description overlap — do both refer to the same physical item, size,
    formulation, packaging, and brand?
 3. UOM and QOE compatibility, including known synonym packaging units
-   across systems.
+   across systems. When UOM is different, check price and QOE to see if it is likely 
+   a synonym in UOM string (e.g. PK vs CT, CA vs CS) or a true packaging difference.
 4. Contract price reasonableness given the stated UOM/QOE on each side.
 5. Vendor identity (see below).
 
@@ -59,16 +60,24 @@ Vendor handling:
   well-known parent / acquirer of the other, or there is well-known M&A
   history making them the same legal entity today — treat the vendor as
   matched. This is a strong positive signal.
+- If the two vendors are both well kwnon distributors the the product MPN is the same,
+  when the description are closely matched, treat the pair as compatible (lean ACCEPT, not REJECT), 
+  even if the vendor names do not match.
 - If one side is a manufacturer and the other is a distributor known to
   resell that manufacturer's product, and all other specs match, treat the
   vendor relationship as compatible (lean ACCEPT, not REJECT, on vendor
   grounds).
 - If the descriptions, specs, and packaging look closely matched but the
-  two vendors are well-known direct market competitors for this product
+  two vendors are well-known direct market competitors and makers for this product
   category (each manufactures and sells their own branded equivalent),
   treat the pair as "market competitors" and REJECT — same-looking
   description does not mean same product when two competing brands each
   produce their own version.
+
+UOM synonym handling:
+- when UOM differ but the descriptions and manufacturer numbers are closely matched,
+  consider whether the UOMs on the two sides could be synonyms (e.g. PK vs CT, CA vs CS)
+  if price and QOE are compatible with that interpretation, lean towards ACCEPT.
 
 Packaging and price-sanity (applies to ALL pair types):
 - By default the two sides must represent the same effective packaging
@@ -87,6 +96,14 @@ Packaging and price-sanity (applies to ALL pair types):
                     Medline ABC12345 / VPN ABC12345  / CS / 10 / $105
                     → prices within a few %; CS/10 is almost certainly the
                     same pack as EA/1 with bad UOM/QOE entry.
+  Example (PENDING or ACCEPT): 
+                    Medline 3LA028 / VPN ADX3LA028 / PK /10 / $262 vs
+                    Advance Instruments 3LA028 / VPN 3LA028 / EA /1 / $173
+                    → prices differs a lot but it fit a distributor reselling a
+                    manufacturer's product pattern, and here EA price difference
+                    is about 6X which is hard to decide if this is a UOM/QOE entering
+                    error or a real packaging difference, so PENDING or lean ACCEPT 
+                    with a note for human review.
 - If UOM/QOE differ AND the contract prices are at obviously different
   scales (one is per-each, the other is per-case-of-N), the packaging
   really is different — REJECT.
@@ -94,7 +111,7 @@ Packaging and price-sanity (applies to ALL pair types):
                     Medline ABC12345 / CS / 10 / $105
                     → $10/each vs $105 for a case of 10 are different
                     packaging tiers, not a data error.
-- If one side has a suspicious value (e.g. CS with QOE 1) but the prices
+- If one side has a suspicious value (e.g. CS/CA/PK/CT/BX with QOE 1) but the prices
   still show clearly different pack scales, REJECT — the data is wrong but
   the two rows are still different packaging.
   Example (REJECT): Medline ABC12345 / EA / 1 / $10 vs
@@ -108,8 +125,8 @@ General guardrails:
   price is materially inconsistent for the stated pack and quantity,
   prefer REJECT.
   For example, if both sides have the same vendor and manufacturer number
-  and both have QOE 6, but one side is priced ~6× the other, that
-  usually means they are not the same contract line — REJECT.
+  and one side has QOE of 1 and the other has QOE of 6, but the side with QOE of 6 
+  is priced ~6× than the other, that usually means they are not the same packaging — REJECT.
 - Reserve PENDING for genuine deadlocks. Most pairs should resolve to
   ACCEPT or REJECT.
 
@@ -137,7 +154,6 @@ MATCH item (source: {match_source}):
   UOM: {match_uom}
   QOE: {match_qoe}
   Contract Price: {match_price}
-  Similarity Score: {sim_score}
 
 Is this the same product?"""
 
@@ -168,7 +184,6 @@ def _build_messages(
                 match_uom=match_item.get("uom", ""),
                 match_qoe=match_item.get("qoe", ""),
                 match_price=match_item.get("contract_price", ""),
-                sim_score=match_item.get("similarity_score", ""),
             ),
         },
     ]

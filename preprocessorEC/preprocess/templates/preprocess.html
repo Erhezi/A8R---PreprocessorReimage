@@ -287,6 +287,7 @@
         <div class="d-flex gap-2">
           <button class="btn btn-sm btn-outline-success" id="btnAcceptSelected" disabled>Mark Selected as True Match</button>
           <button class="btn btn-sm btn-outline-danger" id="btnRejectSelected" disabled>Mark Selected as False Positive</button>
+          <button class="btn btn-sm btn-outline-warning" id="btnPendingSelected" disabled>Mark Selected as Pending</button>
           <button class="btn btn-sm btn-outline-primary" id="btnLlmPending" disabled title="No PENDING matches">Send PENDING to LLM</button>
         </div>
       </div>
@@ -921,10 +922,13 @@ function updateSelectionButtons() {
   const checked = selectedMatchIds.size;
   const rejectBtn = document.getElementById("btnRejectSelected");
   const acceptBtn = document.getElementById("btnAcceptSelected");
+  const pendingBtn = document.getElementById("btnPendingSelected");
   rejectBtn.disabled = checked === 0;
   acceptBtn.disabled = checked === 0;
+  pendingBtn.disabled = checked === 0;
   rejectBtn.textContent = checked > 0 ? `Mark ${checked} as False Positive` : "Mark Selected as False Positive";
   acceptBtn.textContent = checked > 0 ? `Mark ${checked} as True Match` : "Mark Selected as True Match";
+  pendingBtn.textContent = checked > 0 ? `Mark ${checked} as Pending` : "Mark Selected as Pending";
 }
 
 document.getElementById("matchBody").addEventListener("change", (event) => {
@@ -1005,6 +1009,20 @@ document.getElementById("btnAcceptSelected").addEventListener("click", async () 
   if (!ids.length) return;
   if (!confirm(`Mark ${ids.length} match(es) as true match?`)) return;
   await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/update-true-matches`, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({match_ids: ids})
+  });
+  selectedMatchIds = new Set();
+  loadContracts();
+  loadMatches();
+});
+
+document.getElementById("btnPendingSelected").addEventListener("click", async () => {
+  const ids = [...selectedMatchIds];
+  if (!ids.length) return;
+  if (!confirm(`Mark ${ids.length} match(es) as pending?`)) return;
+  await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/update-pending`, {
     method: "POST",
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify({match_ids: ids})
