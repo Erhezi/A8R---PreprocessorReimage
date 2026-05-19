@@ -31,6 +31,7 @@ import logging
 from dataclasses import dataclass
 from typing import Optional
 
+from sqlalchemy import inspect
 from sqlalchemy.orm import Session
 
 from ..db.engine import get_sqlserver_engine
@@ -45,6 +46,37 @@ CHECK_VENDOR_LOCATION_ALIGNMENT = (3, "VENDOR_LOCATION_ALIGNMENT")
 
 def _session() -> Session:
     return Session(get_sqlserver_engine())
+
+
+def _im_check_result_table_exists() -> bool:
+    return inspect(get_sqlserver_engine()).has_table(
+        "PreprocessorIMCheckResult",
+        schema="Preprocessor",
+    )
+
+
+def _missing_table_payload(
+    task_id: str,
+    drop_count: int = 0,
+    new_line_count: int = 0,
+    findings: list[dict] | None = None,
+) -> dict:
+    findings = findings or []
+    return {
+        "task_id": task_id,
+        "status": "missing_table",
+        "drop_candidates": drop_count,
+        "new_line_candidates": new_line_count,
+        "check_1_warnings": sum(1 for f in findings if f["check_id"] == CHECK_SOLE_COVERAGE[0]),
+        "check_2_warnings": sum(1 for f in findings if f["check_id"] == CHECK_AFFECTED_LOCATION[0]),
+        "check_3_warnings": sum(1 for f in findings if f["check_id"] == CHECK_VENDOR_LOCATION_ALIGNMENT[0]),
+        "total_warnings": len(findings),
+        "findings": findings,
+        "error": (
+            "Missing table Preprocessor.PreprocessorIMCheckResult. "
+            "Apply migrations/025_add_im_check_result.sql."
+        ),
+    }
 
 
 @dataclass
@@ -233,10 +265,6 @@ def run_im_checks(task_id: str) -> dict:
             .all()
         )
 
-        s.query(IMCheckResult).filter(
-            IMCheckResult.task_id == task_id
-        ).delete(synchronize_session=False)
-
         drop_set = _drop_candidates(rows)
         new_set = _new_line_candidates(rows)
 
@@ -245,6 +273,17 @@ def run_im_checks(task_id: str) -> dict:
             + _check_affected_location(drop_set)
             + _check_vendor_location_alignment(new_set)
         )
+
+        if not _im_check_result_table_exists():
+            logger.warning(
+                "Skipping IM-check persistence for task %s because Preprocessor.PreprocessorIMCheckResult is missing.",
+                task_id,
+            )
+            return _missing_table_payload(task_id, len(drop_set), len(new_set), findings)
+
+        s.query(IMCheckResult).filter(
+            IMCheckResult.task_id == task_id
+        ).delete(synchronize_session=False)
 
         if findings:
             s.bulk_save_objects([
@@ -277,6 +316,13 @@ def run_im_checks(task_id: str) -> dict:
 
 def get_im_check_results(task_id: str) -> list[dict]:
     """Read persisted IM check results (page-load hydrate + MDM export)."""
+    if not _im_check_result_table_exists():
+        logger.warning(
+            "Skipping IM-check result hydrate for task %s because Preprocessor.PreprocessorIMCheckResult is missing.",
+            task_id,
+        )
+        return []
+
     with _session() as s:
         rows = (
             s.query(IMCheckResult)

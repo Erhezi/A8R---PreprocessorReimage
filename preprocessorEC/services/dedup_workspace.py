@@ -32,9 +32,37 @@ from .dedup_resolution import (
     editable_for_side,
 )
 
+SQLSERVER_EXPANDING_BATCH_SIZE = 1000
+
 
 def _session() -> Session:
     return Session(get_sqlserver_engine())
+
+
+def _chunked(values: Iterable, batch_size: int = SQLSERVER_EXPANDING_BATCH_SIZE):
+    batch = []
+    for value in values:
+        batch.append(value)
+        if len(batch) >= batch_size:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
+
+
+def _execute_expanding_batches(
+    session: Session,
+    stmt,
+    bind_name: str,
+    values: Iterable,
+    extra_params: dict | None = None,
+) -> list:
+    rows = []
+    for batch in _chunked(list(values)):
+        params = dict(extra_params or {})
+        params[bind_name] = batch
+        rows.extend(session.execute(stmt, params).mappings().all())
+    return rows
 
 
 def _norm(value: Optional[str]) -> str:
@@ -74,7 +102,7 @@ def _fetch_contract_headers(
 
     stmt = load_query("dedup", "dedup", query="contract_headers_by_org_contract")
     bound = stmt.bindparams(bindparam("contract_ids", expanding=True))
-    rows = session.execute(bound, {"contract_ids": contract_ids}).mappings().all()
+    rows = _execute_expanding_batches(session, bound, "contract_ids", contract_ids)
 
     out: dict[tuple[str, str], dict] = {}
     for row in rows:
@@ -100,7 +128,7 @@ def _fetch_infor_items(
 
     stmt = load_query("dedup", "dedup", query="infor_items_by_pkid")
     bound = stmt.bindparams(bindparam("infor_pkids", expanding=True))
-    rows = session.execute(bound, {"infor_pkids": infor_pkids}).mappings().all()
+    rows = _execute_expanding_batches(session, bound, "infor_pkids", infor_pkids)
     return {str(row.get("Infor_pkid")): (row.get("Item") or "") for row in rows}
 
 
@@ -152,12 +180,13 @@ def populate_dedup_workspace(task_id: str, *, force: bool = False) -> dict:
         input_item_ids = {m.input_item_id for m in accepted_matches if m.input_item_id is not None}
         input_items: dict[int, TaskItem] = {}
         if input_item_ids:
-            for item in (
-                session.query(TaskItem)
-                .filter(TaskItem.item_id.in_(input_item_ids))
-                .all()
-            ):
-                input_items[item.item_id] = item
+            for batch in _chunked(sorted(input_item_ids)):
+                for item in (
+                    session.query(TaskItem)
+                    .filter(TaskItem.item_id.in_(batch))
+                    .all()
+                ):
+                    input_items[item.item_id] = item
 
         # Pull contract headers (matched + input) in a single query keyed by
         # ContractID; we filter by Organization in Python.
