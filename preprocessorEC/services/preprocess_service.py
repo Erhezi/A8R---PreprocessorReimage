@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 # MHS org EID (matches all orgs)
 MHS_ORG_EID = "105188574"
 BUCKET_PRIORITY = {"HIGH": 3, "MED": 2, "LOW": 1}
+SQLSERVER_EXPANDING_BATCH_SIZE = 1000
 
 
 # ---------------------------------------------------------------------------
@@ -40,6 +41,23 @@ BUCKET_PRIORITY = {"HIGH": 3, "MED": 2, "LOW": 1}
 # ---------------------------------------------------------------------------
 def _sql_session() -> Session:
     return Session(get_sqlserver_engine())
+
+
+def _execute_expanding_batches(
+    sess: Session,
+    stmt,
+    bind_name: str,
+    values: list,
+    extra_params: dict | None = None,
+    batch_size: int = SQLSERVER_EXPANDING_BATCH_SIZE,
+) -> list:
+    rows = []
+    for start in range(0, len(values), batch_size):
+        batch = values[start:start + batch_size]
+        params = dict(extra_params or {})
+        params[bind_name] = batch
+        rows.extend(sess.execute(stmt, params).mappings().all())
+    return rows
 
 
 def _determine_contract_type(items: list) -> str:
@@ -671,7 +689,13 @@ def run_infor_cascade(task_id: str, state_machine: TaskStateMachine) -> dict:
         # SQLAlchemy text() with IN requires expanding bindparam
         from sqlalchemy import bindparam
         bound_query = query.bindparams(bindparam("ccx_pkids", expanding=True))
-        rows = sess.execute(bound_query, {"ccx_pkids": cascade_pkids, "org_eid": org_eid}).mappings().all()
+        rows = _execute_expanding_batches(
+            sess,
+            bound_query,
+            "ccx_pkids",
+            cascade_pkids,
+            {"org_eid": org_eid},
+        )
 
         # Map every task CCX pkid to the task rows that matched it so a single
         # Infor line can carry all CCX source rows for the same input item.
@@ -681,12 +705,8 @@ def run_infor_cascade(task_id: str, state_machine: TaskStateMachine) -> dict:
 
         relevant_infor_pkids = sorted({row.get("Infor_pkid") for row in rows if row.get("Infor_pkid")})
         lineage_by_key: dict[tuple[int, str], set[int]] = {}
-        if relevant_infor_pkids and ccx_matches_by_pkid:
-            lineage_rows = sess.execute(
-                bound_query,
-                {"ccx_pkids": sorted(ccx_matches_by_pkid.keys()), "org_eid": org_eid},
-            ).mappings().all()
-            for lineage_row in lineage_rows:
+        if relevant_infor_pkids:
+            for lineage_row in rows:
                 infor_pkid = lineage_row.get("Infor_pkid")
                 ccx_pkid = lineage_row.get("CCX_pkid")
                 if not infor_pkid or not ccx_pkid or infor_pkid not in relevant_infor_pkids:

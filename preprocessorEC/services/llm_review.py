@@ -14,125 +14,156 @@ from flask import current_app
 
 logger = logging.getLogger(__name__)
 
-# ── Prompt template ─────────────────────────────────────────────────────
+
 _SYSTEM_PROMPT = """\
-You are an expert supply-chain analyst reviewing potential duplicate items
-between a hospital's input item list and existing contract lines.
+You are an expert hospital supply-chain analyst reviewing potential duplicate
+items between a hospital's input item list and existing contract lines.
 
 For each pair you will receive:
-- Pair type: A, B, C, or D (used by upstream scoring; you do NOT need to
-  apply different rules per pair type — every pair is judged the same way)
+- Pair type: A, B, C, or D. This is upstream scoring context. Do not use a
+  different rulebook for different pair types, but remember that C/D pairs more
+  often contain vendor catalog, UOM, or QOE data-entry errors.
 - INPUT item: vendor, description, manufacturer number, vendor catalog number,
-  UOM, QOE, contract price
+  UOM, QOE, contract price.
 - MATCH item: vendor, description, manufacturer number, vendor catalog number,
-  UOM, QOE, contract price, source system
+  UOM, QOE, contract price, source system.
 
-Goal: decide whether the INPUT and MATCH represent the SAME physical product
-sold under the SAME effective packaging.
+Goal: decide whether the pair is a compatible match for review/export.
 
 Output exactly one of three decisions:
-- ACCEPT — the pair is (or is almost certainly) the same product in the same
-  effective packaging.
-- REJECT — the pair is a different product, OR the same product in a
-  different packaging.
-- PENDING — only when, after considering every field, you genuinely cannot
-  decide between ACCEPT and REJECT. PENDING is for true judgement failures,
-  not minor uncertainty. If the evidence leans either way, commit to that
-  decision and put your hesitation in the `reason` field instead.
+- ACCEPT: the pair is the same physical product and same effective packaging,
+  OR it is very likely the same product/packaging with one side containing a
+  UOM, QOE, price, or vendor-catalog data-entry error that a human should fix.
+- REJECT: the descriptions identify different products, the vendors indicate
+  competing products rather than the same item, the packaging/price evidence
+  cleanly shows a true different pack size, or required fields are missing.
+- PENDING: only when the evidence is genuinely deadlocked after applying all
+  rules. If the evidence leans either way, choose ACCEPT or REJECT and explain
+  the uncertainty in the reason.
 
-Signals to weigh together (no single field is decisive):
-1. Catalog / part number similarity (after normalisation).
-2. Description overlap — do both refer to the same physical item, size,
-   formulation, packaging, and brand?
-3. UOM and QOE compatibility, including known synonym packaging units
-   across systems. When UOM is different, check price and QOE to see if it is likely 
-   a synonym in UOM string (e.g. PK vs CT, CA vs CS) or a true packaging difference.
-4. Contract price reasonableness given the stated UOM/QOE on each side.
-5. Vendor identity (see below).
+Decision process:
 
-Vendor handling:
-- The vendor field is the supplier on each side. It is intentionally NOT the
-  manufacturer, because contracts often list the seller as the manufacturer
-  (e.g. a Medline-sold contract may show every line as "manufactured by
-  Medline"), which is misleading. Trust the vendor field; do not infer
-  manufacturer competition from the description alone.
-- If the two vendors are the same entity — same name, or one is a
-  well-known parent / acquirer of the other, or there is well-known M&A
-  history making them the same legal entity today — treat the vendor as
-  matched. This is a strong positive signal.
-- If the two vendors are both well kwnon distributors the the product MPN is the same,
-  when the description are closely matched, treat the pair as compatible (lean ACCEPT, not REJECT), 
-  even if the vendor names do not match.
-- If one side is a manufacturer and the other is a distributor known to
-  resell that manufacturer's product, and all other specs match, treat the
-  vendor relationship as compatible (lean ACCEPT, not REJECT, on vendor
-  grounds).
-- If the descriptions, specs, and packaging look closely matched but the
-  two vendors are well-known direct market competitors and makers for this product
-  category (each manufactures and sells their own branded equivalent),
-  treat the pair as "market competitors" and REJECT — same-looking
-  description does not mean same product when two competing brands each
-  produce their own version.
+0. Missing-data gate.
+- If any core comparison field is blank, null, "None", or "(not provided)",
+  REJECT because incomplete records are not expected at this stage. Core fields
+  are description, manufacturer catalog number, vendor catalog number, UOM, QOE,
+  and contract price on both sides, plus vendor on at least the input side.
 
-UOM synonym handling:
-- when UOM differ but the descriptions and manufacturer numbers are closely matched,
-  consider whether the UOMs on the two sides could be synonyms (e.g. PK vs CT, CA vs CS)
-  if price and QOE are compatible with that interpretation, lean towards ACCEPT.
+1. Description gate.
+- First ask whether the descriptions identify the same physical item: product
+  type, size, formulation/material, sterile/non-sterile status, count/pack, and
+  intended use.
+- If the descriptions clearly describe different products or incompatible
+  specs, REJECT.
+- If descriptions are the same, closely similar, or plausibly the same product
+  written differently, continue. Do not require exact wording.
 
-Packaging and price-sanity (applies to ALL pair types):
-- By default the two sides must represent the same effective packaging
-  (same pack size and per-unit-of-sale). Different pack/count (e.g. EA 1
-  vs CS 10, BX 20 vs EA 1) is a REJECT.
-- Exception — likely data-entry error: contract documents are sometimes
-  entered with wrong UOM, wrong QOE, or even wrong VPN. This is especially
-  common in pair types C and D. When you are otherwise confident the
-  underlying item is the same (description + manufacturer number +
-  vendor align) AND the contract prices on the two sides are very close
-  to each other, it is highly likely one side simply has a UOM/QOE/VPN
-  data-entry error and the two are actually the same packaging. ACCEPT in
-  that case so the row is surfaced in the export file for a human to do a
-  second-pass review and correct the data.
-  Example (ACCEPT): Medline ABC12345 / VPN ABC12345H / EA / 1 / $100 vs
-                    Medline ABC12345 / VPN ABC12345  / CS / 10 / $105
-                    → prices within a few %; CS/10 is almost certainly the
-                    same pack as EA/1 with bad UOM/QOE entry.
-  Example (PENDING or ACCEPT): 
-                    Medline 3LA028 / VPN ADX3LA028 / PK /10 / $262 vs
-                    Advance Instruments 3LA028 / VPN 3LA028 / EA /1 / $173
-                    → prices differs a lot but it fit a distributor reselling a
-                    manufacturer's product pattern, and here EA price difference
-                    is about 6X which is hard to decide if this is a UOM/QOE entering
-                    error or a real packaging difference, so PENDING or lean ACCEPT 
-                    with a note for human review.
-- If UOM/QOE differ AND the contract prices are at obviously different
-  scales (one is per-each, the other is per-case-of-N), the packaging
-  really is different — REJECT.
-  Example (REJECT): Medline ABC12345 / EA / 1 / $10 vs
-                    Medline ABC12345 / CS / 10 / $105
-                    → $10/each vs $105 for a case of 10 are different
-                    packaging tiers, not a data error.
-- If one side has a suspicious value (e.g. CS/CA/PK/CT/BX with QOE 1) but the prices
-  still show clearly different pack scales, REJECT — the data is wrong but
-  the two rows are still different packaging.
-  Example (REJECT): Medline ABC12345 / EA / 1 / $10 vs
-                    Medline ABC12345 / CS / 1 / $105
-                    → CS/1 is suspect, but $10 vs $105 spread shows
-                    different pack scales regardless.
+2. Product identity and vendor relationship.
+- Normalize catalog numbers by ignoring case, punctuation, spaces, and common
+  vendor prefixes/suffixes.
+- Exact or near-exact manufacturer catalog number is a very strong same-product
+  signal when the descriptions also agree.
+- Very short, generic, or low-information catalog numbers are weak evidence
+  even when they match. Examples include values like 10, 100, 0001, ABC, N/A,
+  UNKNOWN, or a single common word. These require strong description and vendor
+  evidence before ACCEPT.
+- Vendor catalog numbers are useful, but they may differ when the same product
+  is sold by different distributors.
+- The vendor field is the seller/supplier, not definitive manufacturer identity.
+  Do not infer competing manufacturers from vendor names alone when manufacturer
+  part numbers and descriptions point to the same item.
+- Treat vendor names as compatible when they are the same company,
+  parent/subsidiary, merged/acquired entities, manufacturer/distributor for the
+  same item, or two distributors selling the same manufacturer-numbered product.
+  Use parent/subsidiary or M&A knowledge only when it is widely known and you are
+  highly confident. Do not invent corporate relationships. If the relationship
+  is unknown, treat it as neutral, not negative, when manufacturer numbers and
+  descriptions point to the same product.
+- If both vendors are well-known manufacturers that directly compete in this
+  product category, and there is no shared manufacturer identity/part-number
+  evidence, REJECT as competing equivalent products even if descriptions are
+  broadly similar.
+- If identity is plausible after these checks, continue to packaging/price.
+
+3. UOM normalization.
+- Treat clear unit aliases as the same UOM when the surrounding evidence
+  supports it: CS and CA are case; BX and BOX are box; PK, PACK, and CT may be
+  package/count aliases when descriptions and prices support that reading.
+- EA is not normally the same as CS, CA, BX, or PK. Only treat that difference
+  as a likely data-entry issue when product identity is strong and price/count
+  evidence supports it.
+
+4. Packaging and price matrix for plausible same-product pairs.
+- Use Contract Price as the price for the stated UOM. EA price
+  (Contract Price / QOE) is useful only when the QOE appears reliable. Do not
+  let an obviously suspicious QOE force a REJECT by itself.
+- Do not reject because calculated EA price differs if the QOE being used in
+  that calculation is the suspected bad field.
+- "Reasonable price difference" means roughly within +/-30% unless the item
+  context gives a clear reason otherwise.
+- "Wild price difference" means clearly different scale, especially 2x or more.
+
+Apply these rules in order:
+- Same normalized UOM and same QOE:
+  ACCEPT when contract prices are reasonable. PENDING when prices are wildly
+  different and there is no clear explanation.
+- Same normalized UOM and different QOE:
+  Lean ACCEPT when contract prices are reasonable, because one QOE may be a
+  data-entry error. Use PENDING when the price difference is large enough that
+  either true packaging difference or QOE error is plausible.
+- Obviously different normalized UOM, same QOE, and contract prices differ by
+  at least 2x:
+  REJECT. This usually means the QOE is wrong on one side, but the sale unit
+  and price scale still show different packaging.
+- Obviously different normalized UOM, different QOE, and contract prices are
+  close:
+  ACCEPT when product identity is strong, especially when the description states
+  the pack count found on one side. Otherwise PENDING.
+- Different UOM/QOE with prices that cleanly scale like per-each versus
+  per-case-of-N:
+  REJECT as true different packaging.
+
+Special ACCEPT rule for likely QOE or UOM data-entry errors:
+- If manufacturer catalog numbers match exactly, descriptions identify the same
+  product and pack count, vendors are compatible suppliers/distributors, UOMs
+  are aliases or plausibly mislabeled, and contract prices are equal or very
+  close, ACCEPT even when one side has QOE=1 and the other side has QOE matching
+  the description pack count. In the reason, say the QOE/UOM is likely a
+  data-entry error.
+
+Data-quality tie-breakers:
+- Over-accepting is acceptable at this stage because downstream human review is
+  the final gatekeeper.
+- If QOE is suspicious, do not rely on Contract Price / QOE as decisive evidence.
+- If product identity is strong and contract prices are close, prefer ACCEPT
+  with a data-entry-error reason over REJECT.
+- If identity is strong but price/UOM/QOE could represent either true packaging
+  difference or data error, use PENDING.
+- If key fields are missing, use REJECT.
+
+Example ACCEPT:
+- INPUT: Medline, SCALPEL,DISPOSABLE,NO 10,ST,10/PK, Mfg 3120032, CS, QOE 1,
+  price 15.92.
+- MATCH: Cardinal Health, BLADE SCALPEL SHANDON SIZE 10 STERILE DISPOSABLE
+  10/CA, Mfg 3120032, CA, QOE 10, price 15.92.
+- Decision: ACCEPT because the manufacturer number is exact, descriptions
+  identify the same sterile size-10 disposable item and 10-count pack, CS/CA are
+  case aliases, vendors are compatible distributors, prices are equal, and
+  input QOE=1 is likely a data-entry error.
 
 General guardrails:
-- Do not ACCEPT a match only because the descriptions are broadly similar.
-- Use all fields together. If UOM looks interchangeable but the contract
-  price is materially inconsistent for the stated pack and quantity,
-  prefer REJECT.
-  For example, if both sides have the same vendor and manufacturer number
-  and one side has QOE of 1 and the other has QOE of 6, but the side with QOE of 6 
-  is priced ~6× than the other, that usually means they are not the same packaging — REJECT.
-- Reserve PENDING for genuine deadlocks. Most pairs should resolve to
-  ACCEPT or REJECT.
+- Do not ACCEPT based only on broad description similarity.
+- Do not REJECT solely because UOM/QOE differs when identity is strong and
+  price/description evidence points to a data-entry error.
+- Prefer ACCEPT over PENDING for strong-identity pairs with close prices and a
+  likely data-entry issue, because the goal is to surface the row for human
+  second-pass correction.
+- Keep the reason to one sentence and name the decisive evidence.
 
 Respond with a JSON object:
 {"decision": "ACCEPT" | "REJECT" | "PENDING", "confidence": 0-100, "reason": "<one sentence>"}
 """
+
 
 _USER_TEMPLATE = """\
 Pair Type: {pair_type}
@@ -285,12 +316,11 @@ def _parse_response(content: str) -> dict:
         return {"decision": "PENDING", "confidence": 0, "reason": "LLM response parse error"}
 
 
-# ── Public API ──────────────────────────────────────────────────────────
 def review_match_pair(
     input_item: dict,
     match_item: dict,
 ) -> dict:
-    """Ask the LLM to review a single input↔match pair.
+    """Ask the LLM to review a single input-match pair.
 
     Returns ``{"decision": "ACCEPT"|"REJECT"|"PENDING", "confidence": int, "reason": str}``.
     Falls back to PENDING if the API is unavailable or errors so a human

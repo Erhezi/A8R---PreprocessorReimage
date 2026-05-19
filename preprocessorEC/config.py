@@ -50,6 +50,7 @@ class Config:
     SESSION_PERMANENT = False
     SESSION_USE_SIGNER = True
     PERMANENT_SESSION_LIFETIME = timedelta(hours=24)
+    SESSION_REFRESH_EACH_REQUEST = False
 
     # ── Sentence Transformer ────────────────────────────────────────
     MODEL_NAME = "all-MiniLM-L6-v2"

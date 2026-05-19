@@ -54,7 +54,7 @@ def init_engines(app) -> None:
     _sqlite_workstate_engine = create_engine(
         f"sqlite:///{workstate_path}",
         poolclass=StaticPool,
-        connect_args={"check_same_thread": False},
+        connect_args={"check_same_thread": False, "timeout": 30},
     )
 
     # Enable WAL mode for better concurrent reads
@@ -62,6 +62,8 @@ def init_engines(app) -> None:
     def _set_sqlite_pragma(dbapi_conn, _connection_record):
         cursor = dbapi_conn.cursor()
         cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA busy_timeout=30000")
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
 

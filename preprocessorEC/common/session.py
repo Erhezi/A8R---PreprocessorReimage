@@ -8,6 +8,8 @@ from __future__ import annotations
 import os
 
 from flask import Flask
+from sqlalchemy import event
+from sqlalchemy.pool import NullPool
 
 
 def init_session(app: Flask) -> None:
@@ -24,9 +26,22 @@ def init_session(app: Flask) -> None:
     )
 
     app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{session_db_path}"
-    app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {"connect_args": {"check_same_thread": False}}
+    app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
+        "connect_args": {"check_same_thread": False, "timeout": 30},
+        "poolclass": NullPool,
+    }
 
     session_db = SQLAlchemy(app)
+    with app.app_context():
+        session_engine = session_db.engine
+
+    @event.listens_for(session_engine, "connect")
+    def _set_session_sqlite_pragma(dbapi_conn, _connection_record):
+        cursor = dbapi_conn.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA busy_timeout=30000")
+        cursor.close()
 
     app.config["SESSION_TYPE"] = "sqlalchemy"
     app.config["SESSION_SQLALCHEMY"] = session_db

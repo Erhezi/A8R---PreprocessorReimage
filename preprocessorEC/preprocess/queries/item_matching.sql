@@ -5,7 +5,7 @@
 SELECT
     icl.Infor_pkid,
     icl.OrganizationEID,
-  icl.Organization,
+    icl.Organization,
     icl.ContractID,
     icl.ERPVendorID_Infor        AS erp_vendor_id,
     icl.VendorID_Infor           AS vendor_id,
@@ -48,7 +48,7 @@ WHERE link.CCX_pkid IN :ccx_pkids
 SELECT
     icl.Infor_pkid,
     icl.OrganizationEID,
-  icl.Organization,
+    icl.Organization,
     icl.ContractID,
     icl.ERPVendorID_Infor        AS erp_vendor_id,
     icl.VendorID_Infor           AS vendor_id,
