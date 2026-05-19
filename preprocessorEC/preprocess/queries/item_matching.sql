@@ -82,6 +82,68 @@ WHERE icl.CCX_pkid IS NULL
       OR icl.OrganizationEID IN (:org_eid, '105188574')
   );
 
+-- name: infor_residue_match_mfg_set
+-- Set-based Infor residue match on reduced manufacturer numbers.
+SELECT
+    icl.Infor_pkid,
+    icl.OrganizationEID,
+    icl.Organization,
+    icl.ContractID,
+    icl.ERPVendorID_Infor        AS erp_vendor_id,
+    icl.VendorID_Infor           AS vendor_id,
+    icl.VendorItem_Infor         AS vendor_catalog_num_infor,
+    icl.ManufacturerNumber_Infor AS mfg_catalog_num_infor,
+    icl.UOM_Infor                AS uom_infor,
+    icl.QOE_Infor                AS qoe_infor,
+    icl.ContractPrice_Infor      AS unit_price_infor,
+    icl.ItemType,
+    icl.ItemNumber               AS infor_item_number,
+    icl.Item                     AS infor_item,
+    icl.reduced_mfg_num_infor,
+    icl.reduced_vendor_num_infor,
+    icl.CCXCurrentSyncFlag,
+    icl.JoinSyncType,
+    icl.ItemDescription_Infor,
+    icl.ContractLineManufacturer_Infor AS contract_line_manufacturer
+FROM [Preprocessor].[InforActiveCLRefCCXSyncedCL] icl
+WHERE icl.CCX_pkid IS NULL
+  AND icl.reduced_mfg_num_infor IN :reduced_mfg_nums
+  AND (
+      :org_eid = '105188574'
+      OR icl.OrganizationEID IN (:org_eid, '105188574')
+  );
+
+-- name: infor_residue_match_vendor_set
+-- Set-based Infor residue match on reduced vendor numbers.
+SELECT
+    icl.Infor_pkid,
+    icl.OrganizationEID,
+    icl.Organization,
+    icl.ContractID,
+    icl.ERPVendorID_Infor        AS erp_vendor_id,
+    icl.VendorID_Infor           AS vendor_id,
+    icl.VendorItem_Infor         AS vendor_catalog_num_infor,
+    icl.ManufacturerNumber_Infor AS mfg_catalog_num_infor,
+    icl.UOM_Infor                AS uom_infor,
+    icl.QOE_Infor                AS qoe_infor,
+    icl.ContractPrice_Infor      AS unit_price_infor,
+    icl.ItemType,
+    icl.ItemNumber               AS infor_item_number,
+    icl.Item                     AS infor_item,
+    icl.reduced_mfg_num_infor,
+    icl.reduced_vendor_num_infor,
+    icl.CCXCurrentSyncFlag,
+    icl.JoinSyncType,
+    icl.ItemDescription_Infor,
+    icl.ContractLineManufacturer_Infor AS contract_line_manufacturer
+FROM [Preprocessor].[InforActiveCLRefCCXSyncedCL] icl
+WHERE icl.CCX_pkid IS NULL
+  AND icl.reduced_vendor_num_infor IN :reduced_vendor_nums
+  AND (
+      :org_eid = '105188574'
+      OR icl.OrganizationEID IN (:org_eid, '105188574')
+  );
+
 -- name: item_label_mdm_item
 -- Find Infor Item# via MDM_ITEM (manufacturer + mfg catalog number).
 -- Returns Item with Active status.
@@ -94,6 +156,21 @@ SELECT DISTINCT
 FROM [DM_MONTYNT\dli2].[MDM_ITEM] mi
 WHERE mi.Manufacturer = :manufacturer
   AND mi.ManufacturerNumber = :mfg_catalog_num
+  AND mi.Active = 'Yes';
+
+-- name: item_label_mdm_item_set
+-- Set-based MDM_ITEM lookup for a single manufacturer and many mfg numbers.
+SELECT DISTINCT
+    mi.Manufacturer,
+    mi.ManufacturerNumber,
+    mi.Item,
+    mi.Active,
+    mi.DefaultBuyUOM,
+    mi.DefaultBuyUOMMultiplier,
+    mi.Description                AS mdm_description
+FROM [DM_MONTYNT\dli2].[MDM_ITEM] mi
+WHERE mi.Manufacturer = :manufacturer
+  AND mi.ManufacturerNumber IN :mfg_catalog_nums
   AND mi.Active = 'Yes';
 
 -- name: item_label_mdm_vendoritem
@@ -111,6 +188,23 @@ WHERE mvi.Vendor = :vendor_id
   AND mvi.VendorItem = :vendor_catalog_num
   AND mvi.Active = 'Yes';
 
+-- name: item_label_mdm_vendoritem_set
+-- Set-based MDM_VENDORITEM lookup. The IN predicates intentionally return a
+-- superset; callers pair Vendor + VendorItem exactly in Python.
+SELECT DISTINCT
+    mvi.Vendor,
+    mvi.VendorItem,
+    mvi.Item,
+    mvi.Active,
+    mvi.Manufacturer,
+    mvi.ManufacturerNumber,
+    mvi.VendorBuyUOM,
+    CAST(mvi.[VendorBuyUOM.UOMConversion] AS INT) AS vendor_uom_conversion
+FROM [DM_MONTYNT\dli2].[MDM_VENDORITEM] mvi
+WHERE mvi.Vendor IN :vendor_ids
+  AND mvi.VendorItem IN :vendor_catalog_nums
+  AND mvi.Active = 'Yes';
+
 -- name: item_label_infor_item_by_pkid
 -- Find Infor master Item from an accepted INFOR_CL lineage row.
 SELECT DISTINCT
@@ -121,12 +215,30 @@ WHERE icl.Infor_pkid = :infor_pkid
   AND icl.Item IS NOT NULL
   AND LTRIM(RTRIM(CONVERT(VARCHAR(50), icl.Item))) <> '';
 
+-- name: item_label_infor_item_by_pkids_set
+-- Set-based Infor master Item lookup from accepted INFOR_CL lineage rows.
+SELECT DISTINCT
+    icl.Infor_pkid,
+    icl.Item
+FROM [Preprocessor].[InforActiveCLRefCCXSyncedCL] icl
+WHERE icl.Infor_pkid IN :infor_pkids
+  AND icl.Item IS NOT NULL
+  AND LTRIM(RTRIM(CONVERT(VARCHAR(50), icl.Item))) <> '';
+
 -- name: item_description_by_item_number
 -- Find item master description for an individual Infor Item.
 SELECT TOP 1
     mi.Description AS item_description
 FROM [DM_MONTYNT\dli2].[MDM_ITEM] mi
 WHERE mi.Item = :item_number;
+
+-- name: item_descriptions_by_item_numbers
+-- Set-based item master descriptions.
+SELECT
+    mi.Item,
+    mi.Description AS item_description
+FROM [DM_MONTYNT\dli2].[MDM_ITEM] mi
+WHERE mi.Item IN :item_numbers;
 
 -- name: item_uom_options
 -- Get valid buy UOM options for an Infor Item.

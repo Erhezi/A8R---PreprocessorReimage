@@ -296,7 +296,8 @@ def compute_similarities_batch(
 ) -> list[float]:
     """Score one input description against many match descriptions (batch).
 
-    Returns list of similarity scores (0-1).
+    Mirrors calculate_description_similarity while encoding all non-exact
+    descriptions in one transformer batch. Returns scores on a 0-1 scale.
     """
     if not match_descriptions:
         return []
@@ -308,12 +309,14 @@ def compute_similarities_batch(
 
     for index, description in enumerate(match_descriptions):
         description_norm = str(description or "").strip().lower()
-        if input_norm and description_norm and input_norm == description_norm:
+        if not input_norm or not description_norm:
+            exact_match_scores.append(0.0)
+        elif input_norm == description_norm:
             exact_match_scores.append(1.0)
         else:
             exact_match_scores.append(None)
             unresolved_indices.append(index)
-            unresolved_descriptions.append(description)
+            unresolved_descriptions.append(description_norm)
 
     if not unresolved_descriptions:
         return [score if score is not None else 0.0 for score in exact_match_scores]
@@ -322,16 +325,30 @@ def compute_similarities_batch(
         model = _get_model()
 
     if model is not None:
-        all_texts = [desc_input] + unresolved_descriptions
+        all_texts = [input_norm] + unresolved_descriptions
         embeddings = model.encode(all_texts)
         input_vec = embeddings[0]
-        resolved_scores = [float(_cosine(input_vec, embeddings[i + 1])) for i in range(len(unresolved_descriptions))]
-        for index, score in zip(unresolved_indices, resolved_scores):
-            exact_match_scores[index] = score
+        input_nums = _extract_measurements(input_norm)
+        for offset, index in enumerate(unresolved_indices):
+            semantic = _cosine(input_vec, embeddings[offset + 1])
+            match_norm = unresolved_descriptions[offset]
+            match_nums = _extract_measurements(match_norm)
+            if input_nums or match_nums:
+                inter = len(input_nums & match_nums)
+                union = len(input_nums | match_nums)
+                num_sim = ((inter / union) + 1) if union > 0 else 1
+            else:
+                num_sim = 1
+
+            if num_sim == 1:
+                combined = semantic
+            else:
+                combined = semantic * 0.7 + num_sim * 0.3
+            exact_match_scores[index] = float(min(max(combined, 0.0), 1.0))
         return [score if score is not None else 0.0 for score in exact_match_scores]
 
     for index, description in zip(unresolved_indices, unresolved_descriptions):
-        exact_match_scores[index] = _token_overlap(desc_input or "", description or "")
+        exact_match_scores[index] = _token_overlap(input_norm, description)
     return [score if score is not None else 0.0 for score in exact_match_scores]
 
 
@@ -431,6 +448,7 @@ def calculate_confidence_score(
     precheck_mode: str = "default",
     cn_input: str = "",
     cn_match: str = "",
+    desc_score_override: Optional[float] = None,
 ) -> dict:
     """Calculate multi-factor weighted confidence score.
 
@@ -453,6 +471,8 @@ def calculate_confidence_score(
     # Description similarity — skip for types A and B
     if pair_type in ("A", "B"):
         desc_score = None  # not computed
+    elif desc_score_override is not None:
+        desc_score = float(min(max(desc_score_override, 0.0), 1.0))
     else:
         desc_score = calculate_description_similarity(desc_input, desc_match, model=model)
 

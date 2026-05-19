@@ -565,32 +565,50 @@ def delete_item_matches_by_ids(match_item_ids: list[int]) -> int:
 
 
 def add_item_matches_bulk(matches: list[dict]) -> list[ItemMatchCandidate]:
+    if not matches:
+        return []
+    now = ny_now()
+    payload = []
+    valid_columns = {column.name for column in ItemMatchCandidate.__table__.columns}
+    for match_data in matches:
+        row = {
+            key: value
+            for key, value in match_data.items()
+            if key in valid_columns and key != "match_item_id"
+        }
+        row.setdefault("created_at", now)
+        row.setdefault("updated_at", now)
+        payload.append(row)
     with _session() as s:
-        db_matches = []
-        for match_data in matches:
-            candidate = ItemMatchCandidate(**match_data)
-            s.add(candidate)
-            db_matches.append(candidate)
+        s.bulk_insert_mappings(ItemMatchCandidate, payload)
         s.commit()
-        for candidate in db_matches:
-            s.refresh(candidate)
-            s.expunge(candidate)
-        return db_matches
+    return []
 
 
 def update_item_matches_bulk(updates: list[dict]) -> None:
+    if not updates:
+        return
+    now = ny_now()
+    valid_columns = {column.name for column in ItemMatchCandidate.__table__.columns}
+    payload = []
+    for entry in updates:
+        match_item_id = entry.get("match_item_id") if isinstance(entry, dict) else None
+        if match_item_id is None:
+            continue
+        row = {
+            key: value
+            for key, value in entry.items()
+            if key in valid_columns and key != "match_item_id"
+        }
+        if not row:
+            continue
+        row["match_item_id"] = match_item_id
+        row["updated_at"] = now
+        payload.append(row)
+    if not payload:
+        return
     with _session() as s:
-        for entry in updates:
-            match_item_id = entry.get("match_item_id") if isinstance(entry, dict) else None
-            if match_item_id is None:
-                continue
-            candidate = s.get(ItemMatchCandidate, match_item_id)
-            if not candidate:
-                continue
-            for key, value in entry.items():
-                if key != "match_item_id" and hasattr(candidate, key):
-                    setattr(candidate, key, value)
-            candidate.updated_at = ny_now()
+        s.bulk_update_mappings(ItemMatchCandidate, payload)
         s.commit()
 
 
@@ -722,32 +740,19 @@ def add_match_results_bulk(task_id: str, matches: list[dict]) -> list[MatchResul
     if not matches:
         return []
 
-    if not match_result_has_dedup_columns():
-        insertable_columns = _get_match_result_columns()
-        rows_to_insert = [
-            {
-                key: value
-                for key, value in {"task_id": task_id, **match}.items()
-                if key in insertable_columns
-            }
-            for match in matches
-        ]
-        with _session() as s:
-            s.execute(_get_match_result_table().insert(), rows_to_insert)
-            s.commit()
-        return []
-
+    insertable_columns = _get_match_result_columns()
+    rows_to_insert = [
+        {
+            key: value
+            for key, value in {"task_id": task_id, **match}.items()
+            if key in insertable_columns
+        }
+        for match in matches
+    ]
     with _session() as s:
-        db_matches = []
-        for m in matches:
-            mr = MatchResult(task_id=task_id, **m)
-            s.add(mr)
-            db_matches.append(mr)
+        s.execute(_get_match_result_table().insert(), rows_to_insert)
         s.commit()
-        for mr in db_matches:
-            s.refresh(mr)
-            s.expunge(mr)
-        return db_matches
+    return []
 
 
 def get_match_results(task_id: str, matched_source: Optional[str] = None) -> list[MatchResult]:

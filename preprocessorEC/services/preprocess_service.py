@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 # MHS org EID (matches all orgs)
 MHS_ORG_EID = "105188574"
 BUCKET_PRIORITY = {"HIGH": 3, "MED": 2, "LOW": 1}
+MATCH_TYPE_PRIORITY = {"CROSS_MATCH": 1, "REDUCED_VPN": 2, "REDUCED_MFG": 3}
 SQLSERVER_EXPANDING_BATCH_SIZE = 1000
 
 
@@ -57,6 +58,30 @@ def _execute_expanding_batches(
         params = dict(extra_params or {})
         params[bind_name] = batch
         rows.extend(sess.execute(stmt, params).mappings().all())
+    return rows
+
+
+def _execute_two_expanding_batches(
+    sess: Session,
+    stmt,
+    first_bind_name: str,
+    first_values: list,
+    second_bind_name: str,
+    second_values: list,
+    extra_params: dict | None = None,
+    batch_size: int = SQLSERVER_EXPANDING_BATCH_SIZE,
+) -> list:
+    rows = []
+    if not first_values or not second_values:
+        return rows
+    for first_start in range(0, len(first_values), batch_size):
+        first_batch = first_values[first_start:first_start + batch_size]
+        for second_start in range(0, len(second_values), batch_size):
+            second_batch = second_values[second_start:second_start + batch_size]
+            params = dict(extra_params or {})
+            params[first_bind_name] = first_batch
+            params[second_bind_name] = second_batch
+            rows.extend(sess.execute(stmt, params).mappings().all())
     return rows
 
 
@@ -103,6 +128,212 @@ def _load_distributor_groups(sess: Session) -> dict[str, int]:
         if vendor_id and group_id is not None:
             distributor_groups[vendor_id] = int(group_id)
     return distributor_groups
+
+
+def _normalize_match_key(value: object) -> str:
+    return str(value or "").strip().upper()
+
+
+def _index_item_entries(item_entries: list[dict], key_name: str) -> dict[str, list[dict]]:
+    index: dict[str, list[dict]] = {}
+    for entry in item_entries:
+        key = entry.get(key_name)
+        if key:
+            index.setdefault(key, []).append(entry)
+    return index
+
+
+def _build_reduced_item_entries(input_items: list) -> list[dict]:
+    item_entries = []
+    for item in input_items:
+        reduced_mfg = reduce_catalog_number(item.mfg_catalog_num)
+        reduced_vpn = reduce_catalog_number(item.vendor_catalog_num)
+        if not reduced_mfg and not reduced_vpn:
+            continue
+        item_entries.append({
+            "item": item,
+            "reduced_mfg": reduced_mfg,
+            "reduced_vpn": reduced_vpn,
+        })
+    return item_entries
+
+
+def _ccx_pair_key(item_id: int, row) -> tuple:
+    ccx_pkid = row.get("CCX_pkid")
+    if ccx_pkid is not None:
+        return (item_id, ccx_pkid)
+    return (
+        item_id,
+        row.get("ContractID"),
+        row.get("ERPVendorID"),
+        row.get("mfg_catalog_num_ccx"),
+        row.get("vendor_catalog_num_ccx"),
+        row.get("uom_ccx"),
+    )
+
+
+def _add_ccx_candidate_pair(
+    candidate_pairs: dict[tuple, dict],
+    item_entry: dict,
+    row,
+    match_type: str,
+) -> None:
+    key = _ccx_pair_key(item_entry["item"].item_id, row)
+    existing = candidate_pairs.get(key)
+    if existing is None or MATCH_TYPE_PRIORITY.get(match_type, 0) > MATCH_TYPE_PRIORITY.get(existing["match_type"], 0):
+        candidate_pairs[key] = {
+            "item_entry": item_entry,
+            "row": row,
+            "match_type": match_type,
+        }
+
+
+def _pair_ccx_candidate_rows(
+    rows: list,
+    item_entries: list[dict],
+    contract_type: str,
+) -> list[dict]:
+    by_mfg = _index_item_entries(item_entries, "reduced_mfg")
+    by_vpn = _index_item_entries(item_entries, "reduced_vpn")
+    candidate_pairs: dict[tuple, dict] = {}
+
+    for row in rows:
+        row_mfg = _normalize_match_key(row.get("reduced_mfg_num_ccx"))
+        row_vpn = _normalize_match_key(row.get("reduced_vendor_num_ccx"))
+
+        if contract_type == "MANUFACTURER":
+            for entry in by_mfg.get(row_mfg, []):
+                _add_ccx_candidate_pair(candidate_pairs, entry, row, "REDUCED_MFG")
+        elif contract_type == "DISTRIBUTOR_LOCAL":
+            for entry in by_mfg.get(row_mfg, []):
+                _add_ccx_candidate_pair(candidate_pairs, entry, row, "REDUCED_MFG")
+            for entry in by_mfg.get(row_vpn, []):
+                _add_ccx_candidate_pair(candidate_pairs, entry, row, "CROSS_MATCH")
+        else:
+            for entry in by_mfg.get(row_mfg, []):
+                _add_ccx_candidate_pair(candidate_pairs, entry, row, "REDUCED_MFG")
+            for entry in by_vpn.get(row_vpn, []):
+                _add_ccx_candidate_pair(candidate_pairs, entry, row, "REDUCED_VPN")
+
+    input_order = {entry["item"].item_id: index for index, entry in enumerate(item_entries)}
+    return sorted(
+        candidate_pairs.values(),
+        key=lambda pair: (
+            input_order.get(pair["item_entry"]["item"].item_id, 0),
+            str(pair["row"].get("ContractID") or ""),
+            str(pair["row"].get("ERPVendorID") or ""),
+            str(pair["row"].get("CCX_pkid") or ""),
+        ),
+    )
+
+
+def _load_ccx_candidate_rows(
+    sess: Session,
+    contract_type: str,
+    reduced_mfg_values: list[str],
+    reduced_vpn_values: list[str],
+    org_eid: str,
+) -> list:
+    from sqlalchemy import bindparam
+
+    rows: list = []
+
+    def run_query(query_name: str, bind_name: str, values: list[str]) -> None:
+        if not values:
+            return
+        stmt = load_query("preprocess", "dup_detection", query=query_name).bindparams(
+            bindparam(bind_name, expanding=True)
+        )
+        rows.extend(_execute_expanding_batches(sess, stmt, bind_name, values, {"org_eid": org_eid}))
+
+    if contract_type == "MANUFACTURER":
+        run_query("ccx_match_manufacturer_set", "reduced_mfg_nums", reduced_mfg_values)
+    elif contract_type == "DISTRIBUTOR_LOCAL":
+        run_query("ccx_match_distributor_local_mfg_set", "reduced_mfg_nums", reduced_mfg_values)
+        run_query("ccx_match_distributor_local_vendor_set", "reduced_mfg_nums", reduced_mfg_values)
+    else:
+        run_query("ccx_match_distributor_premier_mfg_set", "reduced_mfg_nums", reduced_mfg_values)
+        run_query("ccx_match_distributor_premier_vendor_set", "reduced_vendor_nums", reduced_vpn_values)
+
+    return rows
+
+
+def _infor_residue_pair_key(item_id: int, row) -> tuple:
+    infor_pkid = row.get("Infor_pkid")
+    if infor_pkid:
+        return (item_id, str(infor_pkid))
+    return (
+        item_id,
+        row.get("ContractID"),
+        row.get("erp_vendor_id"),
+        row.get("mfg_catalog_num_infor"),
+        row.get("vendor_catalog_num_infor"),
+        row.get("uom_infor"),
+    )
+
+
+def _add_infor_residue_candidate_pair(
+    candidate_pairs: dict[tuple, dict],
+    item_entry: dict,
+    row,
+    match_type: str,
+) -> None:
+    key = _infor_residue_pair_key(item_entry["item"].item_id, row)
+    existing = candidate_pairs.get(key)
+    if existing is None or MATCH_TYPE_PRIORITY.get(match_type, 0) > MATCH_TYPE_PRIORITY.get(existing["match_type"], 0):
+        candidate_pairs[key] = {
+            "item_entry": item_entry,
+            "row": row,
+            "match_type": match_type,
+        }
+
+
+def _pair_infor_residue_candidate_rows(rows: list, item_entries: list[dict]) -> list[dict]:
+    by_mfg = _index_item_entries(item_entries, "reduced_mfg")
+    by_vpn = _index_item_entries(item_entries, "reduced_vpn")
+    candidate_pairs: dict[tuple, dict] = {}
+
+    for row in rows:
+        row_mfg = _normalize_match_key(row.get("reduced_mfg_num_infor"))
+        row_vpn = _normalize_match_key(row.get("reduced_vendor_num_infor"))
+        for entry in by_mfg.get(row_mfg, []):
+            _add_infor_residue_candidate_pair(candidate_pairs, entry, row, "REDUCED_MFG")
+        for entry in by_vpn.get(row_vpn, []):
+            _add_infor_residue_candidate_pair(candidate_pairs, entry, row, "REDUCED_VPN")
+
+    input_order = {entry["item"].item_id: index for index, entry in enumerate(item_entries)}
+    return sorted(
+        candidate_pairs.values(),
+        key=lambda pair: (
+            input_order.get(pair["item_entry"]["item"].item_id, 0),
+            str(pair["row"].get("ContractID") or ""),
+            str(pair["row"].get("erp_vendor_id") or ""),
+            str(pair["row"].get("Infor_pkid") or ""),
+        ),
+    )
+
+
+def _load_infor_residue_candidate_rows(
+    sess: Session,
+    reduced_mfg_values: list[str],
+    reduced_vpn_values: list[str],
+    org_eid: str,
+) -> list:
+    from sqlalchemy import bindparam
+
+    rows: list = []
+
+    def run_query(query_name: str, bind_name: str, values: list[str]) -> None:
+        if not values:
+            return
+        stmt = load_query("preprocess", "item_matching", query=query_name).bindparams(
+            bindparam(bind_name, expanding=True)
+        )
+        rows.extend(_execute_expanding_batches(sess, stmt, bind_name, values, {"org_eid": org_eid}))
+
+    run_query("infor_residue_match_mfg_set", "reduced_mfg_nums", reduced_mfg_values)
+    run_query("infor_residue_match_vendor_set", "reduced_vendor_nums", reduced_vpn_values)
+    return rows
 
 
 def _split_multi_value_items(value: Optional[str]) -> list[str]:
@@ -341,14 +572,9 @@ def run_sku_matching(task_id: str, state_machine: TaskStateMachine) -> dict:
     precheck_mode = task.precheck_mode or "default"
 
     contract_type = _determine_contract_type(input_items)
-    query_map = {
-        "MANUFACTURER": "ccx_match_manufacturer",
-        "DISTRIBUTOR_PREMIER": "ccx_match_distributor_premier",
-        "DISTRIBUTOR_LOCAL": "ccx_match_distributor_local",
-    }
-    query_name = query_map.get(contract_type, "ccx_match_manufacturer")
-    query = load_query("preprocess", "dup_detection", query=query_name)
-    linked_infor_query = load_query("preprocess", "item_matching", query="infor_linked_pkids_by_ccx_pkids")
+    item_entries = _build_reduced_item_entries(input_items)
+    reduced_mfg_values = sorted({entry["reduced_mfg"] for entry in item_entries if entry["reduced_mfg"]})
+    reduced_vpn_values = sorted({entry["reduced_vpn"] for entry in item_entries if entry["reduced_vpn"]})
 
     # all items in a task share the same org
     org_eid = getattr(input_items[0], "organization_eid", None) or MHS_ORG_EID
@@ -359,114 +585,138 @@ def run_sku_matching(task_id: str, state_machine: TaskStateMachine) -> dict:
 
         distributor_groups = _load_distributor_groups(sess)
         task_vendor_group = distributor_groups.get(str(task.vendor_id or "").strip().upper())
-        linked_infor_query = linked_infor_query.bindparams(bindparam("ccx_pkids", expanding=True))
-        for item in input_items:
-            reduced_mfg = reduce_catalog_number(item.mfg_catalog_num)
-            reduced_vpn = reduce_catalog_number(item.vendor_catalog_num)
+        ccx_rows = _load_ccx_candidate_rows(
+            sess,
+            contract_type,
+            reduced_mfg_values,
+            reduced_vpn_values,
+            org_eid,
+        )
+        candidate_pairs = _pair_ccx_candidate_rows(ccx_rows, item_entries, contract_type)
 
-            if not reduced_mfg and not reduced_vpn:
-                continue
+        ccx_pkids = sorted({
+            pair["row"].get("CCX_pkid")
+            for pair in candidate_pairs
+            if pair["row"].get("CCX_pkid") is not None
+        })
+        linked_infor_by_ccx_pkid: dict[int, list[str]] = {}
+        if ccx_pkids:
+            linked_infor_query = load_query(
+                "preprocess",
+                "item_matching",
+                query="infor_linked_pkids_by_ccx_pkids",
+            ).bindparams(bindparam("ccx_pkids", expanding=True))
+            linked_rows = _execute_expanding_batches(sess, linked_infor_query, "ccx_pkids", ccx_pkids)
+            for linked_row in linked_rows:
+                ccx_pkid = linked_row.get("CCX_pkid")
+                infor_pkid = linked_row.get("Infor_pkid")
+                if ccx_pkid is None or not infor_pkid:
+                    continue
+                linked_infor_by_ccx_pkid.setdefault(ccx_pkid, []).append(str(infor_pkid))
 
-            params = {
-                "reduced_mfg_num": reduced_mfg or "",
-                "reduced_vendor_num": reduced_vpn or "",
-                "org_eid": org_eid,
-            }
-            rows = sess.execute(query, params).mappings().all()
-            ccx_pkids = sorted({row.get("CCX_pkid") for row in rows if row.get("CCX_pkid") is not None})
-            linked_infor_by_ccx_pkid: dict[int, list[str]] = {}
-            if ccx_pkids:
-                linked_rows = sess.execute(linked_infor_query, {"ccx_pkids": ccx_pkids}).mappings().all()
-                for linked_row in linked_rows:
-                    ccx_pkid = linked_row.get("CCX_pkid")
-                    infor_pkid = linked_row.get("Infor_pkid")
-                    if ccx_pkid is None or not infor_pkid:
-                        continue
-                    linked_infor_by_ccx_pkid.setdefault(ccx_pkid, []).append(str(infor_pkid))
+        pairs_by_input_for_desc: dict[int, list[dict]] = {}
+        for pair in candidate_pairs:
+            row = pair["row"]
+            item = pair["item_entry"]["item"]
+            pair_type = determine_pair_type(
+                task_contract_number=task.contract_number or "",
+                task_process_type=process_type,
+                task_contract_manufacturer=task.contract_manufacturer_infor or "",
+                task_vendor_id=task.vendor_id or "",
+                task_vendor_group=task_vendor_group,
+                match_contract_id=row.get("ContractID", ""),
+                match_contract_manufacturer=row.get("contract_manufacturer", ""),
+                match_erp_vendor_id=row.get("ERPVendorID", ""),
+                match_process_type=row.get("match_process_type", "") or "",
+                match_vendor_group=distributor_groups.get(str(row.get("ERPVendorID") or "").strip().upper()),
+            )
+            pair["pair_type"] = pair_type
+            if pair_type not in ("A", "B"):
+                pairs_by_input_for_desc.setdefault(item.item_id, []).append(pair)
 
-            for row in rows:
-                # Determine pair type for this match
-                pt = determine_pair_type(
-                    task_contract_number=task.contract_number or "",
-                    task_process_type=process_type,
-                    task_contract_manufacturer=task.contract_manufacturer_infor or "",
-                    task_vendor_id=task.vendor_id or "",
-                    task_vendor_group=task_vendor_group,
-                    match_contract_id=row.get("ContractID", ""),
-                    match_contract_manufacturer=row.get("contract_manufacturer", ""),
-                    match_erp_vendor_id=row.get("ERPVendorID", ""),
-                    match_process_type=row.get("match_process_type", "") or "",
-                    match_vendor_group=distributor_groups.get(str(row.get("ERPVendorID") or "").strip().upper()),
+        for pairs in pairs_by_input_for_desc.values():
+            item = pairs[0]["item_entry"]["item"]
+            desc_scores = compute_similarities_batch(
+                item.description or "",
+                [pair["row"].get("description_ccx", "") for pair in pairs],
+            )
+            for pair, desc_score in zip(pairs, desc_scores):
+                pair["desc_score_override"] = desc_score
+
+        for pair in candidate_pairs:
+            row = pair["row"]
+            item = pair["item_entry"]["item"]
+            pt = pair["pair_type"]
+
+            # Multi-factor scoring
+            scores = calculate_confidence_score(
+                mfn_input=item.mfg_catalog_num or "",
+                mfn_match=row.get("mfg_catalog_num_ccx", ""),
+                desc_input=item.description or "",
+                desc_match=row.get("description_ccx", ""),
+                uom_input=item.uom or "",
+                uom_match=row.get("uom_ccx", ""),
+                qoe_input=item.qoe,
+                qoe_match=row.get("qoe_ccx", ""),
+                price_input=item.unit_price,
+                price_match=row.get("unit_price_ccx", ""),
+                vpn_input=item.vendor_catalog_num or "",
+                vpn_match=row.get("vendor_catalog_num_ccx", ""),
+                pair_type=pt,
+                precheck_mode=precheck_mode,
+                cn_input=task.contract_number or "",
+                cn_match=row.get("ContractID", ""),
+                desc_score_override=pair.get("desc_score_override"),
+            )
+
+            # matched_item_ref: mfg+UOM for manufacturer, vendor+UOM for distributor
+            if is_distributor:
+                ref = f"{row.get('vendor_catalog_num_ccx', '')}|{row.get('uom_ccx', '')}"
+            else:
+                ref = f"{row.get('mfg_catalog_num_ccx', '')}|{row.get('uom_ccx', '')}"
+
+            match_type = pair["match_type"]
+            bucket = scores["similarity_bucket"]
+            linked_infor_pkids = sorted(set(linked_infor_by_ccx_pkid.get(row.get("CCX_pkid"), [])))
+
+            # uom_nuance: same-contract (type A) match with identical QOE but
+            # a different UOM — flags UOM inconsistency for the same pack size.
+            uom_nuance = "No"
+            if pt == "A":
+                same_qoe = str(item.qoe or "").strip() == str(row.get("qoe_ccx") or "").strip()
+                diff_uom = (
+                    str(item.uom or "").strip().upper()
+                    != str(row.get("uom_ccx") or "").strip().upper()
                 )
+                if same_qoe and diff_uom:
+                    uom_nuance = "Yes"
 
-                # Multi-factor scoring
-                scores = calculate_confidence_score(
-                    mfn_input=item.mfg_catalog_num or "",
-                    mfn_match=row.get("mfg_catalog_num_ccx", ""),
-                    desc_input=item.description or "",
-                    desc_match=row.get("description_ccx", ""),
-                    uom_input=item.uom or "",
-                    uom_match=row.get("uom_ccx", ""),
-                    qoe_input=item.qoe,
-                    qoe_match=row.get("qoe_ccx", ""),
-                    price_input=item.unit_price,
-                    price_match=row.get("unit_price_ccx", ""),
-                    vpn_input=item.vendor_catalog_num or "",
-                    vpn_match=row.get("vendor_catalog_num_ccx", ""),
-                    pair_type=pt,
-                    precheck_mode=precheck_mode,
-                    cn_input=task.contract_number or "",
-                    cn_match=row.get("ContractID", ""),
-                )
-
-                # matched_item_ref: mfg+UOM for manufacturer, vendor+UOM for distributor
-                if is_distributor:
-                    ref = f"{row.get('vendor_catalog_num_ccx', '')}|{row.get('uom_ccx', '')}"
-                else:
-                    ref = f"{row.get('mfg_catalog_num_ccx', '')}|{row.get('uom_ccx', '')}"
-
-                match_type = row.get("match_type", "REDUCED_MFG")
-                bucket = scores["similarity_bucket"]
-                linked_infor_pkids = sorted(set(linked_infor_by_ccx_pkid.get(row.get("CCX_pkid"), [])))
-
-                # uom_nuance: same-contract (type A) match with identical QOE but
-                # a different UOM — flags UOM inconsistency for the same pack size.
-                uom_nuance = "No"
-                if pt == "A":
-                    same_qoe = str(item.qoe or "").strip() == str(row.get("qoe_ccx") or "").strip()
-                    diff_uom = (
-                        str(item.uom or "").strip().upper()
-                        != str(row.get("uom_ccx") or "").strip().upper()
-                    )
-                    if same_qoe and diff_uom:
-                        uom_nuance = "Yes"
-
-                all_matches.append({
-                    "input_item_id": item.item_id,
-                    "matched_source": "CCX",
-                    "matched_item_ref": ref,
-                    "similarity_score": scores["similarity_score"],
-                    "similarity_bucket": bucket,
-                    "match_status": "ACCEPTED" if bucket == "HIGH" else "PENDING",
-                    "contract_number": row.get("ContractID", ""),
-                    "match_type": match_type,
-                    "ccx_pkid": row.get("CCX_pkid"),
-                    "infor_pkids_matched": ", ".join(linked_infor_pkids) or None,
-                    "pair_type": pt,
-                    "mfn_score": scores["mfn_score"],
-                    "mfn_complexity": scores["mfn_complexity"],
-                    "uom_score": scores["uom_score"],
-                    "qoe_score": scores["qoe_score"],
-                    "price_score": scores["price_score"],
-                    "price_diff_pct": scores["price_diff_pct"],
-                    "desc_score": scores["desc_score"],
-                    "weighted_score": scores["weighted_score"],
-                    "match_ea_price": scores["match_ea_price"],
-                    "input_ea_price": scores["input_ea_price"],
-                    "vendor_item_score": scores["vendor_item_score"],
-                    "uom_nuance": uom_nuance,
-                    **_build_matched_snapshot(row, "CCX"),
-                })
+            all_matches.append({
+                "input_item_id": item.item_id,
+                "matched_source": "CCX",
+                "matched_item_ref": ref,
+                "similarity_score": scores["similarity_score"],
+                "similarity_bucket": bucket,
+                "match_status": "ACCEPTED" if bucket == "HIGH" else "PENDING",
+                "contract_number": row.get("ContractID", ""),
+                "match_type": match_type,
+                "ccx_pkid": row.get("CCX_pkid"),
+                "infor_pkids_matched": ", ".join(linked_infor_pkids) or None,
+                "pair_type": pt,
+                "mfn_score": scores["mfn_score"],
+                "mfn_complexity": scores["mfn_complexity"],
+                "uom_score": scores["uom_score"],
+                "qoe_score": scores["qoe_score"],
+                "price_score": scores["price_score"],
+                "price_diff_pct": scores["price_diff_pct"],
+                "desc_score": scores["desc_score"],
+                "weighted_score": scores["weighted_score"],
+                "match_ea_price": scores["match_ea_price"],
+                "input_ea_price": scores["input_ea_price"],
+                "vendor_item_score": scores["vendor_item_score"],
+                "uom_nuance": uom_nuance,
+                **_build_matched_snapshot(row, "CCX"),
+            })
 
     if all_matches:
         task_repo.add_match_results_bulk(task_id, all_matches)
@@ -797,80 +1047,90 @@ def run_infor_residue(task_id: str, state_machine: TaskStateMachine) -> dict:
     precheck_mode = task.precheck_mode or "default"
 
     org_eid = getattr(input_items[0], "organization_eid", None) or MHS_ORG_EID
-    query = load_query("preprocess", "item_matching", query="infor_residue_match")
+    item_entries = _build_reduced_item_entries(input_items)
+    reduced_mfg_values = sorted({entry["reduced_mfg"] for entry in item_entries if entry["reduced_mfg"]})
+    reduced_vpn_values = sorted({entry["reduced_vpn"] for entry in item_entries if entry["reduced_vpn"]})
 
     residue_matches = []
     with _sql_session() as sess:
-        for item in input_items:
-            reduced_mfg = reduce_catalog_number(item.mfg_catalog_num)
-            reduced_vpn = reduce_catalog_number(item.vendor_catalog_num)
-            if not reduced_mfg and not reduced_vpn:
-                continue
+        rows = _load_infor_residue_candidate_rows(
+            sess,
+            reduced_mfg_values,
+            reduced_vpn_values,
+            org_eid,
+        )
+        candidate_pairs = _pair_infor_residue_candidate_rows(rows, item_entries)
 
-            params = {
-                "reduced_mfg_num": reduced_mfg or "",
-                "reduced_vendor_num": reduced_vpn or "",
-                "org_eid": org_eid,
-            }
-            rows = sess.execute(query, params).mappings().all()
+        pairs_by_input_for_desc: dict[int, list[dict]] = {}
+        for pair in candidate_pairs:
+            item = pair["item_entry"]["item"]
+            pairs_by_input_for_desc.setdefault(item.item_id, []).append(pair)
 
-            if not rows:
-                continue
+        for pairs in pairs_by_input_for_desc.values():
+            item = pairs[0]["item_entry"]["item"]
+            desc_scores = compute_similarities_batch(
+                item.description or "",
+                [pair["row"].get("ItemDescription_Infor", "") or "" for pair in pairs],
+            )
+            for pair, desc_score in zip(pairs, desc_scores):
+                pair["desc_score_override"] = desc_score
 
-            for row in rows:
-                # All Infor residue matches are pair-type D
-                scores = calculate_confidence_score(
-                    mfn_input=item.mfg_catalog_num or "",
-                    mfn_match=row.get("mfg_catalog_num_infor", ""),
-                    desc_input=item.description or "",
-                    desc_match=row.get("ItemDescription_Infor", "") or "",
-                    uom_input=item.uom or "",
-                    uom_match=row.get("uom_infor", ""),
-                    qoe_input=item.qoe,
-                    qoe_match=row.get("qoe_infor", ""),
-                    price_input=item.unit_price,
-                    price_match=row.get("unit_price_infor", ""),
-                    vpn_input=item.vendor_catalog_num or "",
-                    vpn_match=row.get("vendor_catalog_num_infor", ""),
-                    pair_type="D",
-                    precheck_mode=precheck_mode,
-                    cn_input=task.contract_number or "",
-                    cn_match=row.get("ContractID", ""),
-                )
+        for pair in candidate_pairs:
+            item = pair["item_entry"]["item"]
+            row = pair["row"]
+            scores = calculate_confidence_score(
+                mfn_input=item.mfg_catalog_num or "",
+                mfn_match=row.get("mfg_catalog_num_infor", ""),
+                desc_input=item.description or "",
+                desc_match=row.get("ItemDescription_Infor", "") or "",
+                uom_input=item.uom or "",
+                uom_match=row.get("uom_infor", ""),
+                qoe_input=item.qoe,
+                qoe_match=row.get("qoe_infor", ""),
+                price_input=item.unit_price,
+                price_match=row.get("unit_price_infor", ""),
+                vpn_input=item.vendor_catalog_num or "",
+                vpn_match=row.get("vendor_catalog_num_infor", ""),
+                pair_type="D",
+                precheck_mode=precheck_mode,
+                cn_input=task.contract_number or "",
+                cn_match=row.get("ContractID", ""),
+                desc_score_override=pair.get("desc_score_override"),
+            )
 
-                # matched_item_ref: mfg+UOM for manufacturer, vendor+UOM for distributor
-                if is_distributor:
-                    ref = f"{row.get('vendor_catalog_num_infor', '')}|{row.get('uom_infor', '')}"
-                else:
-                    ref = f"{row.get('mfg_catalog_num_infor', '')}|{row.get('uom_infor', '')}"
+            # matched_item_ref: mfg+UOM for manufacturer, vendor+UOM for distributor
+            if is_distributor:
+                ref = f"{row.get('vendor_catalog_num_infor', '')}|{row.get('uom_infor', '')}"
+            else:
+                ref = f"{row.get('mfg_catalog_num_infor', '')}|{row.get('uom_infor', '')}"
 
-                bucket = scores["similarity_bucket"]
-                residue_matches.append({
-                    "input_item_id": item.item_id,
-                    "matched_source": "INFOR_CL",
-                    "matched_item_ref": ref,
-                    "similarity_score": scores["similarity_score"],
-                    "similarity_bucket": bucket,
-                    "match_status": "ACCEPTED" if bucket == "HIGH" else "PENDING",
-                    "contract_number": row.get("ContractID", ""),
-                    "match_type": row.get("match_type", "REDUCED_MFG"),
-                    "infor_pkid": row.get("Infor_pkid", ""),
-                    "ccx_pkid": None,
-                    "pair_type": "D",
-                    "mfn_score": scores["mfn_score"],
-                    "mfn_complexity": scores["mfn_complexity"],
-                    "uom_score": scores["uom_score"],
-                    "qoe_score": scores["qoe_score"],
-                    "price_score": scores["price_score"],
-                    "price_diff_pct": scores["price_diff_pct"],
-                    "desc_score": scores["desc_score"],
-                    "weighted_score": scores["weighted_score"],
-                    "match_ea_price": scores["match_ea_price"],
-                    "input_ea_price": scores["input_ea_price"],
-                    "vendor_item_score": scores["vendor_item_score"],
-                    "uom_nuance": "No",
-                    **_build_matched_snapshot(row, "INFOR_CL"),
-                })
+            bucket = scores["similarity_bucket"]
+            residue_matches.append({
+                "input_item_id": item.item_id,
+                "matched_source": "INFOR_CL",
+                "matched_item_ref": ref,
+                "similarity_score": scores["similarity_score"],
+                "similarity_bucket": bucket,
+                "match_status": "ACCEPTED" if bucket == "HIGH" else "PENDING",
+                "contract_number": row.get("ContractID", ""),
+                "match_type": pair["match_type"],
+                "infor_pkid": row.get("Infor_pkid", ""),
+                "ccx_pkid": None,
+                "pair_type": "D",
+                "mfn_score": scores["mfn_score"],
+                "mfn_complexity": scores["mfn_complexity"],
+                "uom_score": scores["uom_score"],
+                "qoe_score": scores["qoe_score"],
+                "price_score": scores["price_score"],
+                "price_diff_pct": scores["price_diff_pct"],
+                "desc_score": scores["desc_score"],
+                "weighted_score": scores["weighted_score"],
+                "match_ea_price": scores["match_ea_price"],
+                "input_ea_price": scores["input_ea_price"],
+                "vendor_item_score": scores["vendor_item_score"],
+                "uom_nuance": "No",
+                **_build_matched_snapshot(row, "INFOR_CL"),
+            })
 
     if residue_matches:
         task_repo.add_match_results_bulk(task_id, residue_matches)
@@ -955,11 +1215,6 @@ def run_item_labeling(task_id: str, state_machine: TaskStateMachine) -> dict:
         task_repo.delete_item_matches_for_task(task_id)
         return {"labeled": 0}
 
-    q_mdm_item = load_query("preprocess", "item_matching", query="item_label_mdm_item")
-    q_mdm_vi = load_query("preprocess", "item_matching", query="item_label_mdm_vendoritem")
-    q_infor_item = load_query("preprocess", "item_matching", query="item_label_infor_item_by_pkid")
-    q_item_desc = load_query("preprocess", "item_matching", query="item_description_by_item_number")
-
     contract_manufacturer_infor = (getattr(task, "contract_manufacturer_infor", None) or "").strip()
 
     # Buffer MULTI_ITEM_ERROR records and flush in one bulk insert after the
@@ -977,23 +1232,97 @@ def run_item_labeling(task_id: str, state_machine: TaskStateMachine) -> dict:
     labeled_count = 0
     updates = []
     item_match_rows = []
-    item_desc_cache: dict[str, Optional[str]] = {}
+    final_items_by_item_id: dict[int, list[str]] = {}
+    all_final_items: set[str] = set()
+
+    mfg_nums = sorted({
+        item.mfg_catalog_num
+        for item in input_items
+        if contract_manufacturer_infor and item.mfg_catalog_num
+    })
+
+    vendor_lookup_by_item_id: dict[int, tuple[str, str]] = {}
+    vendor_ids: set[str] = set()
+    vendor_catalog_nums: set[str] = set()
+    for item in input_items:
+        v_id = (item.vendor_id_short or "")[:7] or (getattr(task, "vendor_id", None) or "")[:7]
+        vpn = item.vendor_catalog_num or ""
+        if not v_id or not vpn:
+            continue
+        vendor_lookup_by_item_id[item.item_id] = (_normalize_match_key(v_id), _normalize_match_key(vpn))
+        vendor_ids.add(v_id)
+        vendor_catalog_nums.add(vpn)
+
+    accepted_infor_pkids = sorted({
+        str(infor_pkid)
+        for infor_pkids in accepted_infor_pkids_by_input.values()
+        for infor_pkid in infor_pkids
+        if infor_pkid
+    })
 
     with _sql_session() as sess:
-        infor_item_by_pkid: dict[str, list[str]] = {}
-        for infor_pkids in accepted_infor_pkids_by_input.values():
-            for infor_pkid in infor_pkids:
-                if infor_pkid in infor_item_by_pkid:
-                    continue
-                rows = sess.execute(q_infor_item, {"infor_pkid": infor_pkid}).mappings().all()
-                infor_item_by_pkid[infor_pkid] = sorted(
-                    {
-                        normalized
-                        for row in rows
-                        for normalized in [_normalize_infor_item_number(row.get("Item"))]
-                        if normalized
-                    }
+        from sqlalchemy import bindparam
+
+        source_1_by_mfg: dict[str, set[str]] = {}
+        if contract_manufacturer_infor and mfg_nums:
+            q_mdm_item = load_query(
+                "preprocess",
+                "item_matching",
+                query="item_label_mdm_item_set",
+            ).bindparams(bindparam("mfg_catalog_nums", expanding=True))
+            rows = _execute_expanding_batches(
+                sess,
+                q_mdm_item,
+                "mfg_catalog_nums",
+                mfg_nums,
+                {"manufacturer": contract_manufacturer_infor},
+            )
+            for row in rows:
+                mfg_key = _normalize_match_key(row.get("ManufacturerNumber"))
+                normalized = _normalize_infor_item_number(row.get("Item"))
+                if mfg_key and normalized:
+                    source_1_by_mfg.setdefault(mfg_key, set()).add(normalized)
+
+        source_2_by_vendor_pair: dict[tuple[str, str], set[str]] = {}
+        if vendor_ids and vendor_catalog_nums:
+            q_mdm_vi = load_query(
+                "preprocess",
+                "item_matching",
+                query="item_label_mdm_vendoritem_set",
+            ).bindparams(
+                bindparam("vendor_ids", expanding=True),
+                bindparam("vendor_catalog_nums", expanding=True),
+            )
+            rows = _execute_two_expanding_batches(
+                sess,
+                q_mdm_vi,
+                "vendor_ids",
+                sorted(vendor_ids),
+                "vendor_catalog_nums",
+                sorted(vendor_catalog_nums),
+            )
+            for row in rows:
+                key = (
+                    _normalize_match_key(row.get("Vendor")),
+                    _normalize_match_key(row.get("VendorItem")),
                 )
+                normalized = _normalize_infor_item_number(row.get("Item"))
+                if key[0] and key[1] and normalized:
+                    source_2_by_vendor_pair.setdefault(key, set()).add(normalized)
+
+        infor_item_by_pkid: dict[str, set[str]] = {}
+        if accepted_infor_pkids:
+            q_infor_item = load_query(
+                "preprocess",
+                "item_matching",
+                query="item_label_infor_item_by_pkids_set",
+            ).bindparams(bindparam("infor_pkids", expanding=True))
+            rows = _execute_expanding_batches(sess, q_infor_item, "infor_pkids", accepted_infor_pkids)
+            for row in rows:
+                infor_pkid = str(row.get("Infor_pkid") or "").strip()
+                normalized = _normalize_infor_item_number(row.get("Item"))
+                if infor_pkid and normalized:
+                    infor_item_by_pkid.setdefault(infor_pkid, set()).add(normalized)
 
         for item in input_items:
             update = {
@@ -1008,45 +1337,26 @@ def run_item_labeling(task_id: str, state_machine: TaskStateMachine) -> dict:
             }
 
             # Source 1: MDM_ITEM
-            mfg_code = contract_manufacturer_infor
-            mfg_num = item.mfg_catalog_num or ""
-            if mfg_code and mfg_num:
-                rows = sess.execute(q_mdm_item, {"manufacturer": mfg_code, "mfg_catalog_num": mfg_num}).mappings().all()
-                source_1_items = sorted(
-                    {
-                        normalized
-                        for row in rows
-                        for normalized in [_normalize_infor_item_number(row.get("Item"))]
-                        if normalized
-                    }
-                )
-                if source_1_items:
-                    update["infor_item_1"] = ", ".join(source_1_items)
-                    update["infor_item_1_active"] = "Yes"
+            source_1_items = sorted(source_1_by_mfg.get(_normalize_match_key(item.mfg_catalog_num), set()))
+            if source_1_items:
+                update["infor_item_1"] = ", ".join(source_1_items)
+                update["infor_item_1_active"] = "Yes"
 
             # Source 2: MDM_VENDORITEM
-            v_id = (item.vendor_id_short or "")[:7] or (getattr(task, "vendor_id", None) or "")[:7]
-            vpn = item.vendor_catalog_num or ""
-            if v_id and vpn:
-                rows = sess.execute(q_mdm_vi, {"vendor_id": v_id, "vendor_catalog_num": vpn}).mappings().all()
-                source_2_items = sorted(
-                    {
-                        normalized
-                        for row in rows
-                        for normalized in [_normalize_infor_item_number(row.get("Item"))]
-                        if normalized
-                    }
-                )
-                if source_2_items:
-                    update["infor_item_2"] = ", ".join(source_2_items)
-                    update["infor_item_2_active"] = "Yes"
+            source_2_items = sorted(source_2_by_vendor_pair.get(
+                vendor_lookup_by_item_id.get(item.item_id, ("", "")),
+                set(),
+            ))
+            if source_2_items:
+                update["infor_item_2"] = ", ".join(source_2_items)
+                update["infor_item_2_active"] = "Yes"
 
             # Source 3: Infor CL match
             infor_items = sorted(
                 {
                     item_number
                     for infor_pkid in accepted_infor_pkids_by_input.get(item.item_id, set())
-                    for item_number in infor_item_by_pkid.get(infor_pkid, [])
+                    for item_number in infor_item_by_pkid.get(str(infor_pkid), set())
                 }
             )
             if infor_items:
@@ -1083,21 +1393,34 @@ def run_item_labeling(task_id: str, state_machine: TaskStateMachine) -> dict:
                 })
 
             final_items = _split_multi_value_items(update.get("infor_item_number"))
-            for final_item in final_items:
-                if final_item not in item_desc_cache:
-                    rows = sess.execute(q_item_desc, {"item_number": final_item}).mappings().all()
-                    item_desc_cache[final_item] = rows[0]["item_description"] if rows else None
-                item_match_rows.append(
-                    {
-                        "task_id": task_id,
-                        "item_id": item.item_id,
-                        "infor_item_number": final_item,
-                        "item_description": item_desc_cache[final_item],
-                    }
-                )
+            if final_items:
+                final_items_by_item_id[item.item_id] = final_items
+                all_final_items.update(final_items)
 
             updates.append(update)
             labeled_count += 1
+
+        item_desc_cache: dict[str, Optional[str]] = {}
+        if all_final_items:
+            q_item_desc = load_query(
+                "preprocess",
+                "item_matching",
+                query="item_descriptions_by_item_numbers",
+            ).bindparams(bindparam("item_numbers", expanding=True))
+            rows = _execute_expanding_batches(sess, q_item_desc, "item_numbers", sorted(all_final_items))
+            for row in rows:
+                item_number = _normalize_infor_item_number(row.get("Item"))
+                if item_number and item_number not in item_desc_cache:
+                    item_desc_cache[item_number] = row.get("item_description")
+
+        for item_id, final_items in final_items_by_item_id.items():
+            for final_item in final_items:
+                item_match_rows.append({
+                    "task_id": task_id,
+                    "item_id": item_id,
+                    "infor_item_number": final_item,
+                    "item_description": item_desc_cache.get(final_item),
+                })
 
     # Bulk update items
     if updates:
