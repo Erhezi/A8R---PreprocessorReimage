@@ -127,6 +127,7 @@ SELECT
     ti.mfg_catalog_num                                    AS manufacturer_number_input,
     ti.vendor_catalog_num                                 AS vendor_item_input,
     ti.description                                        AS item_description_input,
+    COALESCE(tid.contract_price_input, ti.unit_price)     AS contract_price_input,
     ti.uom                                                AS uom_input,
     ti.qoe                                                AS qoe_input,
     ti.uom_to_match_infor                                 AS uom_to_match_infor_input,
