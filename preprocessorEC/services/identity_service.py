@@ -17,21 +17,23 @@ from ..db.sql_loader import load_query
 from ..state import TaskStateMachine, Phase, Status
 
 
+IDENTITY_DESCRIPTION_STATUSES = [
+    Status.PASSED_PC1,
+    Status.ERROR_PC2,
+    Status.PASSED_PC2,
+]
+
+
 # ---------------------------------------------------------------------------
 # Standardized Description — copy from description (bypass Nuvia for now)
 # ---------------------------------------------------------------------------
 def copy_descriptions_from_input(task_id: str, state_machine: TaskStateMachine) -> dict:
-    """Copy description → standardized_description for all PASSED_PC1 items.
+    """Copy description -> standardized_description for identity-stage items.
 
     Future: integrate with Nuvia, LLM, or manual cleanse upload.
     """
-    items = task_repo.get_items(task_id, status=Status.PASSED_PC1)
-    updated = 0
-    for item in items:
-        std_desc = (item.description or "").strip().upper()
-        if std_desc:
-            task_repo.update_items_bulk([item.item_id], standardized_description=std_desc)
-            updated += 1
+    items = task_repo.get_items_by_statuses(task_id, IDENTITY_DESCRIPTION_STATUSES)
+    updated = task_repo.copy_descriptions_to_standardized(task_id, IDENTITY_DESCRIPTION_STATUSES)
 
     state = state_machine.get_state(task_id)
     state["standardized_items"] = [{"item_id": i.item_id, "description": (i.description or "").strip().upper()} for i in items]
@@ -51,14 +53,19 @@ def apply_standardized_descriptions(
     ----------
     descriptions : dict mapping item_id → standardized description string
     """
+    updates = []
+    standardized_items = []
     for item_id, desc in descriptions.items():
-        task_repo.update_items_bulk([item_id], standardized_description=desc.strip().upper())
+        clean_desc = (desc or "").strip().upper()
+        updates.append({"item_id": item_id, "standardized_description": clean_desc})
+        standardized_items.append({"item_id": item_id, "description": clean_desc})
+    task_repo.update_items_bulk(updates)
 
     state = state_machine.get_state(task_id)
-    state["standardized_items"] = [{"item_id": k, "description": v} for k, v in descriptions.items()]
+    state["standardized_items"] = standardized_items
     state_machine.save_state(task_id, state)
 
-    return {"updated": len(descriptions)}
+    return {"updated": len(updates)}
 
 
 # ---------------------------------------------------------------------------
@@ -83,27 +90,19 @@ def confirm_manufacturer(task_id: str, code: str, name: str, state_machine: Task
     """Confirm manufacturer code for a task — writes to task and ALL task items."""
     clean_code = code.strip().upper()
     clean_name = name.strip().upper()
-    # Write to task header
-    task_repo.update_task_fields(
-        task_id,
-        contract_manufacturer_infor=clean_code,
-        contract_manufacturer_name_infor=clean_name,
-    )
-    # Write to ALL task items
-    all_items = task_repo.get_items(task_id)
-    if all_items:
-        task_repo.update_items_bulk(
-            [i.item_id for i in all_items],
-            manufacturer_infor=clean_code,
-            manufacturer_name_infor=clean_name,
-        )
+    item_count = task_repo.update_task_and_items_manufacturer(task_id, clean_code, clean_name)
     # Update working state
     state = state_machine.get_state(task_id)
     state["manufacturer_code"] = clean_code
     state["manufacturer_name"] = clean_name
     state["manufacturer_confirmed"] = True
     state_machine.save_state(task_id, state)
-    return {"manufacturer_code": clean_code, "manufacturer_name": clean_name, "confirmed": True}
+    return {
+        "manufacturer_code": clean_code,
+        "manufacturer_name": clean_name,
+        "confirmed": True,
+        "items_updated": item_count,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +167,7 @@ def enter_contract_number(task_id: str, contract_number: str, state_machine: Tas
 # Pre-Check PC2
 # ---------------------------------------------------------------------------
 def run_precheck2(task_id: str, state_machine: TaskStateMachine) -> dict:
-    """Run Phase 2 pre-check (PC2) on items in PASSED_PC1 status.
+    """Run Phase 2 pre-check (PC2) on identity-stage items.
 
     Current checks:
     - Manufacturer confirmed (UPDATE/NEW/MIX must have manufacturer confirmed before PC2)
@@ -197,26 +196,46 @@ def run_precheck2(task_id: str, state_machine: TaskStateMachine) -> dict:
             "blocked": True,
         }
 
-    items = task_repo.get_items(task_id, status=Status.PASSED_PC1)
+    task_repo.bulk_resolve_precheck_errors(task_id, phase="PC2", resolved_by="RECHECK")
+    items = task_repo.get_items_by_statuses(task_id, IDENTITY_DESCRIPTION_STATUSES)
     errors = []
     warnings = []
+    item_updates = []
+    error_records = []
 
     for item in items:
         std_desc = (item.standardized_description or "").strip().upper()
 
         if not std_desc:
-            errors.append({
+            error = {
                 "item_id": item.item_id,
                 "error_type": "NULL_STD_DESCRIPTION",
                 "error_detail": "Standardized description is required",
+            }
+            errors.append(error)
+            error_records.append({
+                "task_id": task_id,
+                "item_id": item.item_id,
+                "phase": "PC2",
+                "error_type": error["error_type"],
+                "error_detail": error["error_detail"],
             })
-            task_repo.add_precheck_error(task_id, item.item_id, "PC2", "NULL_STD_DESCRIPTION", "Standardized description is required")
-            task_repo.update_item_status(item.item_id, Status.ERROR_PC2)
+            item_updates.append({
+                "item_id": item.item_id,
+                "status": Status.ERROR_PC2,
+                "error_message": None,
+            })
             continue
 
-        # Ensure upper case
-        task_repo.update_items_bulk([item.item_id], standardized_description=std_desc)
-        task_repo.update_item_status(item.item_id, Status.PASSED_PC2)
+        item_updates.append({
+            "item_id": item.item_id,
+            "standardized_description": std_desc,
+            "status": Status.PASSED_PC2,
+            "error_message": None,
+        })
+
+    task_repo.update_items_bulk(item_updates)
+    task_repo.add_precheck_errors_bulk(error_records)
 
     passed_count = len(items) - len(errors)
 

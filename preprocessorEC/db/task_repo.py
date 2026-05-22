@@ -9,7 +9,7 @@ from functools import lru_cache
 import uuid
 from typing import Optional
 
-from sqlalchemy import MetaData, Table, inspect, text
+from sqlalchemy import MetaData, Table, func, inspect, text
 from sqlalchemy.orm import Session
 
 from ..models import (
@@ -412,6 +412,22 @@ def get_items(task_id: str, status: Optional[str] = None) -> list[TaskItem]:
         return items
 
 
+def get_items_by_statuses(task_id: str, statuses: list[str]) -> list[TaskItem]:
+    """Return task items whose status is in *statuses*."""
+    if not statuses:
+        return []
+    with _session() as s:
+        items = (
+            s.query(TaskItem)
+            .filter(TaskItem.task_id == task_id, TaskItem.status.in_(statuses))
+            .order_by(TaskItem.file_row)
+            .all()
+        )
+        for it in items:
+            s.expunge(it)
+        return items
+
+
 def update_item_status(item_id: int, status: str, error_message: Optional[str] = None) -> None:
     with _session() as s:
         item = s.get(TaskItem, item_id)
@@ -459,6 +475,65 @@ def update_items_bulk(updates: list[dict], **kwargs) -> None:
                             setattr(item, k, v)
                     item.updated_at = now
         s.commit()
+
+
+def update_task_and_items_manufacturer(
+    task_id: str,
+    manufacturer_code: str,
+    manufacturer_name: str,
+) -> int:
+    """Set task-level manufacturer fields and stamp them on all task items.
+
+    Returns the number of task item rows matched by the set-based update.
+    """
+    now = ny_now()
+    with _session() as s:
+        task = s.get(Task, task_id)
+        if not task:
+            return 0
+        task.contract_manufacturer_infor = manufacturer_code
+        task.contract_manufacturer_name_infor = manufacturer_name
+        task.updated_at = now
+        item_count = (
+            s.query(TaskItem)
+            .filter(TaskItem.task_id == task_id)
+            .update(
+                {
+                    TaskItem.manufacturer_infor: manufacturer_code,
+                    TaskItem.manufacturer_name_infor: manufacturer_name,
+                    TaskItem.updated_at: now,
+                },
+                synchronize_session=False,
+            )
+        )
+        s.commit()
+        return item_count
+
+
+def copy_descriptions_to_standardized(task_id: str, statuses: list[str]) -> int:
+    """Copy description -> standardized_description for matching item statuses."""
+    if not statuses:
+        return 0
+    trimmed_description = func.ltrim(func.rtrim(TaskItem.description))
+    with _session() as s:
+        updated = (
+            s.query(TaskItem)
+            .filter(
+                TaskItem.task_id == task_id,
+                TaskItem.status.in_(statuses),
+                TaskItem.description.isnot(None),
+                trimmed_description != "",
+            )
+            .update(
+                {
+                    TaskItem.standardized_description: func.upper(trimmed_description),
+                    TaskItem.updated_at: ny_now(),
+                },
+                synchronize_session=False,
+            )
+        )
+        s.commit()
+        return updated
 
 
 def bulk_reset_items_to_uploaded(task_id: str) -> None:
@@ -659,8 +734,15 @@ def add_precheck_errors_bulk(records: list[dict]) -> None:
     """
     if not records:
         return
+    now = ny_now()
+    payload = []
+    for record in records:
+        row = dict(record)
+        row.setdefault("resolved", False)
+        row.setdefault("created_at", now)
+        payload.append(row)
     with _session() as s:
-        s.bulk_insert_mappings(PreCheckError, records)
+        s.bulk_insert_mappings(PreCheckError, payload)
         s.commit()
 
 

@@ -38,7 +38,7 @@ def api_identity_state(task_id: str):
     if not task:
         return jsonify({"error": "Task not found"}), 404
     items = task_repo.get_items(task_id)
-    errors = task_repo.get_precheck_errors(task_id, phase="PC2")
+    errors = task_repo.get_precheck_errors(task_id, phase="PC2", resolved=False)
     state = _sm().get_state(task_id)
     return jsonify({
         "task_id": task_id,

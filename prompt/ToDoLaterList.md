@@ -20,7 +20,8 @@ fixed: 2026-04-20
 - the precheck on default will always be the first pass choice, only allow user to pick other mode when they offer to re-run precheck after seeing the result of default mode. once the new pre-check mode is selected and run, register that as the pre-check mode for the task and this could be used as a parameter in some subsequent steps.
 
 to_to:
-- the UOM to Match Infor column on Items table currently is showing togather with UOM, and I need to see if the edit is functioning on which UOM column. maybe I should also add visual color so highlight the difference between the two UOM columns.
+- the UOM to Match Infor column on Items table currently is showing togather with UOM, and I need to see if the edit is functioning on which UOM column (suppose it is on UOM, and once re-precheck, if translation needed, it will re-map automatcially). maybe I should also add visual color so highlight the difference between the two UOM columns (low priority for now).
+- we may consider to put the infor mapped UOM in the the final export file on the input file side, but this may actually change the original input file content and in real business, the translation happens at the interface between CCX and Infor, so maybe it is good to keep the mapping as a logical layer so we separate the contract truth from operation truth clearly. Will need to think more about this before making any further changes.
 - add spinner when the pre-check is running since it can take a couple seconds to run and for large file it might take 10-20 seconds, without spinner user might think the system is not responsive and click multiple times which can cause issues.
 
 # identity
@@ -40,6 +41,7 @@ to_do:
       - if the manufacturer part number or UOM is not exactly the same, downgrade the score to 0 else keep the original score
     - Distributor: on vendor part number (only offer this to distributor contract), trigger WARN if the reduced vendor part number is the same.            
       - if the reduced vendor part number is not exactly the same, downgrade the score to 0 else trigger WARN else keep the original score
+- LLM review need to be turned off automatically if the input file is large (> 1,000 lines) and we would like to handle the LLM after initial review. 
 
 
 # not belong to module
