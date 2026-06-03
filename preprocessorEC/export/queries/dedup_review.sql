@@ -41,11 +41,14 @@ SELECT
 FROM [Preprocessor].[PreprocessorTaskItemForDecision] tid
 INNER JOIN [Preprocessor].[PreprocessorMatchResult] mr
     ON tid.match_id = mr.match_id
+INNER JOIN [Preprocessor].[PreprocessorTaskItem] ti
+    ON ti.item_id = tid.input_item_id
 LEFT JOIN [Preprocessor].[CCXSyncedContractLine] ccx
     ON ccx.CCX_pkid = mr.ccx_pkid
 WHERE tid.task_id = :task_id
   AND tid.matched_source = 'CCX'
   AND tid.match_status = 'ACCEPTED'
+  AND ti.status = 'ITEM_PREPROCESSED'
 ORDER BY
     tid.organization_eid_matched ASC,
     tid.contract_id_matched ASC,
@@ -170,6 +173,7 @@ LEFT JOIN [Preprocessor].[PreprocessorItemMatching] pim
     AND pim.infor_item_number = COALESCE(tid.infor_item_number, ti.infor_item_number)
 WHERE ti.task_id        = :task_id
   AND ti.source_dataset = 'INPUT'
+  AND ti.status         = 'ITEM_PREPROCESSED'
 ORDER BY
     ti.file_row ASC,
     ti.item_id ASC,

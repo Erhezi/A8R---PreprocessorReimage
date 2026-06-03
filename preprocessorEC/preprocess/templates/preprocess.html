@@ -665,18 +665,58 @@ function renderContracts(contracts) {
   tbody.querySelectorAll(".toggle-contract").forEach(btn => {
     btn.addEventListener("click", async () => {
       const decision = btn.dataset.decision || "INCLUDE";
-      await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/toggle-contract`, {
+      const contractNumber = btn.dataset.contract || "";
+      const organizationEid = btn.dataset.organizationEid || "";
+      const erpVendorId = btn.dataset.erpVendorId || "";
+      const resp = await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/toggle-contract`, {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({
-          contract_number: btn.dataset.contract,
-          organization_eid: btn.dataset.organizationEid || "",
-          erp_vendor_id: btn.dataset.erpVendorId || "",
+          contract_number: contractNumber,
+          organization_eid: organizationEid,
+          erp_vendor_id: erpVendorId,
           decision,
         })
       });
-      loadContracts();
-      loadMatches();
+
+      let payload = null;
+      try {
+        payload = await resp.json();
+      } catch (_) {
+        payload = null;
+      }
+
+      if (payload && Array.isArray(payload.contract_rows)) {
+        // Patch contractSummaryData in place: drop existing rows for this
+        // scope, append the recomputed ones, then re-render.
+        contractSummaryData = contractSummaryData
+          .filter(c => !(
+            (c.contract_id || "") === contractNumber
+            && (c.organization_eid || "") === organizationEid
+            && (c.erp_vendor_id || "") === erpVendorId
+          ))
+          .concat(payload.contract_rows);
+        renderContracts(contractSummaryData);
+        updateFinalizeGate();
+      } else {
+        // Server didn't return the scope payload (older API or error): fall
+        // back to a full reload so the UI stays consistent.
+        loadContracts();
+      }
+
+      // Only refresh matches if the toggled contract is in the user's current
+      // match filter — otherwise those rows aren't visible and re-fetching is
+      // wasted work. Cascade rows can live in a different contract, so when
+      // no contract filter is active (all visible), refresh too.
+      const visibleContracts = getSelectedContractFilters();
+      const cascadeTouched = Number(payload?.cascade_updated || 0) > 0;
+      const needsMatchRefresh =
+        !visibleContracts.length
+        || visibleContracts.includes(contractNumber)
+        || cascadeTouched;
+      if (needsMatchRefresh) {
+        loadMatches();
+      }
     });
   });
 }

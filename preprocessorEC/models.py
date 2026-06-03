@@ -303,6 +303,13 @@ class MatchResult(Base):
     __tablename__ = "PreprocessorMatchResult"
     __table_args__ = (
         Index("ix_match_task_id", "task_id"),
+        Index(
+            "ix_match_contract_scope",
+            "task_id",
+            "contract_number",
+            "organization_eid_matched",
+            "erp_vendor_id_matched",
+        ),
         {"schema": SCHEMA},
     )
 

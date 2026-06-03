@@ -350,7 +350,17 @@ Phase 4 -- Dedup & Data Integrity Resolution
 
 
 Phase 5 -- Export
+      - once the export file is exported, we mark the items as 'ITEM_EXPORTED'
+      - task now advance to the monitoring stage
+        - for task mark as 'NEW' for intention, we give a card for user to search/enter the contract ID (since in previous steps this ID may not yet get assigned)
+          - once the new contract ID is set, we automatically copy the origianl contract ID free text to task's notes section. (if there are notes there before, append as new paragraph)
 
 Phase 6 -- Monitoring and Reporting
+      - in monitoring stage, we still keep the 'Export' button so if user want to export the report again, they can
+      - we will monitor: 
+        - if the exported items are fully 'synchronized' in CCX/INFOR
+          - *for now, we only check the taskitem (future version we check all the 'touched' items from export)
+          - if the exported items are intended to be 'NEW' or 'UPDATE'
+          - if the exported items are intended to be 'EXPIRE'
 
 Extra Function 1 -- Data Conflict Resolution Space/Visual Aid

@@ -85,14 +85,10 @@ def _execute_two_expanding_batches(
     return rows
 
 
-def _determine_contract_type(items: list) -> str:
-    """Heuristic: if any item has a vendor_catalog_num != mfg_catalog_num -> distributor.
-    Default to MANUFACTURER."""
-    for it in items:
-        vpn = getattr(it, "vendor_catalog_num", None) or ""
-        mfg = getattr(it, "mfg_catalog_num", None) or ""
-        if vpn and mfg and vpn.strip().upper() != mfg.strip().upper():
-            return "DISTRIBUTOR_PREMIER"
+def _determine_contract_type(process_type: str) -> str:
+    """Map task.process_type to the dup-detection contract type label."""
+    if (process_type or "").strip().upper() == "DISTRIBUTOR":
+        return "DISTRIBUTOR"
     return "MANUFACTURER"
 
 
@@ -106,10 +102,6 @@ def _row_get(row, *keys):
 
 def _bucket_priority(bucket: Optional[str]) -> int:
     return BUCKET_PRIORITY.get((bucket or "").upper(), 0)
-
-
-def _normalize_scope_value(value: Optional[str]) -> str:
-    return (value or "").strip().upper()
 
 
 def _normalize_infor_item_number(value: object) -> Optional[str]:
@@ -204,11 +196,6 @@ def _pair_ccx_candidate_rows(
         if contract_type == "MANUFACTURER":
             for entry in by_mfg.get(row_mfg, []):
                 _add_ccx_candidate_pair(candidate_pairs, entry, row, "REDUCED_MFG")
-        elif contract_type == "DISTRIBUTOR_LOCAL":
-            for entry in by_mfg.get(row_mfg, []):
-                _add_ccx_candidate_pair(candidate_pairs, entry, row, "REDUCED_MFG")
-            for entry in by_mfg.get(row_vpn, []):
-                _add_ccx_candidate_pair(candidate_pairs, entry, row, "CROSS_MATCH")
         else:
             for entry in by_mfg.get(row_mfg, []):
                 _add_ccx_candidate_pair(candidate_pairs, entry, row, "REDUCED_MFG")
@@ -248,12 +235,9 @@ def _load_ccx_candidate_rows(
 
     if contract_type == "MANUFACTURER":
         run_query("ccx_match_manufacturer_set", "reduced_mfg_nums", reduced_mfg_values)
-    elif contract_type == "DISTRIBUTOR_LOCAL":
-        run_query("ccx_match_distributor_local_mfg_set", "reduced_mfg_nums", reduced_mfg_values)
-        run_query("ccx_match_distributor_local_vendor_set", "reduced_mfg_nums", reduced_mfg_values)
     else:
-        run_query("ccx_match_distributor_premier_mfg_set", "reduced_mfg_nums", reduced_mfg_values)
-        run_query("ccx_match_distributor_premier_vendor_set", "reduced_vendor_nums", reduced_vpn_values)
+        run_query("ccx_match_distributor_mfg_set", "reduced_mfg_nums", reduced_mfg_values)
+        run_query("ccx_match_distributor_vendor_set", "reduced_vendor_nums", reduced_vpn_values)
 
     return rows
 
@@ -571,7 +555,7 @@ def run_sku_matching(task_id: str, state_machine: TaskStateMachine) -> dict:
     is_distributor = "DISTRIBUTOR" in process_type
     precheck_mode = task.precheck_mode or "default"
 
-    contract_type = _determine_contract_type(input_items)
+    contract_type = _determine_contract_type(task.process_type)
     item_entries = _build_reduced_item_entries(input_items)
     reduced_mfg_values = sorted({entry["reduced_mfg"] for entry in item_entries if entry["reduced_mfg"]})
     reduced_vpn_values = sorted({entry["reduced_vpn"] for entry in item_entries if entry["reduced_vpn"]})
@@ -1648,19 +1632,15 @@ def submit_contract_decision(
             f"decision must be one of {task_repo.CONTRACT_DECISION_VALUES}"
         )
 
-    contract_filter = _normalize_scope_value(contract_number)
-    organization_filter = _normalize_scope_value(organization_eid)
-    vendor_filter = _normalize_scope_value(erp_vendor_id)
-    matches = [
-        match
-        for match in task_repo.get_match_results(task_id)
-        if _normalize_scope_value(match.contract_number) == contract_filter
-        and _normalize_scope_value(match.organization_eid_matched) == organization_filter
-        and _normalize_scope_value(match.erp_vendor_id_matched) == vendor_filter
-    ]
     match_status = "REJECTED" if decision == "EXCLUDE" else "ACCEPTED"
-    for m in matches:
-        task_repo.update_match_decision(m.match_id, match_status, decided_by)
+    counts = task_repo.bulk_update_match_decision_by_contract(
+        task_id=task_id,
+        contract_number=contract_number or "",
+        organization_eid=organization_eid or "",
+        erp_vendor_id=erp_vendor_id or "",
+        match_status=match_status,
+        reviewed_by=decided_by,
+    )
 
     task_repo.upsert_contract_decision(
         task_id,
@@ -1681,7 +1661,8 @@ def submit_contract_decision(
         "erp_vendor_id": erp_vendor_id,
         "decision": decision,
         "match_status": match_status,
-        "affected": len(matches),
+        "affected": counts["primary"],
+        "cascade_affected": counts["cascade"],
     }
 
 

@@ -1033,6 +1033,159 @@ def get_items_by_source(task_id: str, source_dataset: str) -> list[TaskItem]:
         return items
 
 
+def bulk_update_match_decision_by_contract(
+    task_id: str,
+    contract_number: str,
+    organization_eid: str,
+    erp_vendor_id: str,
+    match_status: str,
+    reviewed_by: str,
+) -> dict:
+    """Stamp ``match_status`` on every MatchResult under a contract scope and
+    re-aggregate INFOR_CL/CASCADE rows whose lineage spans the affected
+    input items — all in one session.
+
+    Scope match treats NULL and '' as equivalent, mirroring the Python
+    ``_normalize_scope_value`` rule used elsewhere.
+
+    Returns ``{"primary": <int>, "cascade": <int>}``.
+    """
+    contract_norm = (contract_number or "").strip()
+    org_norm = (organization_eid or "").strip()
+    vendor_norm = (erp_vendor_id or "").strip()
+
+    scope_filter = (
+        MatchResult.task_id == task_id,
+        func.coalesce(MatchResult.contract_number, "") == contract_norm,
+        func.coalesce(MatchResult.organization_eid_matched, "") == org_norm,
+        func.coalesce(MatchResult.erp_vendor_id_matched, "") == vendor_norm,
+    )
+
+    with _session() as s:
+        now = ny_now()
+
+        affected_rows = (
+            s.query(
+                MatchResult.match_id,
+                MatchResult.input_item_id,
+                MatchResult.matched_source,
+                MatchResult.ccx_pkid,
+            )
+            .filter(*scope_filter)
+            .all()
+        )
+        if not affected_rows:
+            return {"primary": 0, "cascade": 0}
+
+        affected_input_item_ids = {r.input_item_id for r in affected_rows}
+
+        primary_count = (
+            s.query(MatchResult)
+            .filter(*scope_filter)
+            .update(
+                {
+                    MatchResult.match_status: match_status,
+                    MatchResult.reviewed_by: reviewed_by,
+                    MatchResult.reviewed_at: now,
+                },
+                synchronize_session=False,
+            )
+        )
+
+        cascade_count = _reaggregate_cascade_for_input_items(
+            s,
+            task_id=task_id,
+            input_item_ids=affected_input_item_ids,
+            reviewed_by=reviewed_by,
+            reviewed_at=now,
+        )
+
+        s.commit()
+        return {"primary": primary_count, "cascade": cascade_count}
+
+
+def _reaggregate_cascade_for_input_items(
+    s: Session,
+    *,
+    task_id: str,
+    input_item_ids: set[int],
+    reviewed_by: Optional[str] = None,
+    reviewed_at=None,
+) -> int:
+    """Re-aggregate INFOR_CL/CASCADE rows for the given input items in one pass.
+
+    Loads all relevant cascade rows + their CCX source rows with two queries,
+    then computes the new (status, bucket) for each cascade row in Python.
+    Returns the number of rows whose aggregate changed.
+    """
+    if not input_item_ids:
+        return 0
+
+    cascade_rows = (
+        s.query(MatchResult)
+        .filter(
+            MatchResult.task_id == task_id,
+            MatchResult.matched_source == "INFOR_CL",
+            MatchResult.match_type == "CASCADE",
+            MatchResult.input_item_id.in_(sorted(input_item_ids)),
+        )
+        .all()
+    )
+    if not cascade_rows:
+        return 0
+
+    ccx_pkids_needed: set[int] = set()
+    cascade_pkids: dict[int, set[int]] = {}
+    for cascade in cascade_rows:
+        lineage = _parse_ccx_pkid_list(cascade.ccx_pkids_matched)
+        effective_pkids = set(
+            lineage or ([] if cascade.ccx_pkid is None else [cascade.ccx_pkid])
+        )
+        cascade_pkids[cascade.match_id] = effective_pkids
+        ccx_pkids_needed.update(effective_pkids)
+
+    ccx_sources_by_item: dict[int, list[MatchResult]] = {}
+    if ccx_pkids_needed:
+        ccx_rows = (
+            s.query(MatchResult)
+            .filter(
+                MatchResult.task_id == task_id,
+                MatchResult.matched_source == "CCX",
+                MatchResult.input_item_id.in_(sorted(input_item_ids)),
+                MatchResult.ccx_pkid.in_(sorted(ccx_pkids_needed)),
+            )
+            .all()
+        )
+        for ccx in ccx_rows:
+            ccx_sources_by_item.setdefault(ccx.input_item_id, []).append(ccx)
+
+    cascade_count = 0
+    for cascade in cascade_rows:
+        effective_pkids = cascade_pkids.get(cascade.match_id) or set()
+        if not effective_pkids:
+            continue
+        source_rows = [
+            ccx
+            for ccx in ccx_sources_by_item.get(cascade.input_item_id, [])
+            if ccx.ccx_pkid in effective_pkids
+        ]
+        new_status = _aggregate_cascade_status(source_rows)
+        new_bucket = _aggregate_cascade_bucket(source_rows)
+        if (
+            cascade.match_status != new_status
+            or cascade.similarity_bucket != new_bucket
+        ):
+            cascade.match_status = new_status
+            cascade.similarity_bucket = new_bucket
+            if reviewed_by is not None:
+                cascade.reviewed_by = reviewed_by
+            if reviewed_at is not None:
+                cascade.reviewed_at = reviewed_at
+            cascade_count += 1
+
+    return cascade_count
+
+
 def update_match_decision(
     match_id: int,
     match_status: str,

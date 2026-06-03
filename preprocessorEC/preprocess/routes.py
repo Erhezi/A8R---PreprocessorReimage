@@ -305,11 +305,33 @@ def api_finalize(task_id: str):
 # ---------------------------------------------------------------------------
 # New API routes for enriched UI
 # ---------------------------------------------------------------------------
-@preprocess_bp.route("/api/preprocess/<task_id>/contract-summary", methods=["GET"])
-@login_required
-def api_contract_summary(task_id: str):
-    """Return contract-level match summary with per-bucket counts."""
+def _build_contract_summary_rows(
+    task_id: str,
+    *,
+    scope: tuple[str, str, str] | None = None,
+) -> list[dict]:
+    """Aggregate MatchResult rows into contract-summary entries.
+
+    ``scope`` is an optional ``(contract_id, organization_eid, erp_vendor_id)``
+    triple used to restrict the aggregation to a single contract. NULL
+    matched-scope columns are treated as empty strings to mirror the
+    Python normalization used elsewhere.
+    """
     matches = task_repo.get_match_results(task_id)
+    if scope is not None:
+        cid_filter, org_filter, vendor_filter = (
+            (scope[0] or "").strip(),
+            (scope[1] or "").strip(),
+            (scope[2] or "").strip(),
+        )
+        matches = [
+            m
+            for m in matches
+            if (m.contract_number or "").strip() == cid_filter
+            and (m.organization_eid_matched or "").strip() == org_filter
+            and (m.erp_vendor_id_matched or "").strip() == vendor_filter
+        ]
+
     decisions = task_repo.get_contract_decisions_map(task_id)
     contracts: dict[tuple[str, str, str, str, str], dict] = {}
 
@@ -371,7 +393,14 @@ def api_contract_summary(task_id: str):
             and contract["rejected"] == contract["total"]
         )
 
-    return jsonify(list(contracts.values()))
+    return list(contracts.values())
+
+
+@preprocess_bp.route("/api/preprocess/<task_id>/contract-summary", methods=["GET"])
+@login_required
+def api_contract_summary(task_id: str):
+    """Return contract-level match summary with per-bucket counts."""
+    return jsonify(_build_contract_summary_rows(task_id))
 
 
 @preprocess_bp.route("/api/preprocess/<task_id>/matches", methods=["GET"])
@@ -583,6 +612,14 @@ def api_toggle_contract(task_id: str):
         )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
+
+    # Recompute summary rows for just the affected scope so the UI can patch
+    # contractSummaryData locally instead of re-fetching the full table.
+    contract_rows = _build_contract_summary_rows(
+        task_id,
+        scope=(contract_number, organization_eid, erp_vendor_id),
+    )
+
     return jsonify(
         {
             "contract_number": contract_number,
@@ -591,6 +628,8 @@ def api_toggle_contract(task_id: str):
             "decision": result["decision"],
             "status": result["match_status"],
             "updated": result["affected"],
+            "cascade_updated": result.get("cascade_affected", 0),
+            "contract_rows": contract_rows,
         }
     )
 
