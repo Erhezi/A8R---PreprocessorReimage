@@ -12,6 +12,7 @@ read.
 
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from typing import Iterable, Optional
 
@@ -33,6 +34,26 @@ from .dedup_resolution import (
 )
 
 SQLSERVER_EXPANDING_BATCH_SIZE = 1000
+
+# A vendor id that already carries its -B### location suffix.
+_VENDOR_LOC_SUFFIX_RE = re.compile(r"-B\d{3}$")
+
+
+def _compose_erp_vendor_id(vendor_id: Optional[str], loc: Optional[str]) -> str:
+    """Combine a 7-digit vendor id with its -B### location suffix.
+
+    ``task.vendor_id`` may arrive either bare (``1234567``) or already
+    carrying the location suffix (``1234567-B003``). Only append
+    ``purchase_from_loc`` when the suffix isn't already present, so we
+    never produce a doubled id like ``1234567-B003-B003``.
+    """
+    vid = (vendor_id or "").strip()
+    loc = (loc or "").strip()
+    if not vid or not loc:
+        return vid
+    if _VENDOR_LOC_SUFFIX_RE.search(vid):
+        return vid
+    return f"{vid}-{loc}"
 
 
 def _session() -> Session:
@@ -244,10 +265,8 @@ def populate_dedup_workspace(task_id: str, *, force: bool = False) -> dict:
                 or task.intention
             )
 
-            erp_vendor_id_input = (
-                f"{task.vendor_id}-{task.purchase_from_loc}"
-                if task.vendor_id and task.purchase_from_loc
-                else (task.vendor_id or "")
+            erp_vendor_id_input = _compose_erp_vendor_id(
+                task.vendor_id, task.purchase_from_loc
             )
 
             organization_eid_input = getattr(input_item, "organization_eid", None)

@@ -110,6 +110,8 @@ SELECT
     cnt.OrganizationEID,
     cnt.Organization,
     cnt.ContractID,
+    cnt.contractDescription,
+    cnt.Vendor,
     cnt.ERPVendorID,
     cnt.LineCnt_CCX
 FROM [Preprocessor].[CCXSyncedContractLineCnt] cnt

@@ -479,22 +479,29 @@ def _view_by_input_row_dict(row) -> dict:
     }
 
 
-def _fetch_contract_totals(
+def _fetch_contract_meta(
     session: Session, contract_ids: list[str]
-) -> dict[tuple, int]:
+) -> dict[tuple, dict]:
+    """Per matched (Org, Contract, ERPVendor) key: total CCX line count plus
+    the contract description and CCX vendor name, all from
+    ``CCXSyncedContractLineCnt``."""
     contract_ids = sorted({c for c in contract_ids if c})
     if not contract_ids:
         return {}
     stmt = load_query("export", "dedup_review", query="contract_line_counts")
     bound = stmt.bindparams(bindparam("contract_ids", expanding=True))
-    out: dict[tuple, int] = {}
+    out: dict[tuple, dict] = {}
     for row in session.execute(bound, {"contract_ids": contract_ids}).mappings().all():
         key = (
             row.get("OrganizationEID") or "",
             row.get("ContractID") or "",
             row.get("ERPVendorID") or "",
         )
-        out[key] = int(row.get("LineCnt_CCX") or 0)
+        out[key] = {
+            "total_lines": int(row.get("LineCnt_CCX") or 0),
+            "contract_name": row.get("contractDescription") or "",
+            "ccx_vendor_name": row.get("Vendor") or "",
+        }
     return out
 
 
@@ -526,7 +533,7 @@ def get_review_data(task_id: str) -> dict:
         groups = _build_sheet_groups(rows)
         unmatched_repl_raw = _fetch_replacement_unmatched_rows(session, task_id)
         groups = _augment_groups_with_replacements(groups, unmatched_repl_raw)
-        totals = _fetch_contract_totals(
+        contract_meta = _fetch_contract_meta(
             session, [g["key"]["contract_id"] for g in groups.values()]
         )
         view_by_input_raw = _fetch_view_by_input_rows(session, task_id)
@@ -550,6 +557,8 @@ def get_review_data(task_id: str) -> dict:
     summary: list[dict] = [{
         "sheet_name": VIEW_BY_INPUT_SHEET_NAME,
         "contract_id": "",
+        "contract_name": "",
+        "ccx_vendor_name": "",
         "erp_vendor_id": "",
         "organization": "",
         "organization_eid": "",
@@ -570,13 +579,16 @@ def get_review_data(task_id: str) -> dict:
             else:
                 formatted_rows.append(_matched_row_dict(raw))
                 matched_lines += 1
-        total_lines = totals.get(
+        info = contract_meta.get(
             (key["organization_eid"], key["contract_id"], key["erp_vendor_id"]),
-            0,
+            {},
         )
+        total_lines = info.get("total_lines", 0)
         summary.append({
             "sheet_name": sheet_name,
             "contract_id": key["contract_id"],
+            "contract_name": info.get("contract_name", ""),
+            "ccx_vendor_name": info.get("ccx_vendor_name", ""),
             "erp_vendor_id": key["erp_vendor_id"],
             "organization": key["organization"],
             "organization_eid": key["organization_eid"],
@@ -656,6 +668,8 @@ def build_excel(task_id: str) -> tuple[str, io.BytesIO]:
 
     summary_headers = [
         "Contract ID",
+        "Contract Name",
+        "CCX Vendor Name",
         "ERP Vendor ID",
         "Organization",
         "Total Lines",
@@ -666,7 +680,7 @@ def build_excel(task_id: str) -> tuple[str, io.BytesIO]:
         "Sheet",
     ]
     summary_fills = (
-        [YELLOW_FILL] * 5
+        [YELLOW_FILL] * 7
         + [LIGHT_BLUE_FILL] * 3
         + [YELLOW_FILL]
     )
@@ -674,37 +688,32 @@ def build_excel(task_id: str) -> tuple[str, io.BytesIO]:
         cell = summary_ws.cell(row=1, column=col_idx, value=header)
         cell.font = HEADER_FONT
         cell.fill = fill
-    for r_idx, row in enumerate(data["summary"], start=2):
-        summary_ws.cell(row=r_idx, column=1, value=row["contract_id"])
-        summary_ws.cell(row=r_idx, column=2, value=row["erp_vendor_id"])
-        summary_ws.cell(row=r_idx, column=3, value=row["organization"])
-        summary_ws.cell(row=r_idx, column=4, value=row["total_lines"])
-        summary_ws.cell(row=r_idx, column=5, value=row["matched_lines"])
-        summary_ws.cell(row=r_idx, column=6, value=row["contract_id_input"])
-        summary_ws.cell(row=r_idx, column=7, value=row["erp_vendor_id_input"])
-        summary_ws.cell(row=r_idx, column=8, value=row["organization_input"])
-        sheet_cell = summary_ws.cell(row=r_idx, column=9, value=row["sheet_name"])
-        if row.get("sheet_name"):
-            sheet_cell.hyperlink = _internal_sheet_link(row["sheet_name"])
-            sheet_cell.font = HYPERLINK_FONT
-    _autofit(
-        summary_ws,
-        summary_headers,
-        [
-            {
-                "Contract ID": s["contract_id"],
-                "ERP Vendor ID": s["erp_vendor_id"],
-                "Organization": s["organization"],
-                "Total Lines": s["total_lines"],
-                "Matched Lines": s["matched_lines"],
-                "Contract ID (Input)": s["contract_id_input"],
-                "ERP Vendor ID (Input)": s["erp_vendor_id_input"],
-                "Organization (Input)": s["organization_input"],
-                "Sheet": s["sheet_name"],
-            }
-            for s in data["summary"]
-        ],
-    )
+
+    summary_value_rows = [
+        {
+            "Contract ID": s["contract_id"],
+            "Contract Name": s["contract_name"],
+            "CCX Vendor Name": s["ccx_vendor_name"],
+            "ERP Vendor ID": s["erp_vendor_id"],
+            "Organization": s["organization"],
+            "Total Lines": s["total_lines"],
+            "Matched Lines": s["matched_lines"],
+            "Contract ID (Input)": s["contract_id_input"],
+            "ERP Vendor ID (Input)": s["erp_vendor_id_input"],
+            "Organization (Input)": s["organization_input"],
+            "Sheet": s["sheet_name"],
+        }
+        for s in data["summary"]
+    ]
+    for r_idx, (values, s) in enumerate(
+        zip(summary_value_rows, data["summary"]), start=2
+    ):
+        for c_idx, header in enumerate(summary_headers, start=1):
+            cell = summary_ws.cell(row=r_idx, column=c_idx, value=values.get(header, ""))
+            if header == "Sheet" and s.get("sheet_name"):
+                cell.hyperlink = _internal_sheet_link(s["sheet_name"])
+                cell.font = HYPERLINK_FONT
+    _autofit(summary_ws, summary_headers, summary_value_rows)
 
     view_by_input = data.get("view_by_input") or {}
     vbi_rows = view_by_input.get("rows", [])

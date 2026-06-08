@@ -250,6 +250,7 @@ _TASK_CHILD_TABLES = [
     "[Preprocessor].PreprocessorPreCheckError",
     "[Preprocessor].PreprocessorPreprocessIssue",
     "[Preprocessor].PreprocessorTaskStatusLog",
+    "[Preprocessor].PreprocessorContractDecision",
     "[Preprocessor].PreprocessorTaskItem",
 ]
 

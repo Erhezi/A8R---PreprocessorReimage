@@ -177,6 +177,8 @@
         (s) => `
           <tr>
             <td>${escapeHtml(s.contract_id)}</td>
+            <td>${escapeHtml(s.contract_name)}</td>
+            <td>${escapeHtml(s.ccx_vendor_name)}</td>
             <td>${escapeHtml(s.erp_vendor_id)}</td>
             <td>${escapeHtml(s.organization)}</td>
             <td class="text-end">${s.total_lines}</td>
@@ -195,6 +197,8 @@
           <thead>
             <tr>
               <th class="matched-col">Contract ID</th>
+              <th class="matched-col">Contract Name</th>
+              <th class="matched-col">CCX Vendor Name</th>
               <th class="matched-col">ERP Vendor ID</th>
               <th class="matched-col">Organization</th>
               <th class="matched-col text-end">Total Lines</th>
