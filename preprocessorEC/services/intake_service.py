@@ -70,7 +70,7 @@ def _standardize_uom(uom: str) -> tuple[str, Optional[str]]:
 def _parse_qoe(value) -> tuple[Optional[int], Optional[str]]:
     """Convert QOE to int. Returns (value, error_or_None)."""
     try:
-        v = int(float(str(value)))
+        v = int(float(str(value).strip().lstrip("'").strip()))
         if v <= 0:
             return None, "QOE must be positive"
         return v, None
@@ -81,7 +81,8 @@ def _parse_qoe(value) -> tuple[Optional[int], Optional[str]]:
 def _parse_price(value) -> tuple[Optional[Decimal], Optional[str]]:
     """Convert price to Decimal. Returns (value, error_or_None)."""
     try:
-        d = Decimal(str(value).replace(",", "").replace("$", "").strip())
+        cleaned = str(value).strip().lstrip("'").replace(",", "").replace("$", "").strip()
+        d = Decimal(cleaned)
         if d < 0:
             return None, "Price cannot be negative"
         return d, None

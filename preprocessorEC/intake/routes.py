@@ -195,10 +195,14 @@ def api_upload_items(task_id: str):
                 return fallback if s.lower() == "nan" else s
 
             def _num(val, fallback=0):
-                """Convert cell value to a number, treating NaN/blank as fallback."""
+                """Convert cell value to a number, treating NaN/blank as fallback.
+
+                Strips Excel text-marker apostrophes, currency symbols, and
+                thousands separators (e.g. "'$1,234.05" -> 1234.05)."""
                 s = _str(val, "")
                 if not s:
                     return fallback
+                s = s.lstrip("'").replace(",", "").replace("$", "").strip()
                 try:
                     return float(s)
                 except (ValueError, TypeError):

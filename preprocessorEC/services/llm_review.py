@@ -28,7 +28,11 @@ For each pair you will receive:
 - MATCH item: vendor, description, manufacturer number, vendor catalog number,
   UOM, QOE, contract price, source system.
 
-Goal: decide whether the pair is a compatible match for review/export.
+Goal: decide whether the pair is a compatible match for review/export. A
+compatible match means the same physical product in the same effective packaging,
+or a likely data-entry error where the intended packaging is still the same.
+The same physical product sold in a truly different package or sale unit is
+REJECT, even when both lines look mostly correct.
 
 Output exactly one of three decisions:
 - ACCEPT: the pair is the same physical product and same effective packaging,
@@ -36,7 +40,8 @@ Output exactly one of three decisions:
   UOM, QOE, price, or vendor-catalog data-entry error that a human should fix.
 - REJECT: the descriptions identify different products, the vendors indicate
   competing products rather than the same item, the packaging/price evidence
-  cleanly shows a true different pack size, or required fields are missing.
+  cleanly shows a true different package or sale unit, or required fields are
+  missing.
 - PENDING: only when the evidence is genuinely deadlocked after applying all
   rules. If the evidence leans either way, choose ACCEPT or REJECT and explain
   the uncertainty in the reason.
@@ -69,6 +74,9 @@ Decision process:
   evidence before ACCEPT.
 - Vendor catalog numbers are useful, but they may differ when the same product
   is sold by different distributors.
+- Use normalized catalog numbers for product identity only. Do not erase raw
+  vendor-catalog suffixes/prefixes when they line up with UOM/QOE/price evidence
+  of different packaging; suffixes often identify packaging variants.
 - The vendor field is the seller/supplier, not definitive manufacturer identity.
   Do not infer competing manufacturers from vendor names alone when manufacturer
   part numbers and descriptions point to the same item.
@@ -90,8 +98,10 @@ Decision process:
   supports it: CS and CA are case; BX and BOX are box; PK, PACK, and CT may be
   package/count aliases when descriptions and prices support that reading.
 - EA is not normally the same as CS, CA, BX, or PK. Only treat that difference
-  as a likely data-entry issue when product identity is strong and price/count
-  evidence supports it.
+  as a likely data-entry issue when product identity is strong and contract
+  prices are close for the same intended sale unit. If the prices become close
+  only after dividing a pack price by its QOE, that is evidence of a true
+  packaging variant, not an ACCEPT.
 
 4. Packaging and price matrix for plausible same-product pairs.
 - Use Contract Price as the price for the stated UOM. EA price
@@ -99,6 +109,10 @@ Decision process:
   let an obviously suspicious QOE force a REJECT by itself.
 - Do not reject because calculated EA price differs if the QOE being used in
   that calculation is the suspected bad field.
+- If one line is EA/QOE 1 and the other is PK, BX, CS, or CA with QOE N > 1,
+  and the pack contract price divided by N is close to the EA contract price,
+  REJECT as true different packaging. A close calculated EA price means the
+  data is internally consistent across two sale units.
 - "Reasonable price difference" means roughly within +/-30% unless the item
   context gives a clear reason otherwise.
 - "Wild price difference" means clearly different scale, especially 2x or more.
@@ -108,20 +122,22 @@ Apply these rules in order:
   ACCEPT when contract prices are reasonable. PENDING when prices are wildly
   different and there is no clear explanation.
 - Same normalized UOM and different QOE:
-  Lean ACCEPT when contract prices are reasonable, because one QOE may be a
-  data-entry error. Use PENDING when the price difference is large enough that
-  either true packaging difference or QOE error is plausible.
+  Lean ACCEPT when raw contract prices are close before any QOE conversion,
+  because one QOE may be a data-entry error. REJECT when the raw prices scale
+  with the different QOE values because that shows different package sizes.
+  Use PENDING when either true packaging difference or QOE error is plausible.
 - Obviously different normalized UOM, same QOE, and contract prices differ by
   at least 2x:
   REJECT. This usually means the QOE is wrong on one side, but the sale unit
   and price scale still show different packaging.
 - Obviously different normalized UOM, different QOE, and contract prices are
-  close:
+  close before any QOE conversion:
   ACCEPT when product identity is strong, especially when the description states
   the pack count found on one side. Otherwise PENDING.
 - Different UOM/QOE with prices that cleanly scale like per-each versus
-  per-case-of-N:
-  REJECT as true different packaging.
+  per-pack/per-case-of-N:
+  REJECT as true different packaging. Do this even when manufacturer numbers,
+  descriptions, or normalized vendor catalog numbers show it is the same item.
 
 Special ACCEPT rule for likely QOE or UOM data-entry errors:
 - If manufacturer catalog numbers match exactly, descriptions identify the same
@@ -130,13 +146,17 @@ Special ACCEPT rule for likely QOE or UOM data-entry errors:
   close, ACCEPT even when one side has QOE=1 and the other side has QOE matching
   the description pack count. In the reason, say the QOE/UOM is likely a
   data-entry error.
+- This ACCEPT rule does not apply when the contract prices scale with the
+  different QOE values. Scaling prices mean the package differences are probably
+  intentional and mostly correct, so REJECT.
 
 Data-quality tie-breakers:
-- Over-accepting is acceptable at this stage because downstream human review is
-  the final gatekeeper.
+- Do not over-accept same-product pairs when packaging evidence cleanly shows
+  different sale units. Strong identity plus internally consistent pack/each
+  pricing is a REJECT, not an ACCEPT.
 - If QOE is suspicious, do not rely on Contract Price / QOE as decisive evidence.
-- If product identity is strong and contract prices are close, prefer ACCEPT
-  with a data-entry-error reason over REJECT.
+- If product identity is strong and raw contract prices are close before any
+  QOE conversion, prefer ACCEPT with a data-entry-error reason over REJECT.
 - If identity is strong but price/UOM/QOE could represent either true packaging
   difference or data error, use PENDING.
 - If key fields are missing, use REJECT.
@@ -151,13 +171,28 @@ Example ACCEPT:
   case aliases, vendors are compatible distributors, prices are equal, and
   input QOE=1 is likely a data-entry error.
 
+Example REJECT:
+- INPUT: BD, REGULAR BEVEL NEEDLE, HYPODERMIC, 18G X 1, Mfg# 305195, Vendor# 305195, CS, QOE 1000, price 55.
+- MATCH: Medline, NEEDLE, 18GX1, HYPODER, REG WALL & BEV, Mfg# 305195, Vendor# B-D305195Z, BX, QOE 100, price 5. 
+- Decision: REJECT because the descriptions indicate different pack sizes (100 vs 1000), the price scale differs 
+  by ~10x, and there is no strong evidence of a data-entry error that would explain that large of a discrepancy.
+
+Example REJECT:
+- INPUT: Same Vendor, ITEM ABCD, Mfg# ABCD, Vendor# ABCD, PK, QOE 500, price 50.
+- MATCH: Same Vendor, ITEM ABCD, Mfg# ABCD, Vendor# ABCDH, EA, QOE 1, price 0.11.
+- Decision: REJECT because identity is strong, but PK 500 at $50 is about $0.10 per EA and aligns with the EA line at $0.11, so both lines look correct and represent different sale packaging; the vendor-number suffix also supports a packaging variant.
+
 General guardrails:
 - Do not ACCEPT based only on broad description similarity.
+- Do not ACCEPT solely because the two rows are the same product. The packaging
+  must also be the same effective packaging or a likely data-entry error.
+- Do not ACCEPT just because calculated EA prices are close. If close EA prices
+  come from converting a package price to eaches, REJECT as different packaging.
 - Do not REJECT solely because UOM/QOE differs when identity is strong and
   price/description evidence points to a data-entry error.
-- Prefer ACCEPT over PENDING for strong-identity pairs with close prices and a
-  likely data-entry issue, because the goal is to surface the row for human
-  second-pass correction.
+- Prefer ACCEPT over PENDING for strong-identity pairs with close raw contract
+  prices and a likely data-entry issue, because the goal is to surface the row
+  for human second-pass correction.
 - Keep the reason to one sentence and name the decisive evidence.
 
 Respond with a JSON object:
@@ -186,7 +221,8 @@ MATCH item (source: {match_source}):
   QOE: {match_qoe}
   Contract Price: {match_price}
 
-Is this the same product?"""
+Is this a compatible same-product and same-effective-packaging match for ACCEPT,
+or a product/packaging mismatch for REJECT?"""
 
 
 def _build_messages(

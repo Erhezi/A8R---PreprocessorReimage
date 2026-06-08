@@ -32,6 +32,17 @@ def _session() -> Session:
     return Session(get_sqlserver_engine())
 
 
+# SQL Server caps a single statement at 2100 parameters, so any IN (...) clause
+# built from a large id collection must be issued in batches.
+_IN_CLAUSE_CHUNK = 1000
+
+
+def _chunked(items: list, size: int = _IN_CLAUSE_CHUNK):
+    """Yield successive ``size``-length slices of ``items``."""
+    for start in range(0, len(items), size):
+        yield items[start : start + size]
+
+
 @lru_cache(maxsize=1)
 def _get_match_result_columns() -> set[str]:
     return {
@@ -1121,16 +1132,19 @@ def _reaggregate_cascade_for_input_items(
     if not input_item_ids:
         return 0
 
-    cascade_rows = (
-        s.query(MatchResult)
-        .filter(
-            MatchResult.task_id == task_id,
-            MatchResult.matched_source == "INFOR_CL",
-            MatchResult.match_type == "CASCADE",
-            MatchResult.input_item_id.in_(sorted(input_item_ids)),
+    sorted_input_ids = sorted(input_item_ids)
+    cascade_rows: list[MatchResult] = []
+    for id_chunk in _chunked(sorted_input_ids):
+        cascade_rows.extend(
+            s.query(MatchResult)
+            .filter(
+                MatchResult.task_id == task_id,
+                MatchResult.matched_source == "INFOR_CL",
+                MatchResult.match_type == "CASCADE",
+                MatchResult.input_item_id.in_(id_chunk),
+            )
+            .all()
         )
-        .all()
-    )
     if not cascade_rows:
         return 0
 
@@ -1146,18 +1160,24 @@ def _reaggregate_cascade_for_input_items(
 
     ccx_sources_by_item: dict[int, list[MatchResult]] = {}
     if ccx_pkids_needed:
-        ccx_rows = (
-            s.query(MatchResult)
-            .filter(
-                MatchResult.task_id == task_id,
-                MatchResult.matched_source == "CCX",
-                MatchResult.input_item_id.in_(sorted(input_item_ids)),
-                MatchResult.ccx_pkid.in_(sorted(ccx_pkids_needed)),
-            )
-            .all()
-        )
-        for ccx in ccx_rows:
-            ccx_sources_by_item.setdefault(ccx.input_item_id, []).append(ccx)
+        sorted_pkids = sorted(ccx_pkids_needed)
+        # Both IN lists count toward the 2100-parameter cap, so chunk each.
+        for id_chunk in _chunked(sorted_input_ids):
+            for pkid_chunk in _chunked(sorted_pkids):
+                ccx_rows = (
+                    s.query(MatchResult)
+                    .filter(
+                        MatchResult.task_id == task_id,
+                        MatchResult.matched_source == "CCX",
+                        MatchResult.input_item_id.in_(id_chunk),
+                        MatchResult.ccx_pkid.in_(pkid_chunk),
+                    )
+                    .all()
+                )
+                for ccx in ccx_rows:
+                    ccx_sources_by_item.setdefault(
+                        ccx.input_item_id, []
+                    ).append(ccx)
 
     cascade_count = 0
     for cascade in cascade_rows:
