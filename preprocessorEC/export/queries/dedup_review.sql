@@ -3,8 +3,9 @@
 -- Filters to CCX + ACCEPTED workspace rows (matched_source='CCX' implies
 -- ACCEPTED because populate_dedup_workspace only materializes ACCEPTED
 -- matches, but we re-assert here for safety). EffectiveDate/ExpirationDate
--- come from CCXSyncedContractLine via PreprocessorMatchResult.ccx_pkid,
--- which is not snapshotted on the workspace row.
+-- come from the live CCXSyncedContractLine, matched on the stable business
+-- key (Org, Contract, ERPVendor, MPN, UOM) -- NOT mr.ccx_pkid, which the
+-- daily source sync re-issues so a snapshotted pkid drifts off its row.
 SELECT
     tid.dedup_id,
     tid.input_item_id,
@@ -39,12 +40,18 @@ SELECT
     tid.input_contract_source_type,
     tid.dedup_sort
 FROM [Preprocessor].[PreprocessorTaskItemForDecision] tid
-INNER JOIN [Preprocessor].[PreprocessorMatchResult] mr
-    ON tid.match_id = mr.match_id
 INNER JOIN [Preprocessor].[PreprocessorTaskItem] ti
     ON ti.item_id = tid.input_item_id
+-- Live CCX dates via the stable business key. (Org, Contract, ERPVendor, MPN,
+-- UOM_CCX) is globally unique in CCXSyncedContractLine, so this stays 1:1 (no
+-- fan-out). Seeks the UX_CCXSyncedCL_ItemPerRN index whose leading columns are
+-- exactly these five.
 LEFT JOIN [Preprocessor].[CCXSyncedContractLine] ccx
-    ON ccx.CCX_pkid = mr.ccx_pkid
+    ON ccx.OrganizationEID        = tid.organization_eid_matched
+   AND ccx.ContractID             = tid.contract_id_matched
+   AND ccx.ERPVendorID            = tid.erp_vendor_id_matched
+   AND ccx.ManufacturerNumber_CCX = tid.manufacturer_number_matched
+   AND ccx.UOM_CCX                = tid.uom_matched
 WHERE tid.task_id = :task_id
   AND tid.matched_source = 'CCX'
   AND tid.match_status = 'ACCEPTED'
@@ -90,18 +97,26 @@ INNER JOIN [Preprocessor].[CCXSyncedContractLine] ccx
     ON ccx.OrganizationEID = cd.organization_eid
    AND ccx.ContractID      = cd.contract_id
    AND ccx.ERPVendorID     = cd.erp_vendor_id
-WHERE cd.task_id  = :task_id
-  AND cd.decision = 'REPLACE'
-  AND NOT EXISTS (
-    SELECT 1
-    FROM [Preprocessor].[PreprocessorTaskItemForDecision] tid
-    INNER JOIN [Preprocessor].[PreprocessorMatchResult] mr
-        ON tid.match_id = mr.match_id
-    WHERE tid.task_id       = :task_id
-      AND tid.matched_source = 'CCX'
-      AND tid.match_status   = 'ACCEPTED'
-      AND mr.ccx_pkid        = ccx.CCX_pkid
-)
+-- Anti-join the accepted workspace lines off the contract's CCX lines via a
+-- LEFT JOIN + "tid.dedup_id IS NULL" (left-over = CCX line with no accepted
+-- match). Match on the stable business key (Org, Contract, ERPVendor, MPN,
+-- UOM), NOT mr.ccx_pkid: the daily source sync re-issues CCX_pkid, so a stale
+-- snapshotted pkid would fail to subtract an already-matched line and leak it
+-- back as a false "only seen on to-be-replaced contract" leftover. A CCX line
+-- matched by several inputs fans out here, but every such row has a non-NULL
+-- dedup_id and is dropped by the IS NULL filter, leaving one row per leftover.
+LEFT JOIN [Preprocessor].[PreprocessorTaskItemForDecision] tid
+    ON tid.task_id          = :task_id
+   AND tid.matched_source   = 'CCX'
+   AND tid.match_status     = 'ACCEPTED'
+   AND tid.organization_eid_matched    = ccx.OrganizationEID
+   AND tid.contract_id_matched         = ccx.ContractID
+   AND tid.erp_vendor_id_matched       = ccx.ERPVendorID
+   AND tid.manufacturer_number_matched = ccx.ManufacturerNumber_CCX
+   AND tid.uom_matched                 = ccx.UOM_CCX
+WHERE cd.task_id   = :task_id
+  AND cd.decision  = 'REPLACE'
+  AND tid.dedup_id IS NULL
 ORDER BY
     ccx.OrganizationEID ASC,
     ccx.ContractID ASC,
@@ -128,8 +143,8 @@ WHERE cnt.ContractID IN :contract_ids;
 -- name: view_by_input_rows
 -- Payload for the "view_by_input" sheet: every INPUT line on the task
 -- left-joined to its CCX ACCEPTED matches in PreprocessorTaskItemForDecision
--- (with EffectiveDate/ExpirationDate from CCXSyncedContractLine via
--- PreprocessorMatchResult.ccx_pkid). Inputs with no ACCEPTED CCX match still
+-- (with EffectiveDate/ExpirationDate from CCXSyncedContractLine, matched on
+-- the stable business key, not mr.ccx_pkid). Inputs with no ACCEPTED CCX match still
 -- appear once, with NULL matched columns and total_matched_lines = 0. The
 -- per-input match count is computed with a window so a single pass returns
 -- both the rows and the count.
@@ -172,10 +187,15 @@ LEFT JOIN [Preprocessor].[PreprocessorTaskItemForDecision] tid
     ON tid.input_item_id  = ti.item_id
     AND tid.matched_source = 'CCX'
     AND tid.match_status   = 'ACCEPTED'
-LEFT JOIN [Preprocessor].[PreprocessorMatchResult] mr
-    ON mr.match_id = tid.match_id
+-- CCX dates via the stable business key, not mr.ccx_pkid (re-issued daily by
+-- the source sync). (Org, Contract, ERPVendor, MPN, UOM_CCX) is unique, so the
+-- join is 1:1 and cannot fan out / inflate the total_matched_lines window.
 LEFT JOIN [Preprocessor].[CCXSyncedContractLine] ccx
-    ON ccx.CCX_pkid = mr.ccx_pkid
+    ON ccx.OrganizationEID        = tid.organization_eid_matched
+   AND ccx.ContractID             = tid.contract_id_matched
+   AND ccx.ERPVendorID            = tid.erp_vendor_id_matched
+   AND ccx.ManufacturerNumber_CCX = tid.manufacturer_number_matched
+   AND ccx.UOM_CCX                = tid.uom_matched
 LEFT JOIN [Preprocessor].[PreprocessorItemMatching] pim
     ON pim.task_id          = ti.task_id
     AND pim.item_id          = ti.item_id
