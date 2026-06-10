@@ -78,14 +78,21 @@ SELECT
     ccx.QOE_CCX                          AS qoe_matched,
     ccx.EffectiveDate_CCX                AS effective_date_matched,
     ccx.ExpirationDate_CCX               AS expiration_date_matched
-FROM [Preprocessor].[CCXSyncedContractLine] ccx
-INNER JOIN [Preprocessor].[PreprocessorContractDecision] cd
-    ON cd.task_id  = :task_id
-   AND cd.decision = 'REPLACE'
-   AND ISNULL(cd.organization_eid, '') = ISNULL(ccx.OrganizationEID, '')
-   AND ISNULL(cd.contract_id, '')      = ISNULL(ccx.ContractID, '')
-   AND ISNULL(cd.erp_vendor_id, '')    = ISNULL(ccx.ERPVendorID, '')
-WHERE NOT EXISTS (
+-- Lead with the (tiny) decision table and seek into CCX via direct column
+-- equality. The CCX unique index UX_CCXSyncedCL_ItemPerRN leads with
+-- (OrganizationEID, ContractID, ERPVendorID), so this seeks straight to the
+-- one REPLACE contract's lines. DO NOT wrap the ccx columns in ISNULL(): that
+-- is non-sargable and forces a full scan of the 600k+ row CCX table (observed
+-- 270s vs 0.1s on a 24k-line contract). cd.* are NOT NULL with real scope
+-- values, so direct equality is result-equivalent here.
+FROM [Preprocessor].[PreprocessorContractDecision] cd
+INNER JOIN [Preprocessor].[CCXSyncedContractLine] ccx
+    ON ccx.OrganizationEID = cd.organization_eid
+   AND ccx.ContractID      = cd.contract_id
+   AND ccx.ERPVendorID     = cd.erp_vendor_id
+WHERE cd.task_id  = :task_id
+  AND cd.decision = 'REPLACE'
+  AND NOT EXISTS (
     SELECT 1
     FROM [Preprocessor].[PreprocessorTaskItemForDecision] tid
     INNER JOIN [Preprocessor].[PreprocessorMatchResult] mr
