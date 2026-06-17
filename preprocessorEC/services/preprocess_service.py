@@ -23,6 +23,7 @@ from ..state import TaskStateMachine, Phase, Status
 from .scoring import (
     calculate_confidence_score,
     determine_pair_type,
+    refine_pair_type,
     compute_similarities_batch,
     bucket_score,
 )
@@ -614,8 +615,15 @@ def run_sku_matching(task_id: str, state_machine: TaskStateMachine) -> dict:
                 match_process_type=row.get("match_process_type", "") or "",
                 match_vendor_group=distributor_groups.get(str(row.get("ERPVendorID") or "").strip().upper()),
             )
+            # Split A/B into exact-MFN (A1/B1) vs non-exact (A2/B2). Non-exact
+            # subtypes get a description score like C/D; exact subtypes skip it.
+            pair_type = refine_pair_type(
+                pair_type,
+                item.mfg_catalog_num or "",
+                row.get("mfg_catalog_num_ccx", ""),
+            )
             pair["pair_type"] = pair_type
-            if pair_type not in ("A", "B"):
+            if pair_type not in ("A1", "B1"):
                 pairs_by_input_for_desc.setdefault(item.item_id, []).append(pair)
 
         for pairs in pairs_by_input_for_desc.values():
@@ -666,7 +674,7 @@ def run_sku_matching(task_id: str, state_machine: TaskStateMachine) -> dict:
             # uom_nuance: same-contract (type A) match with identical QOE but
             # a different UOM — flags UOM inconsistency for the same pack size.
             uom_nuance = "No"
-            if pt == "A":
+            if pt.startswith("A"):
                 same_qoe = str(item.qoe or "").strip() == str(row.get("qoe_ccx") or "").strip()
                 diff_uom = (
                     str(item.uom or "").strip().upper()

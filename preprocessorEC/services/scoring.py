@@ -13,9 +13,15 @@ Pair types (determined per match pair):
     C — different contract, same vendor,       BOTH sides DISTRIBUTOR  process type
     D — all others (including Infor residue and cross-type pairs)
 
+A and B are further split by MFN equality (see refine_pair_type):
+    A1 / B1 — MFN is an exact match (skip description similarity)
+    A2 / B2 — MFN differs (description similarity folded into the score)
+
 Weight regimes per pair type:
-    Type A/B (skip description similarity):
-        MFN 60%, EA Price 15%, UOM 10%, QOE 15%
+    Type A1/B1 (exact MFN, skip description similarity):
+        MFN 50%, EA Price 15%, UOM 20%, QOE 15%
+    Type A2/B2 (non-exact MFN, description weighted):
+        MFN 50%, EA Price 15%, Desc 20%, UOM 5%, QOE 10%
     Type C (description computed):
         desc > 0.4: MFN 20%, Desc 30%, Price 10%, UOM 10%, QOE 10%, VendorItem 20%
         desc ≤ 0.4: MFN 10%, Desc 40%, Price 10%, UOM 10%, QOE 10%, VendorItem 20%
@@ -425,6 +431,31 @@ def determine_pair_type(
     return "D"
 
 
+def refine_pair_type(base_type: str, mfn_input: str, mfn_match: str) -> str:
+    """Refine a base pair type (A/B/C/D) into an MFN-aware subtype.
+
+    For same-contract (A) and same-manufacturer (B) pairs, distinguish by
+    whether the MFN is an exact match (strip + upper-case equality, the same
+    definition used by the force-100% rule in calculate_confidence_score):
+
+        A1 / B1 — MFN matches exactly (keep the exact-MFN weighting; description
+                  similarity is skipped)
+        A2 / B2 — MFN differs (description similarity is folded into the score)
+
+    Empty MFNs on both sides count as non-exact (A2 / B2), matching the
+    exact-match branch in calculate_mfn_match_score, which scores empties as 0.
+
+    Types C and D are returned unchanged.
+    """
+    bt = str(base_type or "").strip().upper()
+    if bt not in ("A", "B"):
+        return bt
+    a = str(mfn_input or "").strip().upper()
+    b = str(mfn_match or "").strip().upper()
+    exact = bool(a and b and a == b)
+    return f"{bt}1" if exact else f"{bt}2"
+
+
 # =====================================================================
 # Multi-factor confidence scoring
 # =====================================================================
@@ -468,9 +499,11 @@ def calculate_confidence_score(
 
     match_ea, input_ea = _compute_ea_prices(price_match, qoe_match, price_input, qoe_input)
 
-    # Description similarity — skip for types A and B
-    if pair_type in ("A", "B"):
-        desc_score = None  # not computed
+    # Description similarity — skipped only for the exact-MFN regime (A1/B1).
+    # Bare "A"/"B" are treated as exact for backward compatibility with any
+    # pre-subtype caller.
+    if pair_type in ("A1", "B1", "A", "B"):
+        desc_score = None  # not computed (MFN is an exact match)
     elif desc_score_override is not None:
         desc_score = float(min(max(desc_score_override, 0.0), 1.0))
     else:
@@ -482,8 +515,8 @@ def calculate_confidence_score(
         vi_score = calculate_vendor_item_match(vpn_input, vpn_match)
 
     # --- Weighted combination ---
-    if pair_type in ("A", "B"):
-        # Skip description, no vendor-item
+    if pair_type in ("A1", "B1", "A", "B"):
+        # Exact-MFN regime — skip description, no vendor-item
         weighted = (
             mfn_score * 0.50
             + price_score * 0.15
@@ -495,6 +528,16 @@ def calculate_confidence_score(
         mfn_str_b = str(mfn_match or "").strip().upper()
         if mfn_str_a and mfn_str_a == mfn_str_b and uom_score == 1.0:
             weighted = 1.0
+    elif pair_type in ("A2", "B2"):
+        # Non-exact-MFN regime — description folded into the weighting
+        ds = desc_score if desc_score is not None else 0.0
+        weighted = (
+            mfn_score * 0.50
+            + price_score * 0.15
+            + ds * 0.20
+            + uom_score * 0.05
+            + qoe_score * 0.10
+        )
     elif pair_type == "C":
         vi = vi_score if vi_score is not None else 0.0
         ds = desc_score if desc_score is not None else 0.0

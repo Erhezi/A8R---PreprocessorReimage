@@ -361,7 +361,7 @@ class MatchResult(Base):
     weighted_score = Column(Float, nullable=True)
     match_ea_price = Column(Float, nullable=True)
     input_ea_price = Column(Float, nullable=True)
-    pair_type = Column(String(1), nullable=True)  # A | B | C | D
+    pair_type = Column(String(2), nullable=True)  # A1 | A2 | B1 | B2 | C | D
     vendor_item_score = Column(Float, nullable=True)
     # 'Yes' when same-contract match has identical QOE but a different UOM
     # (UOM inconsistency for the same pack size). Cascaded from CCX to INFOR_CL.
@@ -465,7 +465,7 @@ class TaskItemForDecision(Base):
     infor_pkid = Column(String(31), nullable=True)
     infor_item_matched = Column(String(20), nullable=True)
     match_type = Column(String(20), nullable=True)
-    pair_type = Column(String(1), nullable=True)
+    pair_type = Column(String(2), nullable=True)  # A1 | A2 | B1 | B2 | C | D
     llm_reason = Column(Text, nullable=True)
     llm_warning = Column(Text, nullable=True)
 
