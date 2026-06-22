@@ -607,9 +607,27 @@ function gatherMapping(containerId) {
 }
 
 /* ================================================================
+   Submit button loading state (prevents double-submit)
+   ================================================================ */
+function setButtonLoading(btn, loadingText) {
+  if (btn.dataset.originalHtml === undefined) btn.dataset.originalHtml = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML =
+    `<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>${loadingText}`;
+}
+function resetButton(btn) {
+  if (btn.dataset.originalHtml !== undefined) {
+    btn.innerHTML = btn.dataset.originalHtml;
+    delete btn.dataset.originalHtml;
+  }
+  btn.disabled = false;
+}
+
+/* ================================================================
    Create task (SINGLE)
    ================================================================ */
 document.getElementById("btnCreateTask").addEventListener("click", async () => {
+  const btn = document.getElementById("btnCreateTask");
   // --- Enforce required column mappings ---
   const requiredKeys = SINGLE_REQUIRED_COLS.map(c => c.key);
   if (tierRequired) { requiredKeys.push("tier_description", "tier_level"); }
@@ -624,87 +642,107 @@ document.getElementById("btnCreateTask").addEventListener("click", async () => {
     return;
   }
 
-  const form = document.getElementById("newTaskForm");
-  const fd = new FormData(form);
-  const body = Object.fromEntries(fd.entries());
-  body.intake_mode = "SINGLE";
-  body.wrike_id = (body.wrike_id || "").replace(/\D/g, "");
+  // Lock the button so the task/upload can't be submitted twice.
+  setButtonLoading(btn, "Creating…");
 
-  // 1) Create task
-  const resp = await fetch(`${PREFIX}/api/tasks`, {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify(body),
-  });
-  if (!resp.ok) {
-    const err = await resp.json();
-    alert(err.error || "Failed to create task");
-    return;
-  }
-  const task = await resp.json();
+  try {
+    const form = document.getElementById("newTaskForm");
+    const fd = new FormData(form);
+    const body = Object.fromEntries(fd.entries());
+    body.intake_mode = "SINGLE";
+    body.wrike_id = (body.wrike_id || "").replace(/\D/g, "");
 
-  // 2) Upload file with column mapping
-  if (singleFileData && singleFileData.file) {
-    const mapping = gatherMapping("singleColMapFields");
-    const uploadFd = new FormData();
-    uploadFd.append("file", singleFileData.file);
-    uploadFd.append("column_mapping", JSON.stringify(mapping));
-    uploadFd.append("tier_required", tierRequired ? "1" : "0");
-
-    const upResp = await fetch(`${PREFIX}/api/intake/${task.task_id}/upload`, {method: "POST", body: uploadFd});
-    if (!upResp.ok) {
-      const upErr = await upResp.json();
-      alert("Task created but upload failed: " + (upErr.error || "Unknown error"));
+    // 1) Create task
+    const resp = await fetch(`${PREFIX}/api/tasks`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      const err = await resp.json();
+      alert(err.error || "Failed to create task");
+      resetButton(btn);
+      return;
     }
-  }
+    const task = await resp.json();
 
-  bootstrap.Modal.getInstance(document.getElementById("newTaskModal")).hide();
-  location.href = `${PREFIX}/tasks/${task.task_id}`;
+    // 2) Upload file with column mapping
+    if (singleFileData && singleFileData.file) {
+      const mapping = gatherMapping("singleColMapFields");
+      const uploadFd = new FormData();
+      uploadFd.append("file", singleFileData.file);
+      uploadFd.append("column_mapping", JSON.stringify(mapping));
+      uploadFd.append("tier_required", tierRequired ? "1" : "0");
+
+      const upResp = await fetch(`${PREFIX}/api/intake/${task.task_id}/upload`, {method: "POST", body: uploadFd});
+      if (!upResp.ok) {
+        const upErr = await upResp.json();
+        alert("Task created but upload failed: " + (upErr.error || "Unknown error"));
+      }
+    }
+
+    bootstrap.Modal.getInstance(document.getElementById("newTaskModal")).hide();
+    location.href = `${PREFIX}/tasks/${task.task_id}`;
+  } catch (e) {
+    alert("Failed to create task: " + (e.message || e));
+    resetButton(btn);
+  }
 });
 
 /* ================================================================
    Create task (BATCH)
    ================================================================ */
 document.getElementById("btnCreateBatchTask").addEventListener("click", async () => {
+  const btn = document.getElementById("btnCreateBatchTask");
   // 1) Create batch task
   const batchWrikeVal = document.getElementById("batchWrikeId").value.replace(/\D/g, "");
   if (batchWrikeVal.length !== 10) {
     alert("Wrike ID must be exactly 10 digits."); return;
   }
-  const body = {
-    intake_mode: "BATCH",
-    intention: "MIX",
-    notes: document.getElementById("batchNotes").value,
-    wrike_id: batchWrikeVal,
-  };
-  const resp = await fetch(`${PREFIX}/api/tasks`, {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify(body),
-  });
-  if (!resp.ok) {
-    const err = await resp.json();
-    alert(err.error || "Failed to create batch task");
-    return;
-  }
-  const task = await resp.json();
 
-  // 2) Upload file with column mapping
-  if (batchFileData && batchFileData.file) {
-    const mapping = gatherMapping("batchColMapFields");
-    const uploadFd = new FormData();
-    uploadFd.append("file", batchFileData.file);
-    uploadFd.append("column_mapping", JSON.stringify(mapping));
+  // Lock the button so the task/upload can't be submitted twice.
+  setButtonLoading(btn, "Creating…");
 
-    const upResp = await fetch(`${PREFIX}/api/intake/${task.task_id}/upload`, {method: "POST", body: uploadFd});
-    if (!upResp.ok) {
-      const upErr = await upResp.json();
-      alert("Task created but upload failed: " + (upErr.error || "Unknown error"));
+  try {
+    const body = {
+      intake_mode: "BATCH",
+      intention: "MIX",
+      notes: document.getElementById("batchNotes").value,
+      wrike_id: batchWrikeVal,
+    };
+    const resp = await fetch(`${PREFIX}/api/tasks`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body),
+    });
+    if (!resp.ok) {
+      const err = await resp.json();
+      alert(err.error || "Failed to create batch task");
+      resetButton(btn);
+      return;
     }
-  }
+    const task = await resp.json();
 
-  bootstrap.Modal.getInstance(document.getElementById("newTaskModal")).hide();
-  location.href = `${PREFIX}/tasks/${task.task_id}`;
+    // 2) Upload file with column mapping
+    if (batchFileData && batchFileData.file) {
+      const mapping = gatherMapping("batchColMapFields");
+      const uploadFd = new FormData();
+      uploadFd.append("file", batchFileData.file);
+      uploadFd.append("column_mapping", JSON.stringify(mapping));
+
+      const upResp = await fetch(`${PREFIX}/api/intake/${task.task_id}/upload`, {method: "POST", body: uploadFd});
+      if (!upResp.ok) {
+        const upErr = await upResp.json();
+        alert("Task created but upload failed: " + (upErr.error || "Unknown error"));
+      }
+    }
+
+    bootstrap.Modal.getInstance(document.getElementById("newTaskModal")).hide();
+    location.href = `${PREFIX}/tasks/${task.task_id}`;
+  } catch (e) {
+    alert("Failed to create batch task: " + (e.message || e));
+    resetButton(btn);
+  }
 });
 
 /* ================================================================
@@ -846,6 +884,9 @@ document.getElementById("newTaskModal").addEventListener("hidden.bs.modal", () =
   document.getElementById("batchColMapPanel").style.display = "none";
   document.getElementById("singlePreview").innerHTML = "";
   document.getElementById("batchPreview").innerHTML = "";
+  // Clear any leftover loading spinner, then re-disable until a file is chosen.
+  resetButton(document.getElementById("btnCreateTask"));
+  resetButton(document.getElementById("btnCreateBatchTask"));
   document.getElementById("btnCreateTask").disabled = true;
   document.getElementById("btnCreateBatchTask").disabled = true;
   document.getElementById("tierAlert").style.display = "none";

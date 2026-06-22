@@ -69,6 +69,36 @@ def api_dedup_review_download(task_id: str):
     )
 
 
+@export_bp.route("/api/export/<task_id>/contract-replacement", methods=["POST"])
+@login_required
+def api_contract_replacement(task_id: str):
+    """Mark/un-mark a matched contract as REPLACE from the export preview.
+
+    Body: {organization_eid, contract_id, erp_vendor_id, replace: bool}.
+    """
+    task = task_repo.get_task(task_id)
+    if not task:
+        abort(404)
+
+    payload = request.get_json(silent=True) or {}
+    if not (payload.get("contract_id") or "").strip():
+        return jsonify({"error": "contract_id is required."}), 400
+
+    user = current_user.username if current_user.is_authenticated else "system"
+    try:
+        result = export_service.set_contract_replacement(
+            task_id,
+            organization_eid=payload.get("organization_eid"),
+            contract_id=payload.get("contract_id"),
+            erp_vendor_id=payload.get("erp_vendor_id"),
+            replace=bool(payload.get("replace")),
+            decided_by=user,
+        )
+        return jsonify(result)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
 @export_bp.route("/export/<task_id>")
 @login_required
 def export_page(task_id: str):

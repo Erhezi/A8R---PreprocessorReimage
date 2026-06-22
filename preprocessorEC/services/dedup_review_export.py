@@ -554,8 +554,11 @@ def get_review_data(task_id: str) -> dict:
         if (r.get("total_matched_lines") or 0) > 0:
             matched_inputs.add(iid)
 
+    decisions_map = task_repo.get_contract_decisions_map(task_id)
+
     summary: list[dict] = [{
         "sheet_name": VIEW_BY_INPUT_SHEET_NAME,
+        "is_replacement": False,
         "contract_id": "",
         "contract_name": "",
         "ccx_vendor_name": "",
@@ -586,6 +589,9 @@ def get_review_data(task_id: str) -> dict:
         total_lines = info.get("total_lines", 0)
         summary.append({
             "sheet_name": sheet_name,
+            "is_replacement": decisions_map.get(
+                (key["organization_eid"], key["contract_id"], key["erp_vendor_id"])
+            ) == "REPLACE",
             "contract_id": key["contract_id"],
             "contract_name": info.get("contract_name", ""),
             "ccx_vendor_name": info.get("ccx_vendor_name", ""),

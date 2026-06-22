@@ -147,6 +147,7 @@
   const urlPrefix = exportPageRoot.dataset.urlPrefix || "";
   const previewUrl = `${urlPrefix}/api/export/${taskId}/dedup-review/preview`;
   const downloadUrl = `${urlPrefix}/api/export/${taskId}/dedup-review.xlsx`;
+  const replacementUrl = `${urlPrefix}/api/export/${taskId}/contract-replacement`;
 
   const $filename = document.getElementById("exp-filename");
   const $empty = document.getElementById("exp-empty");
@@ -187,6 +188,16 @@
             <td>${escapeHtml(s.erp_vendor_id_input)}</td>
             <td>${escapeHtml(s.organization_input)}</td>
             <td><a class="sheet-link" data-sheet="${escapeHtml(s.sheet_name)}">${escapeHtml(s.sheet_name)}</a></td>
+            <td class="text-center">${
+              s.contract_id
+                ? `<input type="checkbox" class="repl-toggle"${s.is_replacement ? " checked" : ""}`
+                  + ` data-sheet="${escapeHtml(s.sheet_name)}"`
+                  + ` data-org-eid="${escapeHtml(s.organization_eid)}"`
+                  + ` data-contract-id="${escapeHtml(s.contract_id)}"`
+                  + ` data-erp-vendor-id="${escapeHtml(s.erp_vendor_id)}"`
+                  + ` title="Mark as replacement — append this contract's non-matching (left-over) CCX lines to its sheet">`
+                : ""
+            }</td>
           </tr>`
       )
       .join("");
@@ -207,6 +218,7 @@
               <th class="input-col">ERP Vendor ID (Input)</th>
               <th class="input-col">Organization (Input)</th>
               <th class="matched-col">Sheet</th>
+              <th class="matched-col text-center">Replacement</th>
             </tr>
           </thead>
           <tbody>${rows}</tbody>
@@ -218,6 +230,40 @@
         ev.preventDefault();
         const name = el.getAttribute("data-sheet");
         showSheet(name);
+      });
+    });
+
+    $summary.querySelectorAll(".repl-toggle").forEach((el) => {
+      el.addEventListener("change", () => {
+        const replace = el.checked;
+        const sheetName = el.getAttribute("data-sheet") || "";
+        el.disabled = true;
+        fetch(replacementUrl, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            organization_eid: el.getAttribute("data-org-eid") || "",
+            contract_id: el.getAttribute("data-contract-id") || "",
+            erp_vendor_id: el.getAttribute("data-erp-vendor-id") || "",
+            replace: replace,
+          }),
+        })
+          .then(async (resp) => {
+            if (!resp.ok) {
+              const data = await resp.json().catch(() => ({}));
+              throw new Error(data.error || `HTTP ${resp.status}`);
+            }
+            return resp.json();
+          })
+          // On enable, open the contract's sheet so the appended left-over
+          // rows are visible; on disable, keep whatever sheet was open.
+          .then(() => loadPreview(replace ? sheetName : activeSheetName))
+          .catch((err) => {
+            el.checked = !replace; // revert the optimistic toggle
+            el.disabled = false;
+            alert(`Failed to update replacement: ${err.message}`);
+          });
       });
     });
   }
@@ -332,35 +378,43 @@
     $sheet.innerHTML = "";
   }
 
-  fetch(previewUrl, { credentials: "same-origin" })
-    .then(async (resp) => {
-      if (!resp.ok) {
-        const data = await resp.json().catch(() => ({}));
-        throw new Error(data.error || `HTTP ${resp.status}`);
-      }
-      return resp.json();
-    })
-    .then((data) => {
-      const hasSheets = Array.isArray(data.sheets) && data.sheets.length > 0;
-      const hasViewByInputRows =
-        data.view_by_input && (data.view_by_input.row_count || 0) > 0;
-      if (!hasSheets && !hasViewByInputRows) {
-        renderEmpty("No input lines to export for this task.");
-        return;
-      }
-      previewData = data;
-      $filename.textContent = data.filename;
-      $empty.classList.add("d-none");
-      $download.href = downloadUrl;
-      $download.classList.remove("disabled");
-      $download.removeAttribute("aria-disabled");
+  function loadPreview(reopenSheetName) {
+    return fetch(previewUrl, { credentials: "same-origin" })
+      .then(async (resp) => {
+        if (!resp.ok) {
+          const data = await resp.json().catch(() => ({}));
+          throw new Error(data.error || `HTTP ${resp.status}`);
+        }
+        return resp.json();
+      })
+      .then((data) => {
+        const hasSheets = Array.isArray(data.sheets) && data.sheets.length > 0;
+        const hasViewByInputRows =
+          data.view_by_input && (data.view_by_input.row_count || 0) > 0;
+        if (!hasSheets && !hasViewByInputRows) {
+          renderEmpty("No input lines to export for this task.");
+          return;
+        }
+        previewData = data;
+        $filename.textContent = data.filename;
+        $empty.classList.add("d-none");
+        $download.href = downloadUrl;
+        $download.classList.remove("disabled");
+        $download.removeAttribute("aria-disabled");
 
-      buildSummary(data.summary);
-      $sheet.innerHTML = "";
-    })
-    .catch((err) => {
-      renderEmpty(`Failed to load preview: ${err.message}`);
-    });
+        buildSummary(data.summary);
+        // Re-open the requested sheet (e.g. after a replacement toggle) so the
+        // appended left-over rows show immediately; no-op if it's gone.
+        activeSheetName = null;
+        $sheet.innerHTML = "";
+        if (reopenSheetName) showSheet(reopenSheetName);
+      })
+      .catch((err) => {
+        renderEmpty(`Failed to load preview: ${err.message}`);
+      });
+  }
+
+  loadPreview();
 })();
 </script>
 {% endblock %}

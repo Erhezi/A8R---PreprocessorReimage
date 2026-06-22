@@ -1545,6 +1545,33 @@ def upsert_contract_decision(
         return row
 
 
+def delete_contract_decision(
+    task_id: str,
+    organization_eid: Optional[str],
+    contract_id: str,
+    erp_vendor_id: Optional[str],
+) -> int:
+    """Remove a contract decision row for a scope; returns rows deleted (0/1).
+
+    Used to un-mark a REPLACE from the export preview so the contract sheet
+    reverts to matched rows only.
+    """
+    org_eid, cid, vendor = _contract_decision_scope(organization_eid, contract_id, erp_vendor_id)
+    with _session() as s:
+        deleted = (
+            s.query(ContractDecision)
+            .filter(
+                ContractDecision.task_id == task_id,
+                ContractDecision.organization_eid == org_eid,
+                ContractDecision.contract_id == cid,
+                ContractDecision.erp_vendor_id == vendor,
+            )
+            .delete(synchronize_session=False)
+        )
+        s.commit()
+        return deleted
+
+
 def get_contract_decisions(task_id: str) -> list[ContractDecision]:
     with _session() as s:
         rows = (
