@@ -13,7 +13,7 @@ import unicodedata
 from decimal import Decimal, InvalidOperation
 from typing import Optional
 
-from ..common.utils import ny_now
+from ..common.utils import ny_now, reduce_catalog_number
 from ..db import task_repo, workstate_repo
 from ..db.engine import get_sqlserver_engine
 from ..db.sql_loader import load_query
@@ -88,17 +88,6 @@ def _parse_price(value) -> tuple[Optional[Decimal], Optional[str]]:
         return d, None
     except (InvalidOperation, ValueError, TypeError):
         return None, f"Invalid price: {value}"
-
-
-def reduce_catalog_number(part_num: str) -> str:
-    """Reduce a catalog number by stripping non-alphanumeric characters and upper-casing.
-    If the result is purely numeric, leading zeros are removed (but "0" is kept if that's all there is)."""
-    if not part_num:
-        return ""
-    reduced = re.sub(r"[^A-Z0-9]", "", str(part_num).upper())
-    if reduced.isdigit():
-        reduced = reduced.lstrip('0') or '0'
-    return reduced
 
 
 # ---------------------------------------------------------------------------

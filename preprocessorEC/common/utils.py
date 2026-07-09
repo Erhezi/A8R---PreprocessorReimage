@@ -98,11 +98,22 @@ def clean_text(value: str) -> str:
 
 
 def reduce_catalog_number(part_num: str) -> str:
-    """Strip non-alphanumeric chars and upper-case a catalog number.
-    If the result is purely numeric, leading zeros are removed."""
+    """Reduce a catalog number for matching.
+
+    Decimal-looking values get a leading "." marker after their decimal point
+    and trailing zeroes are removed, so Excel-style numeric SKUs stay distinct
+    from ordinary numeric catalog numbers.
+    """
     if not part_num:
         return ""
-    reduced = re.sub(r"[^A-Z0-9]", "", str(part_num).upper())
+
+    value = str(part_num).strip().upper()
+    if re.fullmatch(r"\d+\.\d+", value):
+        reduced_decimal = value.rstrip("0").rstrip(".").replace(".", "")
+        reduced_decimal = reduced_decimal.lstrip("0") or "0"
+        return f".{reduced_decimal}"
+
+    reduced = re.sub(r"[^A-Z0-9]", "", value)
     if reduced.isdigit():
         reduced = reduced.lstrip('0') or '0'
     return reduced
