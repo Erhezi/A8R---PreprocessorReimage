@@ -860,6 +860,83 @@ def get_match_results(task_id: str, matched_source: Optional[str] = None) -> lis
         return results
 
 
+def count_live_input_items(task_id: str) -> int:
+    """Count INPUT items that aren't soft-deleted.
+
+    One COUNT(*) — use instead of materializing every TaskItem entity when
+    only a zero-viable check is needed.
+    """
+    with _session() as s:
+        count = (
+            s.query(func.count(TaskItem.item_id))
+            .filter(
+                TaskItem.task_id == task_id,
+                TaskItem.source_dataset == "INPUT",
+                func.coalesce(TaskItem.status, "").notin_(Status.DELETED_STATUSES),
+            )
+            .scalar()
+        )
+        return int(count or 0)
+
+
+def mark_input_items_preprocessed(task_id: str) -> int:
+    """Stamp ITEM_PREPROCESSED on every live INPUT item that has no
+    unresolved ERROR/WARN preprocess issue and no ERROR-carrying status.
+
+    Single set-based UPDATE with a correlated NOT EXISTS — no id lists, so
+    the 2100-parameter statement cap can't be hit regardless of task size.
+    Returns the number of rows updated.
+    """
+    with _session() as s:
+        unresolved_issue = (
+            s.query(PreprocessIssue.issue_id)
+            .filter(
+                PreprocessIssue.task_id == task_id,
+                PreprocessIssue.item_id == TaskItem.item_id,
+                PreprocessIssue.resolved == False,  # noqa: E712
+                PreprocessIssue.severity.in_(("ERROR", "WARN")),
+            )
+            .exists()
+        )
+        count = (
+            s.query(TaskItem)
+            .filter(
+                TaskItem.task_id == task_id,
+                TaskItem.source_dataset == "INPUT",
+                func.coalesce(TaskItem.status, "").notin_(Status.DELETED_STATUSES),
+                ~func.coalesce(TaskItem.status, "").like("%ERROR%"),
+                ~unresolved_issue,
+            )
+            .update(
+                {
+                    TaskItem.status: Status.ITEM_PREPROCESSED,
+                    TaskItem.updated_at: ny_now(),
+                },
+                synchronize_session=False,
+            )
+        )
+        s.commit()
+        return int(count or 0)
+
+
+def count_pending_matches(task_id: str) -> int:
+    """Count match rows still awaiting a decision.
+
+    Single COUNT(*) — use instead of loading every MatchResult ORM row
+    just to test for PENDING (which is ~53k wide rows on a large task).
+    """
+    with _session() as s:
+        count = (
+            s.query(func.count(MatchResult.match_id))
+            .filter(
+                MatchResult.task_id == task_id,
+                func.upper(func.coalesce(MatchResult.match_status, "")) == "PENDING",
+            )
+            .scalar()
+        )
+        return int(count or 0)
+
+
 def get_dedup_candidates(task_id: str, *, source: Optional[str] = "CCX") -> list[dict]:
     """Return Phase 4 dedup workspace rows for a task.
 
@@ -948,8 +1025,11 @@ def _parse_ccx_pkid_list(value: Optional[str]) -> list[int]:
     return parsed
 
 
-def _aggregate_cascade_status(source_matches: list[MatchResult]) -> str:
+def _aggregate_cascade_status(source_matches: list) -> str:
     """Roll up the CCX source decisions for an INFOR_CL cascade row.
+
+    Accepts MatchResult entities or column-only Rows — only
+    ``match_status`` is read.
 
     A cascade row says "this input item has a CL link to this Infor item".
     The link is valid as long as at least one of its CCX sources confirms
@@ -974,10 +1054,21 @@ def reaggregate_cascade_statuses(task_id: str) -> int:
 
     Use to self-heal stale cascade aggregations. Returns the number of rows
     whose status or bucket changed.
+
+    Two column-only SELECTs (cascade rows + all CCX rows for the task),
+    aggregation in Python, one bulk UPDATE for changed rows — never one
+    query per cascade row.
     """
     with _session() as s:
         cascade_rows = (
-            s.query(MatchResult)
+            s.query(
+                MatchResult.match_id,
+                MatchResult.input_item_id,
+                MatchResult.ccx_pkid,
+                MatchResult.ccx_pkids_matched,
+                MatchResult.match_status,
+                MatchResult.similarity_bucket,
+            )
             .filter(
                 MatchResult.task_id == task_id,
                 MatchResult.matched_source == "INFOR_CL",
@@ -985,7 +1076,30 @@ def reaggregate_cascade_statuses(task_id: str) -> int:
             )
             .all()
         )
-        updated = 0
+        if not cascade_rows:
+            return 0
+
+        ccx_by_item_pkid: dict[tuple[int, int], list] = {}
+        ccx_rows = (
+            s.query(
+                MatchResult.input_item_id,
+                MatchResult.ccx_pkid,
+                MatchResult.match_status,
+                MatchResult.similarity_bucket,
+            )
+            .filter(
+                MatchResult.task_id == task_id,
+                MatchResult.matched_source == "CCX",
+                MatchResult.ccx_pkid.isnot(None),
+            )
+            .all()
+        )
+        for ccx in ccx_rows:
+            ccx_by_item_pkid.setdefault(
+                (ccx.input_item_id, ccx.ccx_pkid), []
+            ).append(ccx)
+
+        updates: list[dict] = []
         for cascade in cascade_rows:
             lineage_pkids = _parse_ccx_pkid_list(cascade.ccx_pkids_matched)
             effective_pkids = set(
@@ -993,27 +1107,27 @@ def reaggregate_cascade_statuses(task_id: str) -> int:
             )
             if not effective_pkids:
                 continue
-            source_rows = (
-                s.query(MatchResult)
-                .filter(
-                    MatchResult.task_id == task_id,
-                    MatchResult.input_item_id == cascade.input_item_id,
-                    MatchResult.matched_source == "CCX",
-                    MatchResult.ccx_pkid.in_(sorted(effective_pkids)),
-                )
-                .all()
-            )
+            source_rows = [
+                row
+                for pkid in effective_pkids
+                for row in ccx_by_item_pkid.get((cascade.input_item_id, pkid), [])
+            ]
             new_status = _aggregate_cascade_status(source_rows)
             new_bucket = _aggregate_cascade_bucket(source_rows)
             if cascade.match_status != new_status or cascade.similarity_bucket != new_bucket:
-                cascade.match_status = new_status
-                cascade.similarity_bucket = new_bucket
-                updated += 1
-        s.commit()
-        return updated
+                updates.append({
+                    "match_id": cascade.match_id,
+                    "match_status": new_status,
+                    "similarity_bucket": new_bucket,
+                })
+
+        if updates:
+            s.bulk_update_mappings(MatchResult, updates)
+            s.commit()
+        return len(updates)
 
 
-def _aggregate_cascade_bucket(source_matches: list[MatchResult]) -> Optional[str]:
+def _aggregate_cascade_bucket(source_matches: list) -> Optional[str]:
     priority = {"HIGH": 3, "MED": 2, "LOW": 1}
     selected_bucket = None
     selected_score = None

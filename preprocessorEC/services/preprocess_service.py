@@ -2173,19 +2173,6 @@ def _summarize_issue_severities(issues: list) -> dict[str, int]:
     return counts
 
 
-def _mark_resolved_preprocess_items_complete(task_id: str, unresolved_item_ids: set[int] | None = None) -> None:
-    unresolved_item_ids = unresolved_item_ids or set()
-    input_items = _live_input_items(task_id)
-    updates = [
-        {"item_id": item.item_id, "status": Status.ITEM_PREPROCESSED}
-        for item in input_items
-        if item.item_id not in unresolved_item_ids
-        and "ERROR" not in str(getattr(item, "status", "")).upper()
-    ]
-    if updates:
-        task_repo.update_items_bulk(updates)
-
-
 def _complete_preprocess_and_advance(
     task_id: str,
     state_machine: TaskStateMachine,
@@ -2236,16 +2223,16 @@ def maybe_auto_advance_preprocess(task_id: str, state_machine: TaskStateMachine,
     if not task or task.phase != Phase.PREPROCESS:
         return None
 
+    # Cheap gates first — the cascade re-aggregation self-heal is only
+    # worth paying for once nothing else blocks the advance.
+    if _get_unresolved_preprocess_issues(task_id):
+        return None
     task_repo.reaggregate_cascade_statuses(task_id)
-    pending_matches = [
-        m for m in task_repo.get_match_results(task_id)
-        if (m.match_status or "").upper() == "PENDING"
-    ]
-    if pending_matches or _get_unresolved_preprocess_issues(task_id):
+    if task_repo.count_pending_matches(task_id):
         return None
 
     # Zero-viable guard: don't silently advance an empty task. Log and skip.
-    if not _live_input_items(task_id):
+    if not task_repo.count_live_input_items(task_id):
         state = state_machine.get_state(task_id)
         task_repo.add_status_log(
             task_id=task_id,
@@ -2258,7 +2245,7 @@ def maybe_auto_advance_preprocess(task_id: str, state_machine: TaskStateMachine,
         )
         return None
 
-    _mark_resolved_preprocess_items_complete(task_id)
+    task_repo.mark_input_items_preprocessed(task_id)
     return _complete_preprocess_and_advance(
         task_id,
         state_machine,
@@ -2278,7 +2265,7 @@ def finalize_preprocess(task_id: str, state_machine: TaskStateMachine, user: str
     """
     # Zero-viable guard: every input row was soft-deleted. Block advance and
     # leave a status_log entry so the task history records why.
-    if not _live_input_items(task_id):
+    if not task_repo.count_live_input_items(task_id):
         state = state_machine.get_state(task_id)
         msg = "Cannot advance to Dedup: task has 0 viable items to move forward (all input rows soft-deleted)."
         task_repo.add_status_log(
@@ -2297,20 +2284,17 @@ def finalize_preprocess(task_id: str, state_machine: TaskStateMachine, user: str
     # before checking PENDING so we don't block on aggregation lag.
     task_repo.reaggregate_cascade_statuses(task_id)
 
-    pending_matches = [
-        m for m in task_repo.get_match_results(task_id)
-        if (m.match_status or "").upper() == "PENDING"
-    ]
-    if pending_matches:
+    pending_count = task_repo.count_pending_matches(task_id)
+    if pending_count:
         raise ValueError(
             "Cannot finalize: {n} match(es) still PENDING — accept or reject every match before advancing".format(
-                n=len(pending_matches)
+                n=pending_count
             )
         )
 
     unresolved_issues = _get_unresolved_preprocess_issues(task_id)
     unresolved_item_ids = {issue.item_id for issue in unresolved_issues}
-    _mark_resolved_preprocess_items_complete(task_id, unresolved_item_ids)
+    task_repo.mark_input_items_preprocessed(task_id)
 
     if unresolved_issues:
         severity_counts = _summarize_issue_severities(unresolved_issues)

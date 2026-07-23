@@ -19,6 +19,7 @@ from typing import Iterable, Optional
 from sqlalchemy import bindparam
 from sqlalchemy.orm import Session
 
+from ..common.utils import ny_now
 from ..db.engine import get_sqlserver_engine
 from ..db.sql_loader import load_query
 from ..models import (
@@ -34,6 +35,11 @@ from .dedup_resolution import (
 )
 
 SQLSERVER_EXPANDING_BATCH_SIZE = 1000
+
+# Rows per bulk_insert_mappings call. These go through executemany (row-wise
+# parameters), so the 2100-parameter statement cap doesn't apply — the batch
+# size just bounds client-side buffering.
+INSERT_BATCH_SIZE = 5000
 
 # A vendor id that already carries its -B### location suffix.
 _VENDOR_LOC_SUFFIX_RE = re.compile(r"-B\d{3}$")
@@ -198,12 +204,27 @@ def populate_dedup_workspace(task_id: str, *, force: bool = False) -> dict:
         if not accepted_matches:
             return {"created": 0, "skipped": False}
 
+        # Column-only load — the populator reads a fixed handful of input
+        # fields, so skip materializing full TaskItem entities (Text columns
+        # included) for what can be tens of thousands of rows.
         input_item_ids = {m.input_item_id for m in accepted_matches if m.input_item_id is not None}
-        input_items: dict[int, TaskItem] = {}
+        input_items: dict[int, object] = {}
         if input_item_ids:
             for batch in _chunked(sorted(input_item_ids)):
                 for item in (
-                    session.query(TaskItem)
+                    session.query(
+                        TaskItem.item_id,
+                        TaskItem.intention,
+                        TaskItem.organization_eid,
+                        TaskItem.mfg_catalog_num,
+                        TaskItem.vendor_catalog_num,
+                        TaskItem.uom,
+                        TaskItem.uom_to_match_infor,
+                        TaskItem.qoe,
+                        TaskItem.unit_price,
+                        TaskItem.description,
+                        TaskItem.infor_item_number,
+                    )
                     .filter(TaskItem.item_id.in_(batch))
                     .all()
                 ):
@@ -238,7 +259,11 @@ def populate_dedup_workspace(task_id: str, *, force: bool = False) -> dict:
         input_source_type = input_header.get("source_type") or task.source_type
         input_process_type = input_header.get("process_type") or task.process_type
 
-        rows_to_insert: list[TaskItemForDecision] = []
+        # Rows are built as plain dicts and inserted via bulk_insert_mappings:
+        # far less per-row overhead than 50k+ ORM instances through
+        # bulk_save_objects, while fast_executemany still packs the INSERTs.
+        created_at = ny_now()
+        rows_to_insert: list[dict] = []
         for m in accepted_matches:
             input_item = input_items.get(m.input_item_id) if m.input_item_id else None
 
@@ -311,7 +336,7 @@ def populate_dedup_workspace(task_id: str, *, force: bool = False) -> dict:
             input_decision_seed = default_in if default_in in ("keep", "drop") else None
             matched_decision_seed = default_match if default_match in ("keep", "drop") else None
 
-            rows_to_insert.append(TaskItemForDecision(
+            rows_to_insert.append(dict(
                 match_id=m.match_id,
                 task_id=task_id,
                 input_item_id=m.input_item_id,
@@ -366,26 +391,32 @@ def populate_dedup_workspace(task_id: str, *, force: bool = False) -> dict:
                 resolution_grouping=group,
                 default_action_input=default_in,
                 default_action_matched=default_match,
+                created_at=created_at,
+                dedup_sort=None,
             ))
 
         # dedup_sort: per input_item_id, ascending by ea_price_matched
         # (NULLs sort last). Stable on match_id as tiebreak so reruns don't
         # shuffle the order for a given task.
-        by_input: dict[int, list[TaskItemForDecision]] = defaultdict(list)
+        by_input: dict[int, list[dict]] = defaultdict(list)
         for row in rows_to_insert:
-            by_input[row.input_item_id].append(row)
+            by_input[row["input_item_id"]].append(row)
         for group_rows in by_input.values():
             group_rows.sort(
                 key=lambda r: (
-                    r.ea_price_matched is None,
-                    r.ea_price_matched if r.ea_price_matched is not None else 0.0,
-                    r.match_id,
+                    r["ea_price_matched"] is None,
+                    r["ea_price_matched"] if r["ea_price_matched"] is not None else 0.0,
+                    r["match_id"],
                 )
             )
             for sort_index, row in enumerate(group_rows):
-                row.dedup_sort = sort_index
+                row["dedup_sort"] = sort_index
 
-        session.bulk_save_objects(rows_to_insert)
+        # Chunked executemany, one transaction: rows only become visible at
+        # the final commit, so the exists-guard idempotency check never sees
+        # a half-populated workspace if this dies midway.
+        for chunk in _chunked(rows_to_insert, INSERT_BATCH_SIZE):
+            session.bulk_insert_mappings(TaskItemForDecision, chunk)
         session.commit()
 
         return {"created": len(rows_to_insert), "skipped": False}

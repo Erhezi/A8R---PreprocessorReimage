@@ -183,8 +183,14 @@ SELECT
 FROM [Preprocessor].[PreprocessorTaskItem] ti
 INNER JOIN [Preprocessor].[PreprocessorTask] t
     ON t.task_id = ti.task_id
+-- tid.task_id is redundant for correctness (item_id is a global identity, so
+-- a workspace row can only belong to the task owning the input item) but it
+-- is required for the seek: IX_TaskItemForDecision_TaskInput leads with
+-- task_id, and without it the optimizer scans the whole multi-task workspace
+-- table (observed 234s vs 1.1s at ~224k table rows).
 LEFT JOIN [Preprocessor].[PreprocessorTaskItemForDecision] tid
-    ON tid.input_item_id  = ti.item_id
+    ON tid.task_id        = :task_id
+    AND tid.input_item_id  = ti.item_id
     AND tid.matched_source = 'CCX'
     AND tid.match_status   = 'ACCEPTED'
 -- CCX dates via the stable business key, not mr.ccx_pkid (re-issued daily by
