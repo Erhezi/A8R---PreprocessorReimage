@@ -127,15 +127,28 @@ def api_upload_items(task_id: str):
         # Build reverse map: original_header → internal key
         reverse = {v: k for k, v in user_mapping.items() if v}
 
-        # Rename columns using the user-provided mapping
-        df = df.rename(columns=reverse)
-
-        # Normalise remaining column names that weren't explicitly mapped
-        df.columns = [
-            c if c in reverse.values()
-            else c.strip().lower().replace(" ", "_")
-            for c in df.columns
-        ]
+        # Rename columns in a single pass over the ORIGINAL headers so an
+        # explicitly mapped column always owns its internal key name. An
+        # unmapped column whose normalised header would collide with a mapped
+        # key (e.g. a stray literal "UOM" column when the user mapped
+        # "Unit of Measure" → uom) gets a numeric suffix instead of silently
+        # duplicating the label — a duplicate makes row.get() return a Series.
+        mapped_keys = set(reverse.values())
+        new_cols = []
+        assigned = set()
+        for c in df.columns:
+            if c in reverse:
+                name = reverse[c]
+            else:
+                name = c.strip().lower().replace(" ", "_")
+                if name in mapped_keys or name in assigned:
+                    base, n = name, 2
+                    while name in mapped_keys or name in assigned:
+                        name = f"{base}_{n}"
+                        n += 1
+            new_cols.append(name)
+            assigned.add(name)
+        df.columns = new_cols
 
         # Fallback auto-match for any column not explicitly mapped
         col_aliases = {
@@ -189,6 +202,13 @@ def api_upload_items(task_id: str):
             def _str(val, fallback=""):
                 """Convert cell value to string, treating NaN/nan as empty."""
                 import math
+                if isinstance(val, pd.Series):
+                    # Duplicate column labels make row.get() return a Series;
+                    # stringifying it would store garbage like "uom PC uom PK".
+                    raise ValueError(
+                        f"Row {idx + 2}: multiple file columns resolved to the "
+                        f"same field — check the column mapping for duplicates"
+                    )
                 if val is None or (isinstance(val, float) and math.isnan(val)):
                     return fallback
                 s = str(val).strip()
