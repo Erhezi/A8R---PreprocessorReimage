@@ -189,8 +189,11 @@ def default_actions(
 
     Caller is responsible for normalizing intention to one of
     {EXPIRE, NEW, UPDATE}; everything not 'EXPIRE' is treated as upsert.
+    LOCATE follows the NEW path, so it is folded into NEW here.
     """
     intent = _norm(intention)
+    if intent == "LOCATE":
+        intent = "NEW"
     if intent not in {"EXPIRE", "NEW", "UPDATE"}:
         # Default to upsert if the task intention is missing/unknown so that
         # the user still sees sensible defaults instead of empty cells.

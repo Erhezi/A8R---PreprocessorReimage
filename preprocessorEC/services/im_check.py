@@ -18,8 +18,8 @@ data sources are confirmed.
     dropping the line.
 
   Check 3 — VENDOR_LOCATION_ALIGNMENT
-    For each kept-as-KEEP input row whose intention is NEW or UPDATE
-    and whose Infor item number is set, verify that the input's ERP
+    For each kept-as-KEEP input row whose intention is NEW, LOCATE, or
+    UPDATE and whose Infor item number is set, verify that the input's ERP
     Vendor ID matches the inventory replenishment vendor on the
     contracted location.
 """
@@ -125,8 +125,8 @@ def _drop_candidates(rows: list[TaskItemForDecision]) -> list[_DropCandidate]:
 
 def _new_line_candidates(rows: list[TaskItemForDecision]) -> list[_NewLineCandidate]:
     """Input rows kept by the user that link to an Infor IM item and have
-    NEW/UPDATE intention. Deduped per input_item_id since the input snapshot
-    is uniform across the match group.
+    NEW/LOCATE/UPDATE intention. Deduped per input_item_id since the input
+    snapshot is uniform across the match group.
     """
     out: list[_NewLineCandidate] = []
     seen: set[int] = set()
@@ -136,7 +136,7 @@ def _new_line_candidates(rows: list[TaskItemForDecision]) -> list[_NewLineCandid
         if (r.input_decision or "").lower() != "keep":
             continue
         intent = (r.task_intention or "").upper()
-        if intent not in {"NEW", "UPDATE"}:
+        if intent not in {"NEW", "LOCATE", "UPDATE"}:
             continue
         infor_item = (r.infor_item_number or "").strip()
         if not infor_item:

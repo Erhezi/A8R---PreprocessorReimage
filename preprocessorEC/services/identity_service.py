@@ -170,7 +170,7 @@ def run_precheck2(task_id: str, state_machine: TaskStateMachine) -> dict:
     """Run Phase 2 pre-check (PC2) on identity-stage items.
 
     Current checks:
-    - Manufacturer confirmed (UPDATE/NEW/MIX must have manufacturer confirmed before PC2)
+    - Manufacturer confirmed (UPDATE/NEW/LOCATE/MIX must have manufacturer confirmed before PC2)
     - Standardized description not null/empty for every item
     """
     task = task_repo.get_task(task_id)
@@ -178,8 +178,8 @@ def run_precheck2(task_id: str, state_machine: TaskStateMachine) -> dict:
     state = state_machine.get_state(task_id)
     mfg_confirmed = state.get("manufacturer_confirmed", False)
 
-    # Gate: manufacturer must be confirmed for UPDATE, NEW, and MIX
-    if intention in ("UPDATE", "NEW", "MIX") and not mfg_confirmed:
+    # Gate: manufacturer must be confirmed for UPDATE, NEW, LOCATE, and MIX
+    if intention in ("UPDATE", "NEW", "LOCATE", "MIX") and not mfg_confirmed:
         return {
             "total": 0,
             "passed": 0,

@@ -194,7 +194,7 @@ def api_upload_items(task_id: str):
         # Per-row intention is only sourced from the file in BATCH uploads;
         # SINGLE uploads always inherit the task header's intention.
         is_batch = (task.intake_mode or "SINGLE").upper() == "BATCH"
-        ALLOWED_ITEM_INTENTIONS = {"NEW", "UPDATE", "EXPIRE"}
+        ALLOWED_ITEM_INTENTIONS = {"NEW", "LOCATE", "UPDATE", "EXPIRE"}
         intention_errors: list[str] = []
 
         items_to_add = []
@@ -237,7 +237,7 @@ def api_upload_items(task_id: str):
                     else:
                         intention_errors.append(
                             f"Row {idx + 2}: invalid intention '{raw_intent}' "
-                            f"(allowed: NEW, UPDATE, EXPIRE)"
+                            f"(allowed: NEW, LOCATE, UPDATE, EXPIRE)"
                         )
                         item_intention = task.intention
                 else:
@@ -266,7 +266,7 @@ def api_upload_items(task_id: str):
         if intention_errors:
             return jsonify({
                 "error": "Invalid intention values in uploaded file. "
-                         "Allowed values are NEW, UPDATE, EXPIRE.",
+                         "Allowed values are NEW, LOCATE, UPDATE, EXPIRE.",
                 "details": intention_errors,
             }), 400
 

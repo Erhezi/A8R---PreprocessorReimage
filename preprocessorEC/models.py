@@ -47,7 +47,7 @@ class Task(Base):
     source_type = Column(String(20), nullable=False)    # PREMIER | LOCAL
     organization = Column(String(50), nullable=False)   # ALL, WHITE PLAINS, etc.
     oem_name = Column(String(255), nullable=True)
-    intention = Column(String(10), nullable=False)       # EXPIRE | NEW | UPDATE | MIX
+    intention = Column(String(10), nullable=False)       # EXPIRE | NEW | LOCATE | UPDATE | MIX
     mixed_intention = Column(Boolean, default=False)
     contract_start_date = Column(Date, nullable=True)
     contract_end_date = Column(Date, nullable=True)

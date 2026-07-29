@@ -17,6 +17,7 @@ from flask_login import login_required, current_user
 from sqlalchemy import text
 
 from . import tasks_bp
+from ..common.utils import ny_now
 from ..db import task_repo
 from ..db.engine import get_sqlserver_engine
 from ..db.sql_loader import load_query
@@ -35,10 +36,20 @@ def _sm() -> TaskStateMachine:
 @tasks_bp.route("/api/tasks", methods=["GET"])
 @login_required
 def api_list_tasks():
-    """Return paginated task list as JSON."""
+    """Return the task list as JSON.
+
+    Optional server-side `phase` / `status` filters plus a `limit` override
+    (default 200, capped at 10000). The landing page pulls the full set with
+    a high limit and runs search / Wrike-filter / pagination client-side.
+    """
     phase = request.args.get("phase")
     status = request.args.get("status")
-    tasks = task_repo.list_tasks(phase=phase, status=status)
+    try:
+        limit = int(request.args.get("limit", 200))
+    except (TypeError, ValueError):
+        limit = 200
+    limit = max(1, min(limit, 10000))
+    tasks = task_repo.list_tasks(phase=phase, status=status, limit=limit)
     return jsonify([t.to_dict() for t in tasks])
 
 
@@ -305,6 +316,236 @@ def api_vendor_search():
         }
         for r in rows
     ])
+
+
+# -------------------------------------------------------------------------
+# Contract-number registration — preprocessor / MDM only.
+#
+# NEW/LOCATE tasks carry free-text under `contract_number` until the real CCX
+# system contract id is acquired. These endpoints let a preprocessor/MDM user
+# swap that free text for a verified CCX ContractID so downstream monitoring can
+# track item synchronization by contract. The original free text is preserved
+# in the task notes.
+# -------------------------------------------------------------------------
+_CONTRACT_EDIT_ROLES = {"preprocessor", "mdm"}
+
+
+def _has_contract_edit_role() -> bool:
+    return (getattr(current_user, "role", "") or "").lower() in _CONTRACT_EDIT_ROLES
+
+
+def _reg_norm(value) -> str:
+    return str(value or "").strip().upper()
+
+
+def _reg_org_match(a, b) -> bool:
+    """Organizations match — tolerant of the label/db-value drift between the
+    task's stored organization and the CCX Organization string (same
+    contains-both-ways logic the create-task fetch uses)."""
+    na, nb = _reg_norm(a), _reg_norm(b)
+    if not na or not nb:
+        return False
+    return na == nb or na in nb or nb in na
+
+
+def _reg_date_match(a, b) -> bool:
+    # Compare the date portion only. Two empty dates are consistent (nothing to
+    # contradict); one present and one missing is a mismatch.
+    return str(a or "")[:10] == str(b or "")[:10]
+
+
+def _fetch_contract_rows(contract_id: str):
+    engine = get_sqlserver_engine()
+    with engine.connect() as conn:
+        return conn.execute(
+            load_query("tasks", "tasks", query="contract_rows_by_id"),
+            {"cid": contract_id},
+        ).mappings().all()
+
+
+def _evaluate_contract_registration(task, rows) -> dict:
+    """Compare a task's header against the CCX rows for an entered contract id.
+
+    Vendor (ERP vendor id) and organization are the hard gates; the contract
+    end date is a soft gate. Against the best-matching CCX row, the outcome is:
+      NOT_FOUND     — no CCX row for the contract id
+      MATCH         — vendor + org + end date all match
+      END_DATE_ONLY — vendor + org match but end date differs (needs user OK)
+      BLOCKED       — vendor and/or org differ (cannot locate the contract)
+    """
+    if not rows:
+        return {"found": False, "outcome": "NOT_FOUND"}
+
+    best = None
+    best_score = None
+    for r in rows:
+        vendor = bool(_reg_norm(task.vendor_id)) and _reg_norm(task.vendor_id) == _reg_norm(r["ERPVendorID"])
+        org = _reg_org_match(task.organization, r["Organization"])
+        end = _reg_date_match(task.contract_end_date, r["ContractEndDate"])
+        # Rank rows so the closest match wins: vendor+org first, then end date.
+        score = (
+            1 if (vendor and org) else 0,
+            1 if end else 0,
+            1 if vendor else 0,
+            1 if org else 0,
+        )
+        if best_score is None or score > best_score:
+            best_score = score
+            best = {"row": r, "vendor": vendor, "organization": org, "end_date": end}
+
+    if best["vendor"] and best["organization"] and best["end_date"]:
+        outcome = "MATCH"
+    elif best["vendor"] and best["organization"]:
+        outcome = "END_DATE_ONLY"
+    else:
+        outcome = "BLOCKED"
+
+    r = best["row"]
+    return {
+        "found": True,
+        "outcome": outcome,
+        "comparison": {
+            "vendor": best["vendor"],
+            "organization": best["organization"],
+            "end_date": best["end_date"],
+        },
+        "ccx": {
+            "contract_number": str(r["ContractID"] or "").strip(),
+            "vendor_id": str(r["ERPVendorID"] or "").strip(),
+            "vendor_name": str(r["Vendor"] or "").strip(),
+            "organization": str(r["Organization"] or "").strip(),
+            "contract_end_date": str(r["ContractEndDate"])[:10] if r["ContractEndDate"] else None,
+        },
+    }
+
+
+@tasks_bp.route("/api/tasks/<task_id>/contract-registration-precheck", methods=["GET"])
+@login_required
+def api_contract_registration_precheck(task_id: str):
+    """Verify an entered CCX contract number against a task's header (no writes)."""
+    if not _has_contract_edit_role():
+        return jsonify({"error": "You do not have permission to edit the contract number."}), 403
+    contract_id = request.args.get("contract_id", "").strip()
+    if not contract_id:
+        return jsonify({"error": "contract_id is required"}), 400
+    task = task_repo.get_task(task_id)
+    if not task:
+        return jsonify({"error": "Task not found"}), 404
+
+    result = _evaluate_contract_registration(task, _fetch_contract_rows(contract_id))
+    result["current_contract"] = task.contract_number
+    result["task"] = {
+        "vendor_id": task.vendor_id,
+        "organization": task.organization,
+        "contract_end_date": str(task.contract_end_date)[:10] if task.contract_end_date else None,
+    }
+    return jsonify(result), 200
+
+
+@tasks_bp.route("/api/tasks/<task_id>/contract-number", methods=["POST"])
+@login_required
+def api_register_contract_number(task_id: str):
+    """Register a verified CCX contract number on a task.
+
+    Re-validates server-side, then (on MATCH, or END_DATE_ONLY with explicit
+    permission) sets ``contract_number`` to the CCX ContractID and preserves the
+    prior free text in the task notes.
+
+    When the vendor/org do not match (BLOCKED), a preprocessor/MDM user may pass
+    ``allow_vendor_org_overwrite`` to overwrite the task's vendor and
+    organization with the CCX contract's values; the original vendor and
+    organization are preserved in the task notes.
+    """
+    if not _has_contract_edit_role():
+        return jsonify({"error": "You do not have permission to edit the contract number."}), 403
+
+    data = request.get_json(force=True) or {}
+    contract_id = str(data.get("contract_id", "")).strip()
+    allow_end_date_mismatch = bool(data.get("allow_end_date_mismatch", False))
+    allow_vendor_org_overwrite = bool(data.get("allow_vendor_org_overwrite", False))
+    if not contract_id:
+        return jsonify({"error": "contract_id is required"}), 400
+
+    task = task_repo.get_task(task_id)
+    if not task:
+        return jsonify({"error": "Task not found"}), 404
+
+    result = _evaluate_contract_registration(task, _fetch_contract_rows(contract_id))
+    outcome = result["outcome"]
+    ccx = result["ccx"]
+
+    if outcome == "NOT_FOUND":
+        return jsonify({
+            "error": "Contract number not found in the CCX synced contracts.",
+            "outcome": outcome,
+        }), 404
+    if outcome == "BLOCKED" and not allow_vendor_org_overwrite:
+        return jsonify({
+            "error": ("We won't be able to locate this contract — the vendor ID and/or "
+                      "organization do not match this task. Try resolving the identity "
+                      "first and come back later."),
+            "outcome": outcome,
+            "comparison": result["comparison"],
+        }), 409
+    if outcome == "END_DATE_ONLY" and not allow_end_date_mismatch:
+        return jsonify({
+            "error": ("The contract was found but its end date does not match this task. "
+                      "Confirm to proceed with the contract number update anyway."),
+            "outcome": outcome,
+            "needs_confirmation": True,
+            "ccx": ccx,
+        }), 409
+
+    # Proceed — MATCH, END_DATE_ONLY (with permission), or BLOCKED (with an
+    # explicit vendor/org overwrite).
+    overwrite = outcome == "BLOCKED" and allow_vendor_org_overwrite
+    new_cid = ccx["contract_number"] or contract_id
+    user = getattr(current_user, "username", "") or "system"
+    today = ny_now().strftime("%Y-%m-%d")
+
+    fields = {"contract_number": new_cid}
+    note_lines = []
+
+    if overwrite:
+        orig_vendor = task.vendor_id or ""
+        orig_vendor_name = task.erp_vendor_name or ""
+        orig_org = task.organization or ""
+        new_vendor = ccx["vendor_id"]
+        new_vendor_name = ccx["vendor_name"]
+        new_org = ccx["organization"]
+        # The ERP vendor id encodes the purchase-from location as the "-Bxxx"
+        # suffix; the location *name* isn't on the CCX header, so clear it
+        # rather than leave the previous vendor's location showing.
+        pf_loc = new_vendor.split("-", 1)[1] if "-" in new_vendor else None
+        fields.update({
+            "vendor_id": new_vendor or None,
+            "erp_vendor_name": new_vendor_name or None,
+            "purchase_from_loc": pf_loc,
+            "purchase_from_loc_name": None,
+            "organization": new_org or task.organization,
+        })
+        orig_vendor_disp = orig_vendor if not orig_vendor_name else f"{orig_vendor} - {orig_vendor_name}"
+        note_lines.append(
+            f"(vendor and organization overwritten to match contract {new_cid} — "
+            f"original vendor: {orig_vendor_disp or '—'}, "
+            f"original organization: {orig_org or '—'}, by {user} on {today})"
+        )
+
+    old_text = task.contract_number
+    note_lines.append(
+        f"(registered as {new_cid}, previously named as "
+        f"{old_text if (old_text and old_text.strip()) else '—'} by {user} on {today})"
+    )
+
+    note_block = "\n".join(note_lines)
+    if task.notes and task.notes.strip():
+        fields["notes"] = task.notes.rstrip() + "\n\n" + note_block
+    else:
+        fields["notes"] = note_block
+
+    task_repo.update_task_fields(task_id, **fields)
+    updated = task_repo.get_task(task_id)
+    return jsonify({"ok": True, "outcome": outcome, "overwritten": overwrite, "task": updated.to_dict()}), 200
 
 
 @tasks_bp.route("/tasks/")

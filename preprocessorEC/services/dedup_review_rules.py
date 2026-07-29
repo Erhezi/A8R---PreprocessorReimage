@@ -39,11 +39,14 @@ def _is_premier(source_type: Optional[str]) -> bool:
 def _intent(intention: Optional[str]) -> str:
     """Normalize task intention to one of UPDATE / NEW / EXPIRE.
 
-    Anything else (MIX, missing) is treated as UPDATE — for MIX tasks the
+    LOCATE follows the same resolution path as NEW, so it is folded into NEW
+    here. Anything else (MIX, missing) is treated as UPDATE — for MIX tasks the
     workspace populator already snapshots the per-item intention into
     ``task_intention``, so this branch is a defensive fallback.
     """
     n = _norm(intention)
+    if n == "LOCATE":
+        return "NEW"
     if n in {"UPDATE", "NEW", "EXPIRE"}:
         return n
     return "UPDATE"

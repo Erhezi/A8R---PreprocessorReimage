@@ -35,11 +35,11 @@
         </div>
       </div>
 
-      <!-- Contract Number (NEW only) -->
+      <!-- Contract Number (NEW / LOCATE only) -->
       <div class="card mb-3" id="contractNumCard" style="display:none">
         <div class="card-header">Contract Number (MDM)</div>
         <div class="card-body">
-          <p class="text-muted small mb-2">Required for NEW contracts. Set the contract number before proceeding.</p>
+          <p class="text-muted small mb-2">Required for NEW and LOCATE contracts. Set the contract number before proceeding.</p>
           <div class="input-group input-group-sm">
             <input type="text" class="form-control" id="contractNumInput" placeholder="Enter contract #">
             <button class="btn btn-outline-primary" id="btnSetContract">Set Contract #</button>
@@ -256,9 +256,11 @@ async function refresh() {
   document.getElementById("mfgOemName").textContent = t.oem_name || "—";
 
   const intention = (t.intention || "").toUpperCase();
+  // LOCATE follows the same path as NEW throughout identity.
+  const isNewLike = intention === "NEW" || intention === "LOCATE";
 
-  // Contract number card (NEW only)
-  if (intention === "NEW") {
+  // Contract number card (NEW / LOCATE only)
+  if (isNewLike) {
     document.getElementById("contractNumCard").style.display = "";
     if (t.contract_number) {
       document.getElementById("contractNumInput").value = t.contract_number;
@@ -289,7 +291,7 @@ async function refresh() {
     } else {
       showMfgConfirmed(data.manufacturer_code, data.manufacturer_name);
     }
-  } else if (intention === 'NEW') {
+  } else if (isNewLike) {
     document.getElementById('mfgExpirePane').style.display = 'none';
     document.getElementById('mfgUpdatePane').style.display = 'none';
     document.getElementById('mfgNewPane').style.display = '';
@@ -333,12 +335,12 @@ async function refresh() {
     document.getElementById("errorsCard").style.display = "none";
   }
 
-  // Enable proceed: PC2 must have passed + manufacturer confirmed + (NEW → contract # set).
+  // Enable proceed: PC2 must have passed + manufacturer confirmed + (NEW/LOCATE → contract # set).
   // Soft-deleted rows (DELETED_*) are ignored — they're filtered out of all downstream phases.
   const liveItems = items.filter(i => !String(i.status || "").startsWith("DELETED_"));
   const allPassed = liveItems.length > 0 && liveItems.every(i => i.status === "PASSED_PC2");
   const mfgOk = data.manufacturer_confirmed;
-  const contractOk = intention !== "NEW" || !!(t.contract_number && t.contract_number.trim());
+  const contractOk = !isNewLike || !!(t.contract_number && t.contract_number.trim());
   document.getElementById("btnProceed").disabled = !(allPassed && mfgOk && contractOk);
 }
 

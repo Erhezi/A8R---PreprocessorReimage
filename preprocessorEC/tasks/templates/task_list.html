@@ -11,7 +11,40 @@
   </div>
 
   <!-- Filters -->
-  <div class="row g-2 mb-3">
+  <div class="row g-2 mb-3 align-items-center">
+    <div class="col-12 col-md">
+      <input type="search" id="searchInput" class="form-control form-control-sm"
+             placeholder="Search all columns — contract #, vendor, org, OEM, manufacturer, owner, status, notes…"
+             autocomplete="off">
+    </div>
+    <div class="col-auto">
+      <div class="dropdown">
+        <button class="btn btn-outline-secondary btn-sm dropdown-toggle" type="button"
+                data-bs-toggle="dropdown" data-bs-auto-close="outside">More Columns</button>
+        <ul class="dropdown-menu dropdown-menu-end p-2">
+          <li class="mb-1">
+            <label class="d-flex align-items-center gap-2 mb-0" style="cursor:pointer">
+              <input type="checkbox" class="form-check-input m-0" id="colUpdated"> Updated
+            </label>
+          </li>
+          <li class="mb-1">
+            <label class="d-flex align-items-center gap-2 mb-0" style="cursor:pointer">
+              <input type="checkbox" class="form-check-input m-0" id="colManufacturer"> Manufacturer
+            </label>
+          </li>
+          <li class="mb-1">
+            <label class="d-flex align-items-center gap-2 mb-0" style="cursor:pointer">
+              <input type="checkbox" class="form-check-input m-0" id="colOem"> OEM Name
+            </label>
+          </li>
+          <li>
+            <label class="d-flex align-items-center gap-2 mb-0" style="cursor:pointer">
+              <input type="checkbox" class="form-check-input m-0" id="colNotes"> Notes
+            </label>
+          </li>
+        </ul>
+      </div>
+    </div>
     <div class="col-auto">
       <select id="filterPhase" class="form-select form-select-sm">
         <option value="">All Phases</option>
@@ -39,9 +72,17 @@
     </div>
   </div>
 
+  <!-- Pagination (top) -->
+  <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
+    <small class="text-muted" id="tableSummary"></small>
+    <nav aria-label="Task list pages">
+      <ul class="pagination pagination-sm mb-0" id="pagination"></ul>
+    </nav>
+  </div>
+
   <!-- Task table -->
   <div class="table-responsive">
-    <table class="table table-hover table-sm" id="taskTable">
+    <table class="table table-hover table-sm" id="taskTable" style="font-size:.78rem">
       <thead class="table-light">
         <tr>
           <th>ID</th>
@@ -54,7 +95,11 @@
           <th>Status</th>
           <th>Wrike ID</th>
           <th>Owner</th>
-          <th>Updated</th>
+          <th>Created</th>
+          <th class="col-opt col-updated d-none">Updated</th>
+          <th class="col-opt col-manufacturer d-none">Manufacturer</th>
+          <th class="col-opt col-oem d-none">OEM Name</th>
+          <th class="col-opt col-notes d-none">Notes</th>
           <th></th>
         </tr>
       </thead>
@@ -153,6 +198,7 @@
                 <select name="intention" class="form-select form-select-sm" required>
                   <option value="">Select…</option>
                   <option value="NEW">NEW</option>
+                  <option value="LOCATE">LOCATE</option>
                   <option value="UPDATE">UPDATE</option>
                   <option value="EXPIRE">EXPIRE</option>
                 </select>
@@ -277,11 +323,48 @@
     </div>
   </div>
 </div>
+<!-- ============================================================
+     Register / edit contract number (preprocessor / MDM only)
+     ============================================================ -->
+<div class="modal fade" id="contractEditModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Register Contract Number</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="ceTaskId">
+        <p class="small text-muted mb-2">
+          Task <span id="ceTaskLabel" class="fw-semibold text-dark"></span> — current contract #:
+          <span id="ceCurrentContract" class="fw-semibold text-dark"></span>
+        </p>
+        <label class="form-label mb-1">CCX Contract Number</label>
+        <div class="input-group input-group-sm mb-1">
+          <input type="text" class="form-control" id="ceContractInput" placeholder="Enter CCX contract ID…" autocomplete="off">
+          <button class="btn btn-outline-secondary" type="button" id="ceBtnFetch">Fetch</button>
+        </div>
+        <div class="form-text mb-1">
+          On fetch we verify the contract exists in CCX and that its vendor ID,
+          organization, and end date match this task.
+        </div>
+        <div id="ceStatus" class="small"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
+        <button type="button" class="btn btn-primary btn-sm" id="ceBtnConfirm" disabled>Confirm</button>
+      </div>
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
 <script>
 const PREFIX = "{{ url_prefix }}";
+const USER_ROLE = "{{ current_user.role }}";
+// Only preprocessor / MDM users may register/edit a task's contract number.
+const CAN_EDIT_CONTRACT = ["preprocessor", "mdm"].includes(USER_ROLE);
 
 /* ================================================================
    Column definitions
@@ -746,37 +829,127 @@ document.getElementById("btnCreateBatchTask").addEventListener("click", async ()
 });
 
 /* ================================================================
-   Task list
+   Task list — client-side search, Wrike filter & pagination
    ================================================================ */
-async function loadTasks() {
-  const phase  = document.getElementById("filterPhase").value;
-  const status = document.getElementById("filterStatus").value;
-  const params = new URLSearchParams();
-  if (phase)  params.set("phase", phase);
-  if (status) params.set("status", status);
+const PAGE_SIZE = 20;
+let allTasks = [];   // full set fetched from the server
+let currentPage = 1;
 
-  const resp  = await fetch(`${PREFIX}/api/tasks?${params}`);
-  const tasks = await resp.json();
+async function fetchTasks() {
   const tbody = document.getElementById("taskTableBody");
-
-  if (!tasks.length) {
-    tbody.innerHTML = '<tr><td colspan="10" class="text-center text-muted">No tasks found</td></tr>';
+  tbody.innerHTML = '<tr><td colspan="12" class="text-center text-muted">Loading…</td></tr>';
+  try {
+    const resp = await fetch(`${PREFIX}/api/tasks?limit=10000`);
+    allTasks = await resp.json();
+    // Newest first — created_at is ISO 8601, so lexicographic compare is chronological.
+    allTasks.sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
+  } catch (e) {
+    allTasks = [];
+    tbody.innerHTML = '<tr><td colspan="12" class="text-center text-danger">Failed to load tasks</td></tr>';
     return;
   }
+  currentPage = 1;
+  render();
+}
 
-  tbody.innerHTML = tasks.map(t => `
+/* Distinct badge color per phase. */
+const PHASE_BADGE = {
+  INTAKE:     "bg-secondary",
+  IDENTITY:   "bg-primary",
+  PREPROCESS: "bg-info text-dark",
+  DEDUP:      "bg-warning text-dark",
+  EXPORT:     "bg-success",
+  MONITORING: "bg-dark",
+};
+function phaseBadge(phase) { return PHASE_BADGE[phase] || "bg-secondary"; }
+
+/* Escape free-text (notes / manufacturer name) before injecting into innerHTML. */
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+/* Show / hide the optional Updated, Manufacturer, OEM Name and Notes columns
+   (header + body) based on the Columns-dropdown checkboxes. */
+function applyColumnVisibility() {
+  const showUpdated = document.getElementById("colUpdated").checked;
+  const showMfr     = document.getElementById("colManufacturer").checked;
+  const showOem     = document.getElementById("colOem").checked;
+  const showNotes   = document.getElementById("colNotes").checked;
+  document.querySelectorAll(".col-updated").forEach(el => el.classList.toggle("d-none", !showUpdated));
+  document.querySelectorAll(".col-manufacturer").forEach(el => el.classList.toggle("d-none", !showMfr));
+  document.querySelectorAll(".col-oem").forEach(el => el.classList.toggle("d-none", !showOem));
+  document.querySelectorAll(".col-notes").forEach(el => el.classList.toggle("d-none", !showNotes));
+}
+
+/* Apply phase / status / free-text filters (all client-side). */
+function getFilteredTasks() {
+  const phase  = document.getElementById("filterPhase").value;
+  const status = document.getElementById("filterStatus").value;
+  const term   = document.getElementById("searchInput").value.trim().toLowerCase();
+
+  return allTasks.filter(t => {
+    if (phase  && t.phase  !== phase)  return false;
+    if (status && t.status !== status) return false;
+    if (term) {
+      const haystack = [
+        t.task_id, t.contract_number, t.vendor_id, t.erp_vendor_name,
+        t.purchase_from_loc_name, t.process_type, t.source_type,
+        t.organization, t.oem_name, t.intention, t.phase, t.status,
+        t.wrike_id, t.created_by, t.notes,
+        t.contract_manufacturer_infor, t.contract_manufacturer_name_infor,
+      ].filter(Boolean).join(" ").toLowerCase();
+      if (!haystack.includes(term)) return false;
+    }
+    return true;
+  });
+}
+
+function render() {
+  const filtered  = getFilteredTasks();
+  const total     = filtered.length;
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  if (currentPage > pageCount) currentPage = pageCount;
+  const start    = (currentPage - 1) * PAGE_SIZE;
+  const pageRows = filtered.slice(start, start + PAGE_SIZE);
+  renderRows(pageRows);
+  applyColumnVisibility();
+  renderSummary(total, start, pageRows.length);
+  renderPagination(pageCount);
+}
+
+function renderRows(tasks) {
+  const tbody = document.getElementById("taskTableBody");
+  if (!tasks.length) {
+    tbody.innerHTML = '<tr><td colspan="12" class="text-center text-muted">No tasks found</td></tr>';
+    return;
+  }
+  tbody.innerHTML = tasks.map(t => {
+    const mfr = [t.contract_manufacturer_infor, t.contract_manufacturer_name_infor]
+      .filter(Boolean).map(esc).join(" - ") || "—";
+    const oem = t.oem_name ? esc(t.oem_name) : "—";
+    const notes = t.notes ? esc(t.notes) : "—";
+    return `
     <tr style="cursor:pointer" onclick="location.href='${PREFIX}/tasks/${t.task_id}'">
       <td>${t.task_id}</td>
-      <td>${t.contract_number || "—"}</td>
+      <td>${t.contract_number ? esc(t.contract_number) : "—"}${CAN_EDIT_CONTRACT
+          ? ` <button type="button" class="btn btn-link btn-sm p-0 ms-1 align-baseline text-decoration-none"
+                 title="Register / edit contract #"
+                 onclick="event.stopPropagation(); openContractEdit('${t.task_id}')">✎</button>`
+          : ""}</td>
       <td>${t.vendor_id ? t.vendor_id + (t.erp_vendor_name ? ' - ' + t.erp_vendor_name : '') + (t.purchase_from_loc_name ? ' (' + t.purchase_from_loc_name + ')' : '') : "—"}</td>
       <td>${t.process_type || "—"}${t.source_type ? " / " + t.source_type : ""}</td>
       <td>${t.organization || "—"}</td>
       <td>${t.intention}</td>
-      <td><span class="badge bg-info">${t.phase}</span></td>
+      <td><span class="badge ${phaseBadge(t.phase)}">${t.phase}</span></td>
       <td><span class="badge ${(t.status === "ON_HOLD_PC1" || t.status === "ON_HOLD_PC2") ? "bg-danger" : "bg-secondary"}">${t.status}</span></td>
       <td onclick="event.stopPropagation()">${t.wrike_id ? `<a href="https://www.wrike.com/open.htm?id=${encodeURIComponent(t.wrike_id)}" target="_blank" rel="noopener">${t.wrike_id}</a>` : "—"}</td>
       <td>${t.created_by}</td>
-      <td>${t.updated_at ? new Date(t.updated_at).toLocaleDateString() : "—"}</td>
+      <td>${t.created_at ? new Date(t.created_at).toLocaleDateString() : "—"}</td>
+      <td class="col-opt col-updated d-none">${t.updated_at ? new Date(t.updated_at).toLocaleDateString() : "—"}</td>
+      <td class="col-opt col-manufacturer d-none">${mfr}</td>
+      <td class="col-opt col-oem d-none">${oem}</td>
+      <td class="col-opt col-notes d-none" style="max-width:22rem;white-space:normal">${notes}</td>
       <td onclick="event.stopPropagation()">
         ${t.parent_task_id
           ? `<button class="btn btn-outline-secondary btn-sm py-0 px-1" disabled
@@ -788,24 +961,80 @@ async function loadTasks() {
               <small>Delete</small>
             </button>`}
       </td>
-    </tr>
-  `).join("");
+    </tr>`;
+  }).join("");
 }
+
+function renderSummary(total, start, shown) {
+  const el = document.getElementById("tableSummary");
+  el.textContent = total ? `Showing ${start + 1}–${start + shown} of ${total} tasks` : "No tasks";
+}
+
+/* Compact page window: first, last, current ±2, with ellipsis gaps. */
+function pageWindow(current, total) {
+  const set = new Set([1, total, current]);
+  for (let i = 1; i <= 2; i++) {
+    if (current - i >= 1)     set.add(current - i);
+    if (current + i <= total) set.add(current + i);
+  }
+  return [...set].sort((a, b) => a - b);
+}
+
+function renderPagination(pageCount) {
+  const ul = document.getElementById("pagination");
+  if (pageCount <= 1) { ul.innerHTML = ""; return; }
+
+  const li = (label, page, {disabled = false, active = false} = {}) =>
+    `<li class="page-item ${disabled ? 'disabled' : ''} ${active ? 'active' : ''}">
+       <a class="page-link" href="#" data-page="${page}">${label}</a>
+     </li>`;
+
+  const items = [li("«", currentPage - 1, {disabled: currentPage === 1})];
+  let prev = 0;
+  for (const p of pageWindow(currentPage, pageCount)) {
+    if (p - prev > 1) {
+      items.push('<li class="page-item disabled"><span class="page-link">…</span></li>');
+    }
+    items.push(li(p, p, {active: p === currentPage}));
+    prev = p;
+  }
+  items.push(li("»", currentPage + 1, {disabled: currentPage === pageCount}));
+  ul.innerHTML = items.join("");
+
+  ul.querySelectorAll("a.page-link[data-page]").forEach(a => {
+    a.addEventListener("click", (e) => {
+      e.preventDefault();
+      const p = parseInt(a.dataset.page, 10);
+      if (!isNaN(p) && p >= 1 && p <= pageCount && p !== currentPage) {
+        currentPage = p;
+        render();
+      }
+    });
+  });
+}
+
+/* Filters / search reset to page 1 and re-render without re-fetching. */
+function applyFilters() { currentPage = 1; render(); }
 
 async function deleteTask(taskId) {
   if (!confirm(`Delete task ${taskId}? Any sub-tasks spawned from it will also be removed. This cannot be undone.`)) return;
   const resp = await fetch(`${PREFIX}/api/tasks/${taskId}`, {method: "DELETE"});
   if (resp.ok) {
-    loadTasks();
+    fetchTasks();
   } else {
     const err = await resp.json();
     alert("Delete failed: " + (err.error || "Unknown error"));
   }
 }
 
-document.getElementById("btnRefresh").addEventListener("click", loadTasks);
-document.getElementById("filterPhase").addEventListener("change", loadTasks);
-document.getElementById("filterStatus").addEventListener("change", loadTasks);
+document.getElementById("btnRefresh").addEventListener("click", fetchTasks);
+document.getElementById("filterPhase").addEventListener("change", applyFilters);
+document.getElementById("filterStatus").addEventListener("change", applyFilters);
+document.getElementById("searchInput").addEventListener("input", applyFilters);
+document.getElementById("colUpdated").addEventListener("change", applyColumnVisibility);
+document.getElementById("colManufacturer").addEventListener("change", applyColumnVisibility);
+document.getElementById("colOem").addEventListener("change", applyColumnVisibility);
+document.getElementById("colNotes").addEventListener("change", applyColumnVisibility);
 
 /* ================================================================
    Vendor Search (Single mode)
@@ -904,6 +1133,160 @@ document.getElementById("newTaskModal").addEventListener("hidden.bs.modal", () =
   tierRequired   = false;
 });
 
-loadTasks();
+/* ================================================================
+   Register / edit contract number (preprocessor / MDM)
+   ================================================================ */
+let ceContext = { taskId: null, contractId: "", outcome: null, allowEndDate: false, overwriteVendorOrg: false };
+
+function openContractEdit(taskId) {
+  const t = allTasks.find(x => x.task_id === taskId);
+  if (!t) return;
+  ceContext = { taskId, contractId: "", outcome: null, allowEndDate: false };
+  document.getElementById("ceTaskId").value = taskId;
+  document.getElementById("ceTaskLabel").textContent = taskId;
+  document.getElementById("ceCurrentContract").textContent = t.contract_number || "—";
+  document.getElementById("ceContractInput").value = "";
+  document.getElementById("ceStatus").innerHTML = "";
+  const confirmBtn = document.getElementById("ceBtnConfirm");
+  confirmBtn.disabled = true;
+  confirmBtn.textContent = "Confirm";
+  bootstrap.Modal.getOrCreateInstance(document.getElementById("contractEditModal")).show();
+}
+
+function ceCheckRow(label, ok) {
+  return `<div>${ok ? "✅" : "❌"} ${esc(label)}</div>`;
+}
+
+async function ceFetch() {
+  const taskId   = document.getElementById("ceTaskId").value;
+  const cid      = document.getElementById("ceContractInput").value.trim();
+  const statusEl = document.getElementById("ceStatus");
+  const confirmBtn = document.getElementById("ceBtnConfirm");
+  confirmBtn.disabled = true;
+  ceContext.outcome = null;
+  ceContext.allowEndDate = false;
+  ceContext.overwriteVendorOrg = false;
+  if (!cid) { statusEl.innerHTML = '<span class="text-warning">Enter a contract number first.</span>'; return; }
+
+  statusEl.innerHTML = '<span class="text-muted">Verifying…</span>';
+  let data;
+  try {
+    const resp = await fetch(`${PREFIX}/api/tasks/${encodeURIComponent(taskId)}/contract-registration-precheck?contract_id=${encodeURIComponent(cid)}`);
+    data = await resp.json();
+    if (!resp.ok) {
+      statusEl.innerHTML = `<span class="text-danger">${esc(data.error || ("HTTP " + resp.status))}</span>`;
+      return;
+    }
+  } catch (e) {
+    statusEl.innerHTML = '<span class="text-danger">Lookup failed. Try again.</span>';
+    return;
+  }
+
+  ceContext.contractId = cid;
+  ceContext.outcome = data.outcome;
+  const cmp = data.comparison || {};
+  const ccx = data.ccx || {};
+  const task = data.task || {};
+
+  if (data.outcome === "NOT_FOUND") {
+    statusEl.innerHTML = '<div class="text-danger">Contract number not found in the CCX synced contracts.</div>';
+    return;
+  }
+
+  const checks =
+    ceCheckRow(`Vendor ID (task: ${task.vendor_id || "—"} · CCX: ${ccx.vendor_id || "—"})`, cmp.vendor) +
+    ceCheckRow(`Organization (task: ${task.organization || "—"} · CCX: ${ccx.organization || "—"})`, cmp.organization) +
+    ceCheckRow(`Contract end date (task: ${task.contract_end_date || "—"} · CCX: ${ccx.contract_end_date || "—"})`, cmp.end_date);
+
+  if (data.outcome === "MATCH") {
+    statusEl.innerHTML =
+      `<div class="text-success mb-1">Found — all checks passed. Ready to register <strong>${esc(ccx.contract_number)}</strong>.</div>${checks}`;
+    confirmBtn.disabled = false;
+    confirmBtn.textContent = "Confirm";
+  } else if (data.outcome === "END_DATE_ONLY") {
+    ceContext.allowEndDate = true;
+    statusEl.innerHTML =
+      `<div class="text-warning mb-1">Found, but the contract <strong>end date does not match</strong>. ` +
+      `You can still proceed with the contract number update.</div>${checks}`;
+    confirmBtn.disabled = false;
+    confirmBtn.textContent = "Proceed anyway";
+  } else { // BLOCKED
+    ceContext.allowEndDate = true;          // overwrite = accept the CCX contract wholesale
+    ceContext.overwriteVendorOrg = true;
+    const ccxVendor = `${ccx.vendor_id || "—"}${ccx.vendor_name ? " - " + ccx.vendor_name : ""}`;
+    statusEl.innerHTML =
+      `<div class="text-danger mb-1">The vendor ID and/or organization do not match this task, so the ` +
+      `contract can't be located as-is.</div>${checks}` +
+      `<div class="mt-2 small">You can <strong>overwrite this task's vendor &amp; organization</strong> to match ` +
+      `the CCX contract — vendor <span class="fw-semibold">${esc(ccxVendor)}</span>, organization ` +
+      `<span class="fw-semibold">${esc(ccx.organization || "—")}</span> — and register it. ` +
+      `The original vendor and organization are saved to the task notes. ` +
+      `If that's not right, close this modal and resolve the identity first.</div>`;
+    confirmBtn.disabled = false;
+    confirmBtn.textContent = "Overwrite & Register";
+  }
+}
+
+async function ceConfirm() {
+  const taskId   = document.getElementById("ceTaskId").value;
+  const statusEl = document.getElementById("ceStatus");
+  const confirmBtn = document.getElementById("ceBtnConfirm");
+  if (!ceContext.contractId) return;
+  if (ceContext.overwriteVendorOrg &&
+      !confirm("This will overwrite the task's vendor and organization with the CCX contract's values. " +
+               "The original vendor and organization will be saved to the task notes. Continue?")) {
+    return;
+  }
+  const original = confirmBtn.textContent;
+  confirmBtn.disabled = true;
+  confirmBtn.textContent = "Saving…";
+  let data;
+  try {
+    const resp = await fetch(`${PREFIX}/api/tasks/${encodeURIComponent(taskId)}/contract-number`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contract_id: ceContext.contractId,
+        allow_end_date_mismatch: ceContext.allowEndDate,
+        allow_vendor_org_overwrite: ceContext.overwriteVendorOrg,
+      }),
+    });
+    data = await resp.json();
+    if (!resp.ok) {
+      statusEl.innerHTML = `<div class="text-danger">${esc(data.error || ("HTTP " + resp.status))}</div>`;
+      confirmBtn.textContent = original;
+      confirmBtn.disabled = false;
+      return;
+    }
+  } catch (e) {
+    statusEl.innerHTML = '<div class="text-danger">Save failed. Try again.</div>';
+    confirmBtn.textContent = original;
+    confirmBtn.disabled = false;
+    return;
+  }
+
+  if (data.task) {
+    const idx = allTasks.findIndex(x => x.task_id === taskId);
+    if (idx >= 0) allTasks[idx] = data.task;
+    render();
+  }
+  statusEl.innerHTML = data.overwritten
+    ? '<div class="text-success">Vendor, organization, and contract number updated.</div>'
+    : '<div class="text-success">Contract number registered.</div>';
+  setTimeout(() => {
+    const m = bootstrap.Modal.getInstance(document.getElementById("contractEditModal"));
+    if (m) m.hide();
+  }, 700);
+}
+
+if (CAN_EDIT_CONTRACT) {
+  document.getElementById("ceBtnFetch").addEventListener("click", ceFetch);
+  document.getElementById("ceBtnConfirm").addEventListener("click", ceConfirm);
+  document.getElementById("ceContractInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); ceFetch(); }
+  });
+}
+
+fetchTasks();
 </script>
 {% endblock %}

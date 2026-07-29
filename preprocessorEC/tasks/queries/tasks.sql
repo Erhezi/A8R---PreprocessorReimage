@@ -46,6 +46,18 @@ SELECT TOP 1
 FROM [Preprocessor].[CCXInforSyncedContractHeader]
 WHERE ContractID = :cid;
 
+-- name: contract_rows_by_id
+-- All CCX synced header rows for a contract id (a contract can span multiple
+-- organizations / tiers). Used to register/verify a CCX contract number on a task.
+SELECT
+    ContractID,
+    ERPVendorID,
+    Organization,
+    ContractEndDate,
+    Vendor
+FROM [Preprocessor].[CCXInforSyncedContractHeader]
+WHERE ContractID = :cid;
+
 -- name: vendor_search
 SELECT ERPVendorID, VendorName, PurchaseFromName, Active
 FROM [Preprocessor].[PurchaseVendorLocation]
