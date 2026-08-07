@@ -55,6 +55,9 @@ class Task(Base):
     wrike_id = Column(String(10), nullable=True)
     contract_manufacturer_infor = Column(String(20), nullable=True)
     contract_manufacturer_name_infor = Column(String(255), nullable=True)
+    # CCX contract description, sourced from CCXSyncedContractLineCnt when a
+    # verified CCX contract number is registered on the task (see routes).
+    contract_description = Column(String(255), nullable=True)
 
     # Precheck duplicate mode
     precheck_mode = Column(String(20), nullable=True, default="default")  # default|strict|explicit|distributor
@@ -106,6 +109,7 @@ class Task(Base):
             "wrike_id": self.wrike_id,
             "contract_manufacturer_infor": self.contract_manufacturer_infor,
             "contract_manufacturer_name_infor": self.contract_manufacturer_name_infor,
+            "contract_description": self.contract_description,
             "precheck_mode": self.precheck_mode,
             "phase": self.phase,
             "status": self.status,

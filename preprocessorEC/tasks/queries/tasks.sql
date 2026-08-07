@@ -58,6 +58,17 @@ SELECT
 FROM [Preprocessor].[CCXInforSyncedContractHeader]
 WHERE ContractID = :cid;
 
+-- name: contract_description_by_id
+-- The CCX contract description for a contract id, sourced from the CCX synced
+-- contract line-count table (one description per contract, keyed by
+-- OrganizationEID + ContractID + ERPVendorID). Descriptions are contract-level,
+-- so any non-null row for the contract id serves; TOP 1 keeps it deterministic.
+SELECT TOP 1 ContractDescription
+FROM [Preprocessor].[CCXSyncedContractLineCnt]
+WHERE ContractID = :cid
+  AND ContractDescription IS NOT NULL
+ORDER BY ContractDescription;
+
 -- name: vendor_search
 SELECT ERPVendorID, VendorName, PurchaseFromName, Active
 FROM [Preprocessor].[PurchaseVendorLocation]

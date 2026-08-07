@@ -14,7 +14,7 @@
   <div class="row g-2 mb-3 align-items-center">
     <div class="col-12 col-md">
       <input type="search" id="searchInput" class="form-control form-control-sm"
-             placeholder="Search all columns — contract #, vendor, org, OEM, manufacturer, owner, status, notes…"
+             placeholder="Search all columns — contract #, contract description, vendor, org, OEM, manufacturer, owner, status, notes…"
              autocomplete="off">
     </div>
     <div class="col-auto">
@@ -37,9 +37,14 @@
               <input type="checkbox" class="form-check-input m-0" id="colOem"> OEM Name
             </label>
           </li>
-          <li>
+          <li class="mb-1">
             <label class="d-flex align-items-center gap-2 mb-0" style="cursor:pointer">
               <input type="checkbox" class="form-check-input m-0" id="colNotes"> Notes
+            </label>
+          </li>
+          <li>
+            <label class="d-flex align-items-center gap-2 mb-0" style="cursor:pointer">
+              <input type="checkbox" class="form-check-input m-0" id="colContractDesc"> Contract Description
             </label>
           </li>
         </ul>
@@ -100,6 +105,7 @@
           <th class="col-opt col-manufacturer d-none">Manufacturer</th>
           <th class="col-opt col-oem d-none">OEM Name</th>
           <th class="col-opt col-notes d-none">Notes</th>
+          <th class="col-opt col-contractdesc d-none">Contract Description</th>
           <th></th>
         </tr>
       </thead>
@@ -876,10 +882,12 @@ function applyColumnVisibility() {
   const showMfr     = document.getElementById("colManufacturer").checked;
   const showOem     = document.getElementById("colOem").checked;
   const showNotes   = document.getElementById("colNotes").checked;
+  const showCDesc   = document.getElementById("colContractDesc").checked;
   document.querySelectorAll(".col-updated").forEach(el => el.classList.toggle("d-none", !showUpdated));
   document.querySelectorAll(".col-manufacturer").forEach(el => el.classList.toggle("d-none", !showMfr));
   document.querySelectorAll(".col-oem").forEach(el => el.classList.toggle("d-none", !showOem));
   document.querySelectorAll(".col-notes").forEach(el => el.classList.toggle("d-none", !showNotes));
+  document.querySelectorAll(".col-contractdesc").forEach(el => el.classList.toggle("d-none", !showCDesc));
 }
 
 /* Apply phase / status / free-text filters (all client-side). */
@@ -898,6 +906,7 @@ function getFilteredTasks() {
         t.organization, t.oem_name, t.intention, t.phase, t.status,
         t.wrike_id, t.created_by, t.notes,
         t.contract_manufacturer_infor, t.contract_manufacturer_name_infor,
+        t.contract_description,
       ].filter(Boolean).join(" ").toLowerCase();
       if (!haystack.includes(term)) return false;
     }
@@ -929,6 +938,7 @@ function renderRows(tasks) {
       .filter(Boolean).map(esc).join(" - ") || "—";
     const oem = t.oem_name ? esc(t.oem_name) : "—";
     const notes = t.notes ? esc(t.notes) : "—";
+    const contractDesc = t.contract_description ? esc(t.contract_description) : "—";
     return `
     <tr style="cursor:pointer" onclick="location.href='${PREFIX}/tasks/${t.task_id}'">
       <td>${t.task_id}</td>
@@ -950,6 +960,7 @@ function renderRows(tasks) {
       <td class="col-opt col-manufacturer d-none">${mfr}</td>
       <td class="col-opt col-oem d-none">${oem}</td>
       <td class="col-opt col-notes d-none" style="max-width:22rem;white-space:normal">${notes}</td>
+      <td class="col-opt col-contractdesc d-none" style="max-width:22rem;white-space:normal">${contractDesc}</td>
       <td onclick="event.stopPropagation()">
         ${t.parent_task_id
           ? `<button class="btn btn-outline-secondary btn-sm py-0 px-1" disabled
@@ -1035,6 +1046,7 @@ document.getElementById("colUpdated").addEventListener("change", applyColumnVisi
 document.getElementById("colManufacturer").addEventListener("change", applyColumnVisibility);
 document.getElementById("colOem").addEventListener("change", applyColumnVisibility);
 document.getElementById("colNotes").addEventListener("change", applyColumnVisibility);
+document.getElementById("colContractDesc").addEventListener("change", applyColumnVisibility);
 
 /* ================================================================
    Vendor Search (Single mode)
