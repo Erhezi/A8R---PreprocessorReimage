@@ -209,6 +209,13 @@
             The sub-task starts in INTAKE / ON_HOLD_PC1 with the existing PC1 errors carried over so you can fix them and re-run pre-check separately.
             You can find it later via the parent_task_id link.
           </p>
+          <div class="alert alert-warning small mb-0 mt-2" id="proceedVendorMissingWarn" style="display:none">
+            <i class="bi bi-exclamation-triangle-fill me-1"></i>
+            <span id="proceedVendorMissingCount">0</span> item(s) have no vendor part number and
+            <strong>cannot be synchronized to Infor</strong>. You will not be able to order them from
+            this contract using the distributor specified here. These rows will be split into the
+            sub-task and will not advance.
+          </div>
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>

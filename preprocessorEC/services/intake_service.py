@@ -1008,6 +1008,22 @@ def _spawn_error_pc1_subtask(parent_task, error_items: list, user: str) -> str:
     return sub_task.task_id
 
 
+def _errors_only_vendor_missing(task_id: str) -> bool:
+    """True iff every unresolved error-severity PC1 record is VENDOR_PART_MISSING.
+
+    Warning-severity records are ignored (advance already gates on warnings
+    being resolved first); header-level records (item_id IS NULL) count like any
+    other error, so a header issue that isn't VENDOR_PART_MISSING makes this
+    False. Returns False when there are no error-severity records at all, so
+    callers must have already confirmed that ERROR_PC1 items exist.
+    """
+    recs = task_repo.get_precheck_errors(task_id, phase="PC1", resolved=False)
+    error_recs = [r for r in recs if not _is_warning_type(r.error_type)]
+    return bool(error_recs) and all(
+        (r.error_type or "") == "VENDOR_PART_MISSING" for r in error_recs
+    )
+
+
 def proceed_with_passing(task_id: str, state_machine: TaskStateMachine, user: str) -> dict:
     """User explicitly chooses to advance passing items to Phase 2.
 
@@ -1061,7 +1077,24 @@ def proceed_with_passing(task_id: str, state_machine: TaskStateMachine, user: st
         )
 
     source_type = (task.source_type or "").upper()
-    if source_type == "PREMIER" and error_items:
+    process_type = (task.process_type or "").upper()
+    is_distributor = "DISTRIBUTOR" in process_type
+    distributor_mode = (task.precheck_mode or "").lower() == "distributor"
+
+    # PREMIER contracts normally block advance while any ERROR_PC1 item remains.
+    # Exception: a DISTRIBUTOR contract prechecked in distributor mode whose ONLY
+    # outstanding errors are VENDOR_PART_MISSING. Those rows have no vendor item
+    # to key on and can never sync to Infor, so rather than dead-end the whole
+    # contract we split them into a sub-task (like a LOCAL contract) and let the
+    # rest advance. Any other error type on a PREMIER contract still hard-blocks.
+    premier_vendor_missing_split = (
+        source_type == "PREMIER"
+        and bool(error_items)
+        and is_distributor
+        and distributor_mode
+        and _errors_only_vendor_missing(task_id)
+    )
+    if source_type == "PREMIER" and error_items and not premier_vendor_missing_split:
         raise ValueError(
             f"PREMIER contracts require all items to pass PC1. "
             f"{len(error_items)} item(s) still have errors."
@@ -1076,7 +1109,7 @@ def proceed_with_passing(task_id: str, state_machine: TaskStateMachine, user: st
     # taking that decision; we don't second-guess it here.
 
     sub_task_id = None
-    if error_items and source_type != "PREMIER":
+    if error_items and (source_type != "PREMIER" or premier_vendor_missing_split):
         sub_task_id = _spawn_error_pc1_subtask(task, error_items, user)
 
     state = state_machine.get_state(task_id)

@@ -37,6 +37,24 @@ function renderRecheckModeControl(task) {
   `;
 }
 
+function issueIsWarningType(errorType) {
+  const code = String(errorType || "").toUpperCase();
+  return code.endsWith("_WARNING") || code.endsWith("_REDUCED");
+}
+
+// Mirror of the backend _errors_only_vendor_missing gate: true when the only
+// outstanding item-level, error-severity issues are missing vendor part
+// numbers. Header issues (item_id null) block proceed separately, and warnings
+// are gated separately, so both are excluded here.
+function onlyVendorPartMissingErrors(issues) {
+  const errs = (issues || []).filter(issue =>
+    !issue.resolved
+    && issue.item_id !== null && issue.item_id !== undefined
+    && !issueIsWarningType(issue.error_type)
+  );
+  return errs.length > 0 && errs.every(issue => issue.error_type === "VENDOR_PART_MISSING");
+}
+
 function renderIntakeActionButtons(task, issues) {
   const inIntake = task.phase === "INTAKE";
   if (!inIntake) {
@@ -80,11 +98,19 @@ function renderIntakeActionButtons(task, issues) {
     const passedCount = currentItems.filter(item => item.status === "PASSED_PC1").length;
     if (passedCount > 0) {
       const isPremier = (task.source_type || "").toUpperCase() === "PREMIER";
+      const isDistributor = (task.process_type || "").toUpperCase().includes("DISTRIBUTOR");
+      const distributorMode = (task.precheck_mode || "").toLowerCase() === "distributor";
       const errorCount = currentItems.filter(item => item.status === "ERROR_PC1").length;
       const warnCount = currentItems.filter(item => item.status === "WARN_PC1").length;
+      // PREMIER normally blocks while any error remains. Exception: a distributor
+      // contract checked in distributor mode whose only errors are missing vendor
+      // part numbers — those can't sync to Infor, so they split off like a LOCAL
+      // contract instead of dead-ending the whole contract.
+      const premierVendorMissingOk = isPremier && errorCount > 0 && isDistributor
+        && distributorMode && onlyVendorPartMissingErrors(issues);
       if (warnCount > 0) {
         buttons += `<button class="btn btn-sm btn-outline-secondary d-block mb-1 w-100" disabled title="Resolve every WARN_PC1 item (fix or manually pass) before advancing">Proceed (blocked — ${warnCount} warning${warnCount === 1 ? '' : 's'})</button>`;
-      } else if (isPremier && errorCount > 0) {
+      } else if (isPremier && errorCount > 0 && !premierVendorMissingOk) {
         buttons += `<button class="btn btn-sm btn-outline-secondary d-block mb-1 w-100" disabled title="PREMIER contracts require all items to pass">Proceed (blocked — PREMIER)</button>`;
       } else if (errorCount > 0) {
         buttons += `<button class="btn btn-sm btn-success d-block mb-1 w-100" onclick="proceedWithPassing()">Advance ${passedCount} & Split ${errorCount} Error(s)</button>`;
@@ -711,6 +737,26 @@ function proceedWithPassing() {
   document.getElementById("proceedSplitLine").style.display = willSplit ? "" : "none";
   document.getElementById("proceedSplitHelp").style.display = willSplit ? "" : "none";
   document.getElementById("proceedConfirmTitle").textContent = willSplit ? "Advance & Split Errors" : "Advance to Identity";
+
+  // Warn when the split-off rows are missing vendor part numbers: those can't be
+  // synchronized to Infor, so they'll never be orderable from this contract
+  // through the specified distributor.
+  const issues = (currentIntakeState && currentIntakeState.errors) || [];
+  const vendorMissingCount = new Set(
+    issues
+      .filter(issue => !issue.resolved && issue.error_type === "VENDOR_PART_MISSING" && issue.item_id != null)
+      .map(issue => issue.item_id)
+  ).size;
+  const warnEl = document.getElementById("proceedVendorMissingWarn");
+  if (warnEl) {
+    if (vendorMissingCount > 0) {
+      document.getElementById("proceedVendorMissingCount").textContent = vendorMissingCount;
+      warnEl.style.display = "";
+    } else {
+      warnEl.style.display = "none";
+    }
+  }
+
   const btn = document.getElementById("btnConfirmProceed");
   btn.textContent = willSplit ? "Advance & Split" : "Advance";
   btn.disabled = false;

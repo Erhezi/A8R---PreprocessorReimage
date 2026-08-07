@@ -339,6 +339,22 @@ document.getElementById("btnRunPrecheck").addEventListener("click", async () => 
 
 // Proceed
 document.getElementById("btnProceed").addEventListener("click", async () => {
+  // Warn when rows without a vendor part number will be left behind — they
+  // can't sync to Infor and won't be orderable from this contract via the
+  // specified distributor.
+  const vendorMissingCount = new Set(
+    (taskData.errors || [])
+      .filter(e => !e.resolved && e.error_type === "VENDOR_PART_MISSING" && e.item_id != null)
+      .map(e => e.item_id)
+  ).size;
+  if (vendorMissingCount > 0) {
+    const ok = confirm(
+      `${vendorMissingCount} item(s) have no vendor part number and cannot be synchronized ` +
+      `to Infor. You will not be able to order them from this contract using the distributor ` +
+      `specified here. They will not advance to Identity. Proceed with the remaining items?`
+    );
+    if (!ok) return;
+  }
   const resp = await fetch(`${PREFIX}/api/intake/${TASK_ID}/proceed`, { method: "POST" });
   const result = await resp.json();
   if (resp.ok) {
