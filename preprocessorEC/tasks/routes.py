@@ -12,6 +12,8 @@ Routes:
 
 from __future__ import annotations
 
+from typing import Optional
+
 from flask import jsonify, request, render_template, abort, current_app
 from flask_login import login_required, current_user
 from sqlalchemy import text
@@ -363,6 +365,24 @@ def _fetch_contract_rows(contract_id: str):
         ).mappings().all()
 
 
+def _fetch_contract_description(contract_id: str) -> Optional[str]:
+    """Look up the CCX contract description for a contract id.
+
+    Sourced from [Preprocessor].[CCXSyncedContractLineCnt]; returns None when
+    the contract has no synced-CCX row or no description recorded.
+    """
+    engine = get_sqlserver_engine()
+    with engine.connect() as conn:
+        row = conn.execute(
+            load_query("tasks", "tasks", query="contract_description_by_id"),
+            {"cid": contract_id},
+        ).mappings().first()
+    if not row:
+        return None
+    desc = str(row["ContractDescription"] or "").strip()
+    return desc or None
+
+
 def _evaluate_contract_registration(task, rows) -> dict:
     """Compare a task's header against the CCX rows for an entered contract id.
 
@@ -504,6 +524,12 @@ def api_register_contract_number(task_id: str):
     today = ny_now().strftime("%Y-%m-%d")
 
     fields = {"contract_number": new_cid}
+    # Pull the CCX contract description for the registered contract id and store
+    # it on the task (best-effort — a missing description doesn't block the
+    # registration, it just leaves the column blank).
+    contract_description = _fetch_contract_description(new_cid)
+    if contract_description is not None:
+        fields["contract_description"] = contract_description
     note_lines = []
 
     if overwrite:

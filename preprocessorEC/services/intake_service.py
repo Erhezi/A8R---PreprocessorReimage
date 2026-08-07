@@ -603,6 +603,11 @@ def run_precheck(
             item_errors.append(("NULL_DESCRIPTION", "Description is required"))
         if not validated_uom:
             item_errors.append(("NULL_UOM", "UOM is required"))
+        # Vendor part number is required for every task — a blank one can't be
+        # matched vendor-side downstream, so it hard-fails PC1 (ERROR_PC1) and
+        # is barred from advancing to Identity.
+        if not clean_vendor:
+            item_errors.append(("VENDOR_PART_MISSING", "Vendor part number is required"))
 
         # --- Reduced catalog numbers ---
         reduced_mfg = reduce_catalog_number(clean_mfg)
