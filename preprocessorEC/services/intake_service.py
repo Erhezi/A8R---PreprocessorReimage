@@ -78,16 +78,28 @@ def _parse_qoe(value) -> tuple[Optional[int], Optional[str]]:
         return None, f"Invalid QOE: {value}"
 
 
-def _parse_price(value) -> tuple[Optional[Decimal], Optional[str]]:
-    """Convert price to Decimal. Returns (value, error_or_None)."""
+def _parse_price(value) -> tuple[Optional[Decimal], Optional[str], Optional[str]]:
+    """Convert price to Decimal. Returns (value, error_type_or_None, detail_or_None).
+
+    A missing price is a different problem from a bad one, so the two get
+    distinct codes: intake stores an empty price cell as NULL and a
+    non-numeric one as the sentinel -1 (see ``_num`` in the intake routes).
+      - NULL/blank -> BLANK_PRICE   (nothing to work with)
+      - <= 0       -> INVALID_PRICE (a price we have but can't trust)
+    """
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None, "BLANK_PRICE", "Price is required"
     try:
         cleaned = str(value).strip().lstrip("'").replace(",", "").replace("$", "").strip()
         d = Decimal(cleaned)
-        if d < 0:
-            return None, "Price cannot be negative"
-        return d, None
     except (InvalidOperation, ValueError, TypeError):
-        return None, f"Invalid price: {value}"
+        d = Decimal("-1")
+    # Decimal accepts "NaN"/"Infinity"; both would blow up the comparison below.
+    if not d.is_finite():
+        d = Decimal("-1")
+    if d <= 0:
+        return d, "INVALID_PRICE", f"Price must be greater than 0 (got {d})"
+    return d, None, None
 
 
 # ---------------------------------------------------------------------------
@@ -592,9 +604,12 @@ def run_precheck(
                     item_warnings.append((etype, edetail))
 
         # --- Price ---
-        price_val, price_err = _parse_price(item.unit_price)
-        if price_err:
-            item_errors.append(("INVALID_PRICE", price_err))
+        # Both a missing price (BLANK_PRICE) and an unusable one (INVALID_PRICE:
+        # 0, negative, or the -1 sentinel stored for unreadable cells) hard-fail
+        # the row — the price has to be fixed at the source either way.
+        price_val, price_issue, price_detail = _parse_price(item.unit_price)
+        if price_issue:
+            item_errors.append((price_issue, price_detail))
 
         # --- Null checks ---
         if not clean_mfg:
@@ -1241,6 +1256,22 @@ EDITABLE_TRACKED_FIELDS = (
 # to anything else in EDITABLE_TRACKED_FIELDS collapse into an in-place UPDATE.
 SPLIT_TRIGGER_FIELDS = ("mfg_catalog_num", "uom")
 
+# Editable fields backed by NOT NULL columns. Clearing one normalizes to None,
+# which the write would reject as an IntegrityError — a 500 with no useful
+# message. Catching it here turns it into the 400 the edit modal renders.
+# unit_price is deliberately absent: NULL is a legitimate value there and PC1
+# reports it as BLANK_PRICE.
+NON_NULLABLE_EDITABLE_FIELDS = ("mfg_catalog_num", "description", "uom", "qoe")
+
+_EDITABLE_FIELD_LABELS = {
+    "mfg_catalog_num": "Mfg Cat #",
+    "vendor_catalog_num": "Vendor Cat #",
+    "description": "Description",
+    "uom": "UOM",
+    "qoe": "QOE",
+    "unit_price": "Price",
+}
+
 
 def _normalize_editable_field(field: str, value):
     """Apply the same canonical form PC1 will assign on its next run.
@@ -1261,7 +1292,7 @@ def _normalize_editable_field(field: str, value):
         parsed, _ = _parse_qoe(value)
         return parsed if parsed is not None else value
     if field == "unit_price":
-        parsed, _ = _parse_price(value)
+        parsed, _issue, _detail = _parse_price(value)
         return parsed if parsed is not None else value
     return value
 
@@ -1333,6 +1364,18 @@ def update_item_fields(task_id: str, item_id: int, fields: dict, user: str = "sy
     # log records semantic changes (e.g., "BOX" -> "BX" is not an edit because
     # both normalize to "BX") rather than cosmetic ones.
     normalized = {k: _normalize_editable_field(k, v) for k, v in filtered.items()}
+
+    # Reject writes the schema would refuse, before they reach the DB.
+    blanked = [f for f in NON_NULLABLE_EDITABLE_FIELDS
+               if f in normalized and normalized[f] in (None, "")]
+    if blanked:
+        labels = ", ".join(_EDITABLE_FIELD_LABELS.get(f, f) for f in blanked)
+        raise ValueError(f"{labels} cannot be blank")
+    # A QOE that failed to parse comes back as the raw input, which the INT
+    # column would reject the same way.
+    if "qoe" in normalized and not isinstance(normalized["qoe"], int):
+        raise ValueError(f"QOE must be a whole number greater than 0 (got '{normalized['qoe']}')")
+
     new_entries: list[dict] = []
     now_iso = ny_now().isoformat()
     for fname in EDITABLE_TRACKED_FIELDS:

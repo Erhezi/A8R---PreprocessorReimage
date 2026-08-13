@@ -139,7 +139,9 @@ class TaskItem(Base):
     description = Column(Text, nullable=False)
     standardized_description = Column(Text, nullable=True)
     uom = Column(String(50), nullable=False)
-    unit_price = Column(Numeric(18, 4), nullable=False)
+    # NULL means the upload gave us no price at all — PC1 fails those rows as
+    # BLANK_PRICE rather than letting a coerced 0 pass silently.
+    unit_price = Column(Numeric(18, 4), nullable=True)
     qoe = Column(Integer, nullable=False)
     intention = Column(String(10), nullable=True)  # per-item if MIX
     tier_description = Column(String(255), nullable=True)

@@ -214,11 +214,16 @@ def api_upload_items(task_id: str):
                 s = str(val).strip()
                 return fallback if s.lower() == "nan" else s
 
-            def _num(val, fallback=0):
+            def _num(val, fallback=0, unparseable=None):
                 """Convert cell value to a number, treating NaN/blank as fallback.
 
                 Strips Excel text-marker apostrophes, currency symbols, and
-                thousands separators (e.g. "'$1,234.05" -> 1234.05)."""
+                thousands separators (e.g. "'$1,234.05" -> 1234.05).
+
+                ``unparseable`` is returned for a non-empty cell that isn't a
+                number; it defaults to ``fallback`` so callers that don't care
+                keep the old behaviour. Price passes a separate value so PC1
+                can tell "no price given" from "price we couldn't read"."""
                 s = _str(val, "")
                 if not s:
                     return fallback
@@ -226,7 +231,7 @@ def api_upload_items(task_id: str):
                 try:
                     return float(s)
                 except (ValueError, TypeError):
-                    return fallback
+                    return fallback if unparseable is None else unparseable
 
             if is_batch and "intention" in resolved:
                 raw_intent = _str(row.get(resolved["intention"], ""), "")
@@ -250,7 +255,9 @@ def api_upload_items(task_id: str):
                 "vendor_catalog_num": _str(row.get(resolved.get("vendor_catalog_num", ""), "")) or None,
                 "description": _str(row.get(resolved.get("description", ""), "")),
                 "uom": _str(row.get(resolved.get("uom", ""), "")),
-                "unit_price": _num(row.get(resolved.get("unit_price", ""), "0"), 0),
+                # Blank / unmapped price stays NULL (PC1 -> BLANK_PRICE error);
+                # a cell we can't read is stored as -1 (PC1 -> INVALID_PRICE).
+                "unit_price": _num(row.get(resolved.get("unit_price", ""), ""), None, -1),
                 "qoe": _num(row.get(resolved.get("qoe", ""), "1"), 1),
                 "intention": item_intention,
                 "file_row": idx + 2,  # 1-indexed header + data row

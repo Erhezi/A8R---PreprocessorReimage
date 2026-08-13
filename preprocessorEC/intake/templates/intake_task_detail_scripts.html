@@ -526,13 +526,15 @@ function openEditModal(itemId) {
 
 document.getElementById("btnSaveEdit").addEventListener("click", async () => {
   const itemId = document.getElementById("editItemId").value;
+  // An emptied price is sent as null, not 0 — PC1 reads null as BLANK_PRICE.
+  const priceRaw = document.getElementById("editPrice").value.trim();
   const payload = {
     mfg_catalog_num: document.getElementById("editMfg").value.trim(),
     vendor_catalog_num: document.getElementById("editVendor").value.trim() || null,
     description: document.getElementById("editDesc").value.trim(),
     uom: document.getElementById("editUom").value.trim(),
     qoe: parseInt(document.getElementById("editQoe").value, 10) || 1,
-    unit_price: parseFloat(document.getElementById("editPrice").value) || 0,
+    unit_price: priceRaw === "" ? null : parseFloat(priceRaw),
   };
   const btn = document.getElementById("btnSaveEdit");
   btn.disabled = true;

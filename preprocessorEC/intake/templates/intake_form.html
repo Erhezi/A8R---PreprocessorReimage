@@ -172,7 +172,7 @@ async function refresh() {
         <td>${i.uom}</td>
         <td>${i.uom_to_match_infor || "—"}</td>
         <td>${i.qoe}</td>
-        <td>${i.unit_price}</td>
+        <td>${i.unit_price != null ? i.unit_price : "—"}</td>
         <td><span class="badge bg-${badgeClass}">${i.status}</span></td>
         <td>${isDup ? `<button class="btn btn-sm btn-outline-danger py-0 px-1 btn-delete-item" data-id="${i.item_id}" title="Delete row">&times;</button>` : ''}</td>
       </tr>`;
