@@ -16,6 +16,11 @@ from flask_login import current_user
 
 _NY = ZoneInfo("America/New_York")
 
+# SQL Server caps a single statement at 2100 parameters, so any IN (...) clause
+# built from a large collection must be issued in batches. Row-wise executemany
+# (bulk_insert_mappings and friends) is exempt — this bounds expanding binds only.
+SQLSERVER_IN_CHUNK = 1000
+
 
 def ny_now() -> datetime:
     """Return the current wall-clock time in America/New_York (naive-style, no tzinfo stored)."""

@@ -24,17 +24,12 @@ from ..models import (
     ContractDecision,
 )
 from ..state import Status
-from ..common.utils import ny_now
+from ..common.utils import ny_now, SQLSERVER_IN_CHUNK as _IN_CLAUSE_CHUNK
 from .engine import get_sqlserver_engine
 
 
 def _session() -> Session:
     return Session(get_sqlserver_engine())
-
-
-# SQL Server caps a single statement at 2100 parameters, so any IN (...) clause
-# built from a large id collection must be issued in batches.
-_IN_CLAUSE_CHUNK = 1000
 
 
 def _chunked(items: list, size: int = _IN_CLAUSE_CHUNK):
@@ -974,6 +969,74 @@ def get_match_results_by_contract(task_id: str) -> dict[str, list[MatchResult]]:
             key = r.contract_number or "__no_contract__"
             grouped.setdefault(key, []).append(r)
         return grouped
+
+
+def get_first_ccx_match_time(task_id: str):
+    """When SKU matching first wrote a CCX match row for this task.
+
+    Used as the task's data watermark: anything older than the last CCX reload
+    was matched against a snapshot that no longer exists.
+    """
+    with _session() as s:
+        return (
+            s.query(func.min(MatchResult.created_at))
+            .filter(
+                MatchResult.task_id == task_id,
+                MatchResult.matched_source == "CCX",
+            )
+            .scalar()
+        )
+
+
+def get_ccx_match_business_keys(task_id: str) -> list[dict]:
+    """Return the snapshotted CCX business key + current ccx_pkid per match row.
+
+    Feeds ``preprocess_service._refresh_ccx_pkids``, which re-resolves stale
+    pkids after a daily source reload.
+    """
+    with _session() as s:
+        rows = (
+            s.query(
+                MatchResult.match_id,
+                MatchResult.ccx_pkid,
+                MatchResult.organization_eid_matched,
+                MatchResult.contract_id_matched,
+                MatchResult.erp_vendor_id_matched,
+                MatchResult.manufacturer_number_matched,
+                MatchResult.uom_matched,
+                MatchResult.uom_to_match_infor_matched,
+                MatchResult.input_item_id,
+            )
+            .filter(
+                MatchResult.task_id == task_id,
+                MatchResult.matched_source == "CCX",
+            )
+            .all()
+        )
+        return [
+            {
+                "match_id": r[0],
+                "ccx_pkid": r[1],
+                "organization_eid_matched": r[2],
+                "contract_id_matched": r[3],
+                "erp_vendor_id_matched": r[4],
+                "manufacturer_number_matched": r[5],
+                "uom_matched": r[6],
+                "uom_to_match_infor_matched": r[7],
+                "input_item_id": r[8],
+            }
+            for r in rows
+        ]
+
+
+def update_match_ccx_pkids(updates: list[dict]) -> int:
+    """Rewrite ``ccx_pkid`` on match rows. Each dict needs match_id + ccx_pkid."""
+    if not updates:
+        return 0
+    with _session() as s:
+        s.bulk_update_mappings(MatchResult, updates)
+        s.commit()
+    return len(updates)
 
 
 def get_accepted_ccx_pkids(task_id: str) -> list[int]:

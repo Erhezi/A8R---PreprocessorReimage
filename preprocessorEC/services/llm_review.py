@@ -12,6 +12,8 @@ import logging
 
 from flask import current_app
 
+from .llm_client import build_client, client_settings_from_config
+
 logger = logging.getLogger(__name__)
 
 
@@ -258,82 +260,7 @@ def _build_messages(
 
 def _get_client():
     """Lazy-load the OpenAI-compatible client using app config."""
-    api_key = current_app.config.get("OPENAI_API_KEY", "")
-    if not api_key:
-        return None
-
-    timeout = current_app.config.get("OPENAI_TIMEOUT_SECONDS", 30.0)
-    max_retries = current_app.config.get("OPENAI_MAX_RETRIES", 2)
-    disable_ssl_verify = bool(current_app.config.get("OPENAI_DISABLE_SSL_VERIFY", False))
-    base_url = current_app.config.get("OPENAI_BASE_URL", "")
-    organization = current_app.config.get("OPENAI_ORGANIZATION", "")
-    project = current_app.config.get("OPENAI_PROJECT", "")
-    azure_endpoint = current_app.config.get("AZURE_OPENAI_ENDPOINT", "")
-    azure_api_version = current_app.config.get("AZURE_OPENAI_API_VERSION", "")
-
-    try:
-        import httpx
-        from openai import AzureOpenAI, OpenAI
-
-        http_client = httpx.Client(
-            timeout=timeout,
-            verify=_build_ssl_verify(disable_ssl_verify),
-        )
-
-        if azure_endpoint:
-            if not azure_api_version:
-                logger.error("AZURE_OPENAI_ENDPOINT is set but AZURE_OPENAI_API_VERSION is missing.")
-                return None
-
-            return AzureOpenAI(
-                api_key=api_key,
-                azure_endpoint=azure_endpoint,
-                api_version=azure_api_version,
-                timeout=timeout,
-                max_retries=max_retries,
-                http_client=http_client,
-            )
-
-        client_kwargs = {
-            "api_key": api_key,
-            "timeout": timeout,
-            "max_retries": max_retries,
-            "http_client": http_client,
-        }
-        if base_url:
-            client_kwargs["base_url"] = base_url
-        if organization:
-            client_kwargs["organization"] = organization
-        if project:
-            client_kwargs["project"] = project
-
-        return OpenAI(**client_kwargs)
-    except ImportError:
-        logger.warning("openai package not installed; LLM review unavailable.")
-        return None
-
-
-def _build_ssl_verify(disable_ssl_verify: bool):
-    if disable_ssl_verify:
-        return False
-
-    ca_bundle = current_app.config.get("OPENAI_CA_BUNDLE", "").strip()
-    if ca_bundle:
-        return ca_bundle
-
-    use_system_ca_store = bool(current_app.config.get("OPENAI_USE_SYSTEM_CA_STORE", False))
-    if not use_system_ca_store:
-        return True
-
-    try:
-        import importlib
-        import ssl
-
-        truststore = importlib.import_module("truststore")
-        return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    except ImportError:
-        logger.warning("truststore not installed; falling back to certifi CA bundle.")
-        return True
+    return build_client(client_settings_from_config(current_app.config))
 
 
 def _parse_response(content: str) -> dict:

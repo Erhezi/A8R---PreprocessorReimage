@@ -88,6 +88,7 @@ def create_app(config_name: str | None = None, test_config: dict | None = None) 
     from .dedup import dedup_bp
     from .export import export_bp
     from .monitoring import monitoring_bp
+    from .discovery import discovery_bp
     from .admin import admin_blueprint
     from .debug import debug_bp
 
@@ -99,6 +100,7 @@ def create_app(config_name: str | None = None, test_config: dict | None = None) 
     app.register_blueprint(dedup_bp, url_prefix=url_prefix)
     app.register_blueprint(export_bp, url_prefix=url_prefix)
     app.register_blueprint(monitoring_bp, url_prefix=url_prefix)
+    app.register_blueprint(discovery_bp, url_prefix=url_prefix)
     app.register_blueprint(admin_blueprint, url_prefix=url_prefix)
     app.register_blueprint(debug_bp, url_prefix=url_prefix)
 

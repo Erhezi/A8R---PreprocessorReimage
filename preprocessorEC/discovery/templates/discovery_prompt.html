@@ -1,0 +1,282 @@
+{% extends "base.html" %}
+{% block title %}Discovery LLM Prompt{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-3">
+
+  <a href="{{ url_prefix }}/discovery/" class="small text-decoration-none">&larr; Quick Discovery</a>
+
+  <div class="d-flex justify-content-between align-items-start mt-1 mb-3">
+    <div>
+      <h5 class="mb-0">Item comparison prompt</h5>
+      <div class="text-muted small">
+        The instructions sent to the LLM when comparing an input item against a matched
+        contract line. Versions are immutable — saving creates a new one, and every
+        judged match records the version that produced its verdict.
+      </div>
+    </div>
+    <div>
+      {% if is_preprocessor %}
+      <button class="btn btn-outline-secondary btn-sm" id="previewBtn">Preview</button>
+      <button class="btn btn-primary btn-sm" id="saveBtn">Save as new version</button>
+      {% else %}
+      <span class="badge bg-light text-dark border">Read-only — preprocessor role required to edit</span>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="row g-3">
+    <!-- Editor -->
+    <div class="col-lg-8">
+      <div class="card mb-3">
+        <div class="card-header py-2 d-flex justify-content-between align-items-center">
+          <span class="fw-semibold small">System prompt</span>
+          <span class="small text-muted">The rulebook. Sent verbatim.</span>
+        </div>
+        <div class="card-body p-0">
+          <textarea class="form-control border-0 font-monospace" id="systemPrompt" rows="22"
+                    style="font-size:0.8rem; resize:vertical;"
+                    {% if not is_preprocessor %}readonly{% endif %}></textarea>
+        </div>
+      </div>
+
+      <div class="card mb-3">
+        <div class="card-header py-2 d-flex justify-content-between align-items-center">
+          <span class="fw-semibold small">User template</span>
+          <span class="small text-muted">Jinja — one render per compared pair.</span>
+        </div>
+        <div class="card-body p-0">
+          <textarea class="form-control border-0 font-monospace" id="userTemplate" rows="16"
+                    style="font-size:0.8rem; resize:vertical;"
+                    {% if not is_preprocessor %}readonly{% endif %}></textarea>
+        </div>
+      </div>
+
+      {% if is_preprocessor %}
+      <div class="card mb-3">
+        <div class="card-body py-2">
+          <div class="row g-2">
+            <div class="col-md-4">
+              <label class="form-label form-label-sm mb-0">Model override</label>
+              <input type="text" class="form-control form-control-sm" id="model"
+                     placeholder="blank = use app default">
+            </div>
+            <div class="col-md-2">
+              <label class="form-label form-label-sm mb-0">Temperature</label>
+              <input type="number" step="0.1" min="0" max="2" class="form-control form-control-sm"
+                     id="temperature" placeholder="default">
+            </div>
+            <div class="col-md-6">
+              <label class="form-label form-label-sm mb-0">Change note</label>
+              <input type="text" class="form-control form-control-sm" id="notes"
+                     placeholder="What changed and why">
+            </div>
+          </div>
+        </div>
+      </div>
+      {% endif %}
+
+      <div id="statusBox" class="alert py-2 d-none"></div>
+
+      <div class="card d-none" id="previewCard">
+        <div class="card-header py-2 fw-semibold small">Rendered preview (sample pair)</div>
+        <div class="card-body">
+          <pre class="mb-0 small" id="previewOut" style="white-space:pre-wrap;"></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sidebar -->
+    <div class="col-lg-4">
+      <div class="card mb-3">
+        <div class="card-header py-2 fw-semibold small">Available variables</div>
+        <div class="card-body py-2">
+          <p class="small text-muted mb-2">
+            Use these in the user template, e.g. <code>{% raw %}{{ input_description }}{% endraw %}</code>.
+            Wrap optional fields in a conditional so an absent value doesn't leave a
+            dangling label:
+          </p>
+          <pre class="small bg-light p-2 rounded mb-2">{% raw %}{% if input_supplier %}
+  Supplier: {{ input_supplier }}
+{% endif %}{% endraw %}</pre>
+          <ul class="list-unstyled small mb-0">
+            {% for variable in template_variables %}
+            <li><code>{{ variable }}</code></li>
+            {% endfor %}
+          </ul>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header py-2 fw-semibold small">Version history</div>
+        <div class="card-body p-0">
+          <div class="list-group list-group-flush" id="versionList">
+            <div class="list-group-item small text-muted">Loading…</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const PREFIX = "{{ url_prefix }}";
+const CAN_EDIT = {{ 'true' if is_preprocessor else 'false' }};
+
+let versions = [];
+let activeVersion = null;
+
+function esc(value) {
+  return String(value == null ? "" : value)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+function showStatus(message, tone) {
+  const box = document.getElementById("statusBox");
+  if (!message) { box.classList.add("d-none"); return; }
+  box.className = `alert alert-${tone} py-2`;
+  box.textContent = message;
+}
+
+function fmtDate(iso) {
+  return iso ? iso.replace("T", " ").slice(0, 16) : "";
+}
+
+function loadIntoEditor(version) {
+  document.getElementById("systemPrompt").value = version.system_prompt || "";
+  document.getElementById("userTemplate").value = version.user_template || "";
+  if (CAN_EDIT) {
+    document.getElementById("model").value = version.model || "";
+    document.getElementById("temperature").value =
+      version.temperature == null ? "" : version.temperature;
+  }
+}
+
+function renderVersions() {
+  const list = document.getElementById("versionList");
+  if (!versions.length) {
+    list.innerHTML = `<div class="list-group-item small text-muted">
+      No prompt versions. Apply migration 032 to seed version 1.</div>`;
+    return;
+  }
+  list.innerHTML = versions.map(v => `
+    <div class="list-group-item py-2">
+      <div class="d-flex justify-content-between align-items-start">
+        <div>
+          <span class="fw-semibold small">v${v.version_no}</span>
+          ${v.is_active ? '<span class="badge bg-success ms-1">active</span>' : ''}
+          <div class="text-muted" style="font-size:0.72rem;">
+            ${esc(v.created_by)} · ${esc(fmtDate(v.created_at))}
+          </div>
+          ${v.notes ? `<div class="small mt-1">${esc(v.notes)}</div>` : ''}
+          ${v.model ? `<div class="text-muted" style="font-size:0.72rem;">model: ${esc(v.model)}</div>` : ''}
+        </div>
+        <div class="text-end">
+          <button class="btn btn-outline-secondary btn-sm py-0 mb-1"
+                  data-view="${v.prompt_version_id}">View</button>
+          ${(CAN_EDIT && !v.is_active)
+            ? `<br><button class="btn btn-outline-primary btn-sm py-0"
+                       data-activate="${v.prompt_version_id}">Activate</button>`
+            : ''}
+        </div>
+      </div>
+    </div>`).join("");
+
+  list.querySelectorAll("[data-view]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const id = parseInt(btn.getAttribute("data-view"), 10);
+      const version = versions.find(v => v.prompt_version_id === id);
+      if (version) {
+        loadIntoEditor(version);
+        showStatus(
+          `Showing v${version.version_no}${version.is_active ? " (active)" : ""}.` +
+          (CAN_EDIT ? " Saving creates a new version from what is in the editor." : ""),
+          "info"
+        );
+      }
+    });
+  });
+
+  list.querySelectorAll("[data-activate]").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      const id = btn.getAttribute("data-activate");
+      const resp = await fetch(`${PREFIX}/api/discovery/prompts/${id}/activate`, { method: "POST" });
+      const data = await resp.json();
+      if (!resp.ok) { showStatus(data.error || "Could not activate", "danger"); return; }
+      showStatus(`Version activated. New LLM runs will use it.`, "success");
+      load();
+    });
+  });
+}
+
+async function load() {
+  const resp = await fetch(`${PREFIX}/api/discovery/prompts`);
+  const data = await resp.json();
+  versions = data.versions || [];
+  activeVersion = versions.find(v => v.is_active) || versions[0] || null;
+  renderVersions();
+  if (activeVersion) loadIntoEditor(activeVersion);
+}
+
+if (CAN_EDIT) {
+  document.getElementById("previewBtn").addEventListener("click", async () => {
+    showStatus("", "info");
+    const resp = await fetch(`${PREFIX}/api/discovery/prompts/preview`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_template: document.getElementById("userTemplate").value }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) { showStatus(data.error || "Preview failed", "danger"); return; }
+    document.getElementById("previewCard").classList.remove("d-none");
+    document.getElementById("previewOut").textContent = data.rendered;
+  });
+
+  document.getElementById("saveBtn").addEventListener("click", async () => {
+    const btn = document.getElementById("saveBtn");
+    btn.disabled = true;
+    btn.textContent = "Saving…";
+    showStatus("", "info");
+    try {
+      const resp = await fetch(`${PREFIX}/api/discovery/prompts`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          system_prompt: document.getElementById("systemPrompt").value,
+          user_template: document.getElementById("userTemplate").value,
+          model: document.getElementById("model").value.trim(),
+          temperature: document.getElementById("temperature").value,
+          notes: document.getElementById("notes").value.trim(),
+          activate: true,
+        }),
+      });
+      // role_required redirects to an HTML page rather than returning JSON, so
+      // check the content type before parsing or the real cause is masked by a
+      // JSON syntax error.
+      if (!(resp.headers.get("content-type") || "").includes("application/json")) {
+        throw new Error("Not authorised to save prompts — the preprocessor role is required.");
+      }
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || "Save failed");
+      document.getElementById("notes").value = "";
+      showStatus(
+        `Saved as v${data.version_no} and made active. Existing verdicts keep their original version.`,
+        "success"
+      );
+      load();
+    } catch (err) {
+      showStatus(err.message, "danger");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Save as new version";
+    }
+  });
+}
+
+load();
+</script>
+{% endblock %}

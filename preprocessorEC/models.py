@@ -815,6 +815,228 @@ class InforVendorLocation(Base):
     LocationType = Column("LocationType", String(40), nullable=False)
 
 
+# ---------------------------------------------------------------------------
+# Quick Discovery — task-free SKU lookup against CCX contract lines.
+# Migration 032.
+# ---------------------------------------------------------------------------
+class DiscoveryPrompt(Base):
+    """Immutable versioned LLM prompt.
+
+    Editing never updates a row: a new version is inserted and ``is_active``
+    moves to it, so every judged match can point at the exact text that
+    produced it. A filtered unique index enforces one active row per key.
+    """
+
+    __tablename__ = "PreprocessorDiscoveryPrompt"
+    __table_args__ = {"schema": SCHEMA}
+
+    prompt_version_id = Column(Integer, primary_key=True, autoincrement=True)
+    prompt_key = Column(String(50), nullable=False, default="ITEM_COMPARE")
+    version_no = Column(Integer, nullable=False)
+    system_prompt = Column(Text, nullable=False)
+    user_template = Column(Text, nullable=False)
+    model = Column(String(100), nullable=True)
+    temperature = Column(Float, nullable=True)
+    is_active = Column(Boolean, nullable=False, default=False)
+    notes = Column(String(500), nullable=True)
+    created_by = Column(String(120), nullable=False)
+    created_at = Column(DateTime, default=ny_now)
+
+    def to_dict(self, include_body: bool = True) -> dict:
+        data = {
+            "prompt_version_id": self.prompt_version_id,
+            "prompt_key": self.prompt_key,
+            "version_no": self.version_no,
+            "model": self.model,
+            "temperature": self.temperature,
+            "is_active": bool(self.is_active),
+            "notes": self.notes,
+            "created_by": self.created_by,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+        if include_body:
+            data["system_prompt"] = self.system_prompt
+            data["user_template"] = self.user_template
+        return data
+
+
+class DiscoverySet(Base):
+    """One uploaded Quick Discovery file."""
+
+    __tablename__ = "PreprocessorDiscoverySet"
+    __table_args__ = (
+        Index("ix_discset_created_by", "created_by"),
+        {"schema": SCHEMA},
+    )
+
+    set_id = Column(Integer, primary_key=True, autoincrement=True)
+    set_name = Column(String(200), nullable=True)
+    source_filename = Column(String(255), nullable=True)
+    match_mode = Column(String(10), nullable=False, default="EITHER")  # MFG | VENDOR | EITHER
+    org_eid = Column(String(10), nullable=False, default="105188574")
+    row_count = Column(Integer, nullable=False, default=0)
+    match_count = Column(Integer, nullable=False, default=0)
+    has_supplier = Column(Boolean, nullable=False, default=False)
+    # UPLOADED | MATCHING | MATCHED | LLM_RUNNING | LLM_COMPLETE
+    status = Column(String(30), nullable=False, default="UPLOADED")
+    active_prompt_version_id = Column(
+        Integer,
+        ForeignKey(f"{SCHEMA}.PreprocessorDiscoveryPrompt.prompt_version_id"),
+        nullable=True,
+    )
+    created_by = Column(String(120), nullable=False)
+    created_at = Column(DateTime, default=ny_now)
+    updated_at = Column(DateTime, default=ny_now, onupdate=ny_now)
+
+    def to_dict(self) -> dict:
+        return {
+            "set_id": self.set_id,
+            "set_name": self.set_name,
+            "source_filename": self.source_filename,
+            "match_mode": self.match_mode,
+            "org_eid": self.org_eid,
+            "row_count": self.row_count,
+            "match_count": self.match_count,
+            "has_supplier": bool(self.has_supplier),
+            "status": self.status,
+            "active_prompt_version_id": self.active_prompt_version_id,
+            "created_by": self.created_by,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class DiscoveryItem(Base):
+    """One uploaded line: SKU + description (+ optional supplier)."""
+
+    __tablename__ = "PreprocessorDiscoveryItem"
+    __table_args__ = (
+        Index("ix_discitem_set", "set_id"),
+        Index("ix_discitem_set_reduced", "set_id", "reduced_sku"),
+        {"schema": SCHEMA},
+    )
+
+    discovery_item_id = Column(Integer, primary_key=True, autoincrement=True)
+    set_id = Column(Integer, ForeignKey(f"{SCHEMA}.PreprocessorDiscoverySet.set_id"), nullable=False)
+    file_row = Column(Integer, nullable=True)
+    sku_raw = Column(String(255), nullable=True)
+    sku_input = Column(String(255), nullable=False)
+    reduced_sku = Column(String(255), nullable=True)
+    description_input = Column(Text, nullable=False)
+    supplier_input = Column(String(255), nullable=True)
+    match_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=ny_now)
+
+    def to_dict(self) -> dict:
+        return {
+            "discovery_item_id": self.discovery_item_id,
+            "set_id": self.set_id,
+            "file_row": self.file_row,
+            "sku_raw": self.sku_raw,
+            "sku_input": self.sku_input,
+            "reduced_sku": self.reduced_sku,
+            "description_input": self.description_input,
+            "supplier_input": self.supplier_input,
+            "match_count": self.match_count,
+        }
+
+
+class DiscoveryMatch(Base):
+    """One (input line, CCX contract line) candidate pair.
+
+    ``ccx_pkid`` is retained for debugging only — the daily CCX reload
+    re-issues it, so the six business-key columns are the stable identity.
+    """
+
+    __tablename__ = "PreprocessorDiscoveryMatch"
+    __table_args__ = (
+        Index("ix_discmatch_set", "set_id"),
+        Index("ix_discmatch_item", "discovery_item_id"),
+        Index("ix_discmatch_set_llm", "set_id", "llm_status"),
+        Index("ix_discmatch_set_rank", "set_id", "rank_in_item"),
+        {"schema": SCHEMA},
+    )
+
+    discovery_match_id = Column(Integer, primary_key=True, autoincrement=True)
+    set_id = Column(Integer, ForeignKey(f"{SCHEMA}.PreprocessorDiscoverySet.set_id"), nullable=False)
+    discovery_item_id = Column(
+        Integer,
+        ForeignKey(f"{SCHEMA}.PreprocessorDiscoveryItem.discovery_item_id"),
+        nullable=False,
+    )
+    ccx_pkid = Column(Integer, nullable=True)
+
+    matched_on = Column(String(20), nullable=False)  # REDUCED_MFG | REDUCED_VPN
+    sku_exact = Column(Boolean, nullable=False, default=False)
+    desc_similarity = Column(Float, nullable=True)
+    rank_in_item = Column(Integer, nullable=True)
+
+    organization_eid_matched = Column(String(10), nullable=True)
+    organization_matched = Column(String(100), nullable=True)
+    contract_id_matched = Column(String(100), nullable=True)
+    erp_vendor_id_matched = Column(String(20), nullable=True)
+    mfg_catalog_num_matched = Column(String(255), nullable=True)
+    uom_matched = Column(String(10), nullable=True)
+    uom_to_match_infor_matched = Column(String(10), nullable=True)
+    vendor_catalog_num_matched = Column(String(255), nullable=True)
+    description_matched = Column(String(500), nullable=True)
+    qoe_matched = Column(Integer, nullable=True)
+    unit_price_matched = Column(Numeric(18, 4), nullable=True)
+    contract_description = Column(String(500), nullable=True)
+    vendor_name_matched = Column(String(255), nullable=True)
+    mfg_name_matched = Column(String(255), nullable=True)
+    contract_manufacturer_matched = Column(String(10), nullable=True)
+
+    # NONE | PENDING | IN_PROGRESS | DONE | ERROR
+    llm_status = Column(String(15), nullable=False, default="NONE")
+    llm_verdict = Column(String(10), nullable=True)  # SAME | DIFFERENT | UNCERTAIN
+    llm_confidence = Column(Integer, nullable=True)
+    llm_reason = Column(String(1000), nullable=True)
+    llm_prompt_version_id = Column(
+        Integer,
+        ForeignKey(f"{SCHEMA}.PreprocessorDiscoveryPrompt.prompt_version_id"),
+        nullable=True,
+    )
+    llm_reviewed_at = Column(DateTime, nullable=True)
+    llm_error = Column(String(500), nullable=True)
+
+    created_at = Column(DateTime, default=ny_now)
+
+    def to_dict(self) -> dict:
+        return {
+            "discovery_match_id": self.discovery_match_id,
+            "set_id": self.set_id,
+            "discovery_item_id": self.discovery_item_id,
+            "ccx_pkid": self.ccx_pkid,
+            "matched_on": self.matched_on,
+            "sku_exact": bool(self.sku_exact),
+            "desc_similarity": self.desc_similarity,
+            "rank_in_item": self.rank_in_item,
+            "organization_eid_matched": self.organization_eid_matched,
+            "organization_matched": self.organization_matched,
+            "contract_id_matched": self.contract_id_matched,
+            "erp_vendor_id_matched": self.erp_vendor_id_matched,
+            "mfg_catalog_num_matched": self.mfg_catalog_num_matched,
+            "uom_matched": self.uom_matched,
+            "uom_to_match_infor_matched": self.uom_to_match_infor_matched,
+            "vendor_catalog_num_matched": self.vendor_catalog_num_matched,
+            "description_matched": self.description_matched,
+            "qoe_matched": self.qoe_matched,
+            "unit_price_matched": float(self.unit_price_matched) if self.unit_price_matched is not None else None,
+            "contract_description": self.contract_description,
+            "vendor_name_matched": self.vendor_name_matched,
+            "mfg_name_matched": self.mfg_name_matched,
+            "contract_manufacturer_matched": self.contract_manufacturer_matched,
+            "llm_status": self.llm_status,
+            "llm_verdict": self.llm_verdict,
+            "llm_confidence": self.llm_confidence,
+            "llm_reason": self.llm_reason,
+            "llm_prompt_version_id": self.llm_prompt_version_id,
+            "llm_reviewed_at": self.llm_reviewed_at.isoformat() if self.llm_reviewed_at else None,
+            "llm_error": self.llm_error,
+        }
+
+
 _USERS: dict[str, dict] = {
     "admin": {
         "user_id": 0,

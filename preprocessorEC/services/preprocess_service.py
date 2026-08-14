@@ -18,7 +18,11 @@ from sqlalchemy.orm import Session
 from ..db import task_repo, workstate_repo
 from ..db.engine import get_sqlserver_engine
 from ..db.sql_loader import load_query
-from ..common.utils import reduce_catalog_number, ny_now
+from ..common.utils import (
+    reduce_catalog_number,
+    ny_now,
+    SQLSERVER_IN_CHUNK as SQLSERVER_EXPANDING_BATCH_SIZE,
+)
 from ..state import TaskStateMachine, Phase, Status
 from .scoring import (
     calculate_confidence_score,
@@ -35,7 +39,12 @@ logger = logging.getLogger(__name__)
 MHS_ORG_EID = "105188574"
 BUCKET_PRIORITY = {"HIGH": 3, "MED": 2, "LOW": 1}
 MATCH_TYPE_PRIORITY = {"CROSS_MATCH": 1, "REDUCED_VPN": 2, "REDUCED_MFG": 3}
-SQLSERVER_EXPANDING_BATCH_SIZE = 1000
+
+# Raised when a matched CCX contract line can no longer be found by its business
+# key. Above the cap the whole task has almost certainly aged out of the CCX
+# snapshot, which is one event to log, not thousands of per-item to-dos.
+CCX_GONE_ISSUE_TYPE = "CCX_LINE_GONE"
+CCX_GONE_ISSUE_CAP = 200
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +84,19 @@ def _execute_two_expanding_batches(
     rows = []
     if not first_values or not second_values:
         return rows
+    # Nested loops issue len(first)/size * len(second)/size queries. Callers pass
+    # one small list (vendor ids for a single contract) against one large one, so
+    # this stays 1xM in practice. Warn if that assumption ever stops holding.
+    query_count = (
+        -(-len(first_values) // batch_size) * -(-len(second_values) // batch_size)
+    )
+    if query_count > 10:
+        logger.warning(
+            "_execute_two_expanding_batches issuing %d queries for %s(%d) x %s(%d); "
+            "consider a temp-table join instead.",
+            query_count, first_bind_name, len(first_values),
+            second_bind_name, len(second_values),
+        )
     for first_start in range(0, len(first_values), batch_size):
         first_batch = first_values[first_start:first_start + batch_size]
         for second_start in range(0, len(second_values), batch_size):
@@ -84,6 +106,183 @@ def _execute_two_expanding_batches(
             params[second_bind_name] = second_batch
             rows.extend(sess.execute(stmt, params).mappings().all())
     return rows
+
+
+def _parse_infor_pkid_list(value: Optional[str]) -> list[str]:
+    """Split the stored ``infor_pkids_matched`` string back into pkids.
+
+    Written by run_sku_matching as ``", ".join(...)``. Values look like
+    ``'1001-1, 1001-27'`` — Contract + '-' + ContractLine, so they stay strings.
+    """
+    if not value:
+        return []
+    seen: list[str] = []
+    for part in str(value).split(","):
+        pkid = part.strip()
+        if pkid and pkid not in seen:
+            seen.append(pkid)
+    return seen
+
+
+def _ccx_business_key(
+    org_eid, contract_id, erp_vendor_id, mfg_num, uom, uom_to_match_infor
+) -> tuple:
+    """The stable CCX line identity — the UX_CCXSyncedCL_ItemPerRN unique index."""
+    return (
+        _normalize_match_key(org_eid),
+        _normalize_match_key(contract_id),
+        _normalize_match_key(erp_vendor_id),
+        _normalize_match_key(mfg_num),
+        _normalize_match_key(uom),
+        _normalize_match_key(uom_to_match_infor),
+    )
+
+
+def _refresh_ccx_pkids(task_id: str) -> dict:
+    """Re-resolve every CCX match row's ``ccx_pkid`` from its business key.
+
+    ``CCX_pkid`` is a surrogate that the daily archive-and-reload of
+    ``CCXSyncedContractLine`` re-issues, so a pkid snapshotted during SKU
+    matching is only valid until the next reload. A task normally sits in human
+    review overnight between matching and the Infor cascade, so by the time the
+    cascade joins ``icl.CCX_pkid IN :ccx_pkids`` the saved pkids can point at
+    unrelated contract lines — silently attaching the wrong Infor lineage.
+
+    The export layer already guards against this by joining on the business key
+    (see export/queries/dedup_review.sql). This does the same for the in-flight
+    path: it rewrites stale pkids and reports lines that no longer exist.
+
+    Returns ``{"checked", "rewritten", "unresolved"}``.
+    """
+    from sqlalchemy import bindparam
+
+    rows = task_repo.get_ccx_match_business_keys(task_id)
+    if not rows:
+        return {"checked": 0, "rewritten": 0, "unresolved": 0}
+
+    keyed = []
+    for row in rows:
+        key = _ccx_business_key(
+            row["organization_eid_matched"],
+            row["contract_id_matched"],
+            row["erp_vendor_id_matched"],
+            row["manufacturer_number_matched"],
+            row["uom_matched"],
+            row["uom_to_match_infor_matched"],
+        )
+        # A row missing any of org / contract / vendor / mfg can't be re-resolved;
+        # leave its pkid alone rather than guessing.
+        if not all(key[:4]):
+            continue
+        keyed.append((row, key))
+
+    if not keyed:
+        return {"checked": len(rows), "rewritten": 0, "unresolved": 0}
+
+    contract_ids = sorted({k[1] for _r, k in keyed})
+    org_eids = sorted({k[0] for _r, k in keyed})
+    erp_vendor_ids = sorted({k[2] for _r, k in keyed})
+
+    stmt = load_query("preprocess", "item_matching", query="ccx_lines_by_contract_scope").bindparams(
+        bindparam("contract_ids", expanding=True),
+        bindparam("org_eids", expanding=True),
+        bindparam("erp_vendor_ids", expanding=True),
+    )
+
+    # Three IN lists share the 2100-parameter budget. org/vendor lists are tiny
+    # (a task spans one vendor and a handful of orgs), so chunk contract_ids only.
+    scope_headroom = max(1, SQLSERVER_EXPANDING_BATCH_SIZE - len(org_eids) - len(erp_vendor_ids))
+    current: dict[tuple, int] = {}
+    with _sql_session() as sess:
+        for start in range(0, len(contract_ids), scope_headroom):
+            batch = contract_ids[start:start + scope_headroom]
+            db_rows = sess.execute(
+                stmt,
+                {
+                    "contract_ids": batch,
+                    "org_eids": org_eids,
+                    "erp_vendor_ids": erp_vendor_ids,
+                },
+            ).mappings().all()
+            for db_row in db_rows:
+                current[
+                    _ccx_business_key(
+                        db_row.get("OrganizationEID"),
+                        db_row.get("ContractID"),
+                        db_row.get("ERPVendorID"),
+                        db_row.get("ManufacturerNumber_CCX"),
+                        db_row.get("UOM_CCX"),
+                        db_row.get("UOMtoMatchInfor_CCX"),
+                    )
+                ] = db_row.get("CCX_pkid")
+
+    updates = []
+    unresolved = []
+    for row, key in keyed:
+        resolved = current.get(key)
+        if resolved is None:
+            unresolved.append(row)
+        elif resolved != row["ccx_pkid"]:
+            updates.append({"match_id": row["match_id"], "ccx_pkid": resolved})
+
+    if updates:
+        task_repo.update_match_ccx_pkids(updates)
+        logger.info(
+            "Task %s: re-resolved %d stale ccx_pkid value(s) after a source reload.",
+            task_id, len(updates),
+        )
+
+    # Clear prior findings first so a re-run replaces rather than duplicates them.
+    task_repo.delete_unresolved_preprocess_issues(task_id, [CCX_GONE_ISSUE_TYPE])
+
+    if unresolved:
+        # One issue per input item, not per match row — a single item can match
+        # dozens of lines on the same vanished contract.
+        by_item: dict[int, dict] = {}
+        for row in unresolved:
+            by_item.setdefault(row["input_item_id"], row)
+
+        logger.warning(
+            "Task %s: %d CCX match row(s) across %d input item(s) no longer resolve "
+            "to a contract line.",
+            task_id, len(unresolved), len(by_item),
+        )
+
+        # When essentially the whole task has aged out (its contracts were
+        # archived from the CCX snapshot), per-item issues are noise, not a
+        # to-do list. Log it loudly and don't flood the issue table.
+        if len(by_item) > CCX_GONE_ISSUE_CAP:
+            logger.warning(
+                "Task %s: %d affected item(s) exceeds the %d-item cap, so no per-item "
+                "issues were written. The task's matched contracts have most likely "
+                "been archived from CCXSyncedContractLine; re-run SKU matching.",
+                task_id, len(by_item), CCX_GONE_ISSUE_CAP,
+            )
+        else:
+            task_repo.add_preprocess_issues_bulk([
+                {
+                    "task_id": task_id,
+                    "item_id": item_id,
+                    "issue_type": CCX_GONE_ISSUE_TYPE,
+                    "severity": "WARN",
+                    "detail": json.dumps({
+                        "contract_id": row["contract_id_matched"],
+                        "organization_eid": row["organization_eid_matched"],
+                        "erp_vendor_id": row["erp_vendor_id_matched"],
+                        "manufacturer_number": row["manufacturer_number_matched"],
+                        "uom": row["uom_matched"],
+                        "note": "Matched CCX contract line is no longer present after a "
+                                "source reload.",
+                    }),
+                }
+                for item_id, row in by_item.items()
+            ])
+
+    return {
+        "checked": len(rows),
+        "rewritten": len(updates),
+        "unresolved": len(unresolved),
+    }
 
 
 def _determine_contract_type(process_type: str) -> str:
@@ -235,10 +434,10 @@ def _load_ccx_candidate_rows(
         rows.extend(_execute_expanding_batches(sess, stmt, bind_name, values, {"org_eid": org_eid}))
 
     if contract_type == "MANUFACTURER":
-        run_query("ccx_match_manufacturer_set", "reduced_mfg_nums", reduced_mfg_values)
+        run_query("ccx_match_mfg_set", "reduced_mfg_nums", reduced_mfg_values)
     else:
-        run_query("ccx_match_distributor_mfg_set", "reduced_mfg_nums", reduced_mfg_values)
-        run_query("ccx_match_distributor_vendor_set", "reduced_vendor_nums", reduced_vpn_values)
+        run_query("ccx_match_mfg_set", "reduced_mfg_nums", reduced_mfg_values)
+        run_query("ccx_match_vendor_set", "reduced_vendor_nums", reduced_vpn_values)
 
     return rows
 
@@ -896,27 +1095,88 @@ def run_llm_review(task_id: str, state_machine: TaskStateMachine) -> dict:
     return {"reviewed": reviewed}
 
 
+def get_ccx_data_freshness(task_id: str) -> dict:
+    """Compare when this task's SKU matching ran against the last CCX reload.
+
+    ``sp_RefreshCCXSyncedContractLine`` is a TRUNCATE + INSERT that runs roughly
+    daily, so a task matched before the last run is holding CCX snapshots taken
+    from a table that has since been replaced wholesale. The cascade itself is
+    safe (it anchors on the stable Infor_pkid), but the matched contract lines a
+    reviewer is looking at may no longer exist, and re-running SKU matching is
+    the only way to get current truth.
+
+    Returns ``is_stale`` plus the timestamps behind it, so the UI can say why.
+    """
+    matched_at = task_repo.get_first_ccx_match_time(task_id)
+
+    with _sql_session() as sess:
+        row = sess.execute(
+            load_query("db", "common", query="ccx_reload_watermark"),
+            {"since": matched_at},
+        ).mappings().first()
+
+    last_reload = row.get("last_reload") if row else None
+    reloads_since = int(row.get("reloads_since") or 0) if row else 0
+
+    if matched_at is None or last_reload is None:
+        return {
+            "matched_at": matched_at.isoformat() if matched_at else None,
+            "last_ccx_reload": last_reload.isoformat() if last_reload else None,
+            "reloads_since": 0,
+            "is_stale": False,
+        }
+
+    return {
+        "matched_at": matched_at.isoformat(),
+        "last_ccx_reload": last_reload.isoformat(),
+        "reloads_since": reloads_since,
+        "is_stale": matched_at < last_reload,
+    }
+
+
 # ---------------------------------------------------------------------------
-# Step 4 -- Infor Cascade (via CCX pkids)
+# Step 4 -- Infor Cascade (via stable Infor pkids)
 # ---------------------------------------------------------------------------
 def run_infor_cascade(task_id: str, state_machine: TaskStateMachine) -> dict:
-    """Fetch Infor contract lines linked to CCX matches.
+    """Fetch Infor contract lines linked to the task's CCX matches.
 
-    Uses CCX_pkid to find corresponding Infor rows in
-    InforActiveCLRefCCXSyncedCL.
+    Anchors on ``Infor_pkid``, which is a business key (Contract + '-' +
+    ContractLine) and therefore stable across the nightly TRUNCATE/INSERT of the
+    source tables. ``CCX_pkid`` is not: every reload re-issues it, so joining on
+    a pkid snapshotted during SKU matching would silently attach another item's
+    Infor lines.
+
+    The linkage itself is read from ``infor_pkids_matched``, which
+    ``run_sku_matching`` already recorded on each CCX match row. That means the
+    cascade reproduces the correspondence as it stood when the human reviewed
+    the match, and needs no lookup to re-derive it. The trade-off is that an
+    Infor line newly linked to the CCX line since matching is not picked up —
+    re-run SKU matching for that.
     """
     state = state_machine.get_state(task_id)
     state["status"] = Status.INFOR_MATCHING
     state_machine.save_state(task_id, state)
     task_repo.update_task_phase(task_id, Phase.PREPROCESS, Status.INFOR_MATCHING)
 
-    ccx_matches = [m for m in task_repo.get_match_results(task_id, matched_source="CCX") if m.ccx_pkid]
+    # The cascade no longer depends on ccx_pkid, but the dedup workspace copies
+    # it forward, so keep it honest.
+    _refresh_ccx_pkids(task_id)
+
+    ccx_matches = task_repo.get_match_results(task_id, matched_source="CCX")
     if not ccx_matches:
         return {"infor_lines": 0}
 
-    cascade_pkids = sorted({match.ccx_pkid for match in ccx_matches if match.ccx_pkid is not None})
-    if not cascade_pkids:
+    # (input_item_id, infor_pkid) -> the CCX match rows that link to it.
+    grouped_matches: dict[tuple[int, str], list] = {}
+    for match in ccx_matches:
+        for infor_pkid in _parse_infor_pkid_list(match.infor_pkids_matched):
+            grouped_matches.setdefault((match.input_item_id, infor_pkid), []).append(match)
+
+    if not grouped_matches:
+        logger.info("Task %s: no CCX match carries a linked Infor pkid; nothing to cascade.", task_id)
         return {"infor_lines": 0}
+
+    cascade_infor_pkids = sorted({key[1] for key in grouped_matches})
 
     input_items = task_repo.get_items_by_source(task_id, "INPUT")
     org_eid = getattr(input_items[0], "organization_eid", None) or MHS_ORG_EID if input_items else MHS_ORG_EID
@@ -924,57 +1184,48 @@ def run_infor_cascade(task_id: str, state_machine: TaskStateMachine) -> dict:
     task = task_repo.get_task(task_id)
     is_distributor = "DISTRIBUTOR" in (task.process_type or "").upper()
 
-    query = load_query("preprocess", "item_matching", query="infor_cascade_by_ccx_pkids")
+    query = load_query("preprocess", "item_matching", query="infor_cascade_by_infor_pkids")
 
     infor_matches = []
     with _sql_session() as sess:
         # SQLAlchemy text() with IN requires expanding bindparam
         from sqlalchemy import bindparam
-        bound_query = query.bindparams(bindparam("ccx_pkids", expanding=True))
+        bound_query = query.bindparams(bindparam("infor_pkids", expanding=True))
         rows = _execute_expanding_batches(
             sess,
             bound_query,
-            "ccx_pkids",
-            cascade_pkids,
+            "infor_pkids",
+            cascade_infor_pkids,
             {"org_eid": org_eid},
         )
 
-        # Map every task CCX pkid to the task rows that matched it so a single
-        # Infor line can carry all CCX source rows for the same input item.
-        ccx_matches_by_pkid: dict[int, list] = {}
-        for match in ccx_matches:
-            ccx_matches_by_pkid.setdefault(match.ccx_pkid, []).append(match)
-
-        relevant_infor_pkids = sorted({row.get("Infor_pkid") for row in rows if row.get("Infor_pkid")})
-        lineage_by_key: dict[tuple[int, str], set[int]] = {}
-        if relevant_infor_pkids:
-            for lineage_row in rows:
-                infor_pkid = lineage_row.get("Infor_pkid")
-                ccx_pkid = lineage_row.get("CCX_pkid")
-                if not infor_pkid or not ccx_pkid or infor_pkid not in relevant_infor_pkids:
-                    continue
-                for source_match in ccx_matches_by_pkid.get(ccx_pkid, []):
-                    lineage_by_key.setdefault((source_match.input_item_id, infor_pkid), set()).add(ccx_pkid)
-
-        grouped_rows: dict[tuple[int, str], list] = {}
+        # One row per Infor line. The query already selects DISTINCT over
+        # Infor-side columns only; this guards against any residual duplicate.
+        row_by_infor_pkid: dict[str, dict] = {}
         for row in rows:
-            ccx_pkid = row.get("CCX_pkid")
-            if not ccx_pkid:
-                continue
-            for source_match in ccx_matches_by_pkid.get(ccx_pkid, []):
-                infor_pkid = row.get("Infor_pkid")
-                if not infor_pkid:
-                    continue
-                grouped_rows.setdefault((source_match.input_item_id, infor_pkid), []).append((row, source_match))
+            infor_pkid = row.get("Infor_pkid")
+            if infor_pkid and infor_pkid not in row_by_infor_pkid:
+                row_by_infor_pkid[infor_pkid] = row
 
-        for (input_item_id, infor_pkid), row_sources in grouped_rows.items():
-            lineage_pkids = sorted(lineage_by_key.get((input_item_id, infor_pkid), set()))
-            source_matches = [source_match for _row, source_match in row_sources]
+        missing = [p for p in cascade_infor_pkids if p not in row_by_infor_pkid]
+        if missing:
+            logger.warning(
+                "Task %s: %d linked Infor line(s) are no longer active and were skipped "
+                "(e.g. %s).",
+                task_id, len(missing), ", ".join(missing[:5]),
+            )
+
+        for (input_item_id, infor_pkid), source_matches in grouped_matches.items():
+            primary_row = row_by_infor_pkid.get(infor_pkid)
+            if primary_row is None:
+                continue
+
+            # Lineage comes from the match rows themselves, not from a re-join.
+            lineage_pkids = sorted({m.ccx_pkid for m in source_matches if m.ccx_pkid is not None})
             primary_match = min(
                 source_matches,
                 key=lambda match: ((_bucket_priority(match.similarity_bucket) or 99), match.ccx_pkid or 0, match.match_id),
             )
-            primary_row = next(row for row, source_match in row_sources if source_match.match_id == primary_match.match_id)
 
             # matched_item_ref: mfg+UOM for manufacturer, vendor+UOM for distributor
             if is_distributor:
@@ -2210,6 +2461,9 @@ def _complete_preprocess_and_advance(
     # this is a no-op.
     try:
         from .dedup_workspace import populate_dedup_workspace
+        # The workspace snapshots ccx_pkid alongside the business key, so make
+        # sure the pkids are current before they are copied forward.
+        _refresh_ccx_pkids(task_id)
         populate_dedup_workspace(task_id)
     except Exception as exc:  # pragma: no cover — log and continue
         logger.exception("Dedup workspace populate failed for task %s: %s", task_id, exc)

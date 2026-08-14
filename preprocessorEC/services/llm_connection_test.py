@@ -7,7 +7,7 @@ from urllib.parse import urljoin
 
 from flask import current_app
 
-from .llm_review import _build_ssl_verify, _get_client
+from .llm_client import build_client, build_ssl_verify, client_settings_from_config
 
 
 def _describe_exception(exc: Exception) -> dict:
@@ -32,6 +32,7 @@ def test_openai_connection() -> dict:
     timeout = current_app.config.get("OPENAI_TIMEOUT_SECONDS", 30.0)
     endpoint_mode = "azure" if azure_endpoint else "openai"
     resolved_base_url = base_url or "https://api.openai.com/v1"
+    settings = client_settings_from_config(current_app.config)
 
     if not api_key:
         return {
@@ -56,7 +57,7 @@ def test_openai_connection() -> dict:
 
         models_url = urljoin(f"{resolved_base_url}/", "models")
         probe_started = time.perf_counter()
-        with httpx.Client(timeout=timeout, verify=_build_ssl_verify(disable_ssl_verify)) as probe_client:
+        with httpx.Client(timeout=timeout, verify=build_ssl_verify(settings)) as probe_client:
             probe_response = probe_client.get(
                 models_url,
                 headers={"Authorization": f"Bearer {api_key}"},
@@ -80,7 +81,7 @@ def test_openai_connection() -> dict:
             **_describe_exception(exc),
         }
 
-    client = _get_client()
+    client = build_client(settings)
     if client is None:
         return {
             "ok": False,

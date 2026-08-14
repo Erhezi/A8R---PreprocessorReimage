@@ -1,0 +1,477 @@
+{% extends "base.html" %}
+{% block title %}Discovery #{{ set_id }}{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-3">
+
+  <a href="{{ url_prefix }}/discovery/" class="small text-decoration-none">&larr; Quick Discovery</a>
+
+  <div class="d-flex justify-content-between align-items-start mt-1 mb-3">
+    <div>
+      <h5 class="mb-0">
+        {{ discovery_set.set_name or "Discovery set" }}
+        <span class="text-muted">#{{ set_id }}</span>
+      </h5>
+      <div class="text-muted small">
+        Matching as
+        <span class="badge bg-light text-dark border">{{ discovery_set.match_mode }}</span>
+        across all organizations
+        {% if discovery_set.has_supplier %}
+        · supplier column included
+        {% endif %}
+      </div>
+    </div>
+    <div class="text-end">
+      <button class="btn btn-outline-secondary btn-sm" id="matchBtn">Re-run matching</button>
+      <button class="btn btn-primary btn-sm" id="llmBtn">Run LLM comparison</button>
+      <a class="btn btn-outline-success btn-sm" id="exportBtn"
+         href="{{ url_prefix }}/api/discovery/{{ set_id }}/export.xlsx">Export</a>
+    </div>
+  </div>
+
+  <!-- Summary cards -->
+  <div class="row g-2 mb-3" id="summaryCards"></div>
+
+  <!-- LLM progress -->
+  <div class="card mb-3 d-none" id="llmPanel">
+    <div class="card-body py-2">
+      <div class="d-flex justify-content-between align-items-center mb-1">
+        <div class="small fw-semibold" id="llmLabel">LLM comparison</div>
+        <button class="btn btn-outline-danger btn-sm py-0" id="llmCancelBtn">Stop</button>
+      </div>
+      <div class="progress" style="height: 18px;">
+        <div class="progress-bar progress-bar-striped progress-bar-animated"
+             id="llmBar" style="width: 0%">0%</div>
+      </div>
+      <div class="small text-muted mt-1" id="llmDetail"></div>
+    </div>
+  </div>
+
+  <!-- Filters -->
+  <div class="card mb-2">
+    <div class="card-body py-2">
+      <div class="row g-2 align-items-end">
+        <div class="col-md-3">
+          <label class="form-label form-label-sm mb-0">Search</label>
+          <input type="text" class="form-control form-control-sm" id="fSearch"
+                 placeholder="SKU or description">
+        </div>
+        <div class="col-md-2">
+          <label class="form-label form-label-sm mb-0">LLM verdict</label>
+          <select class="form-select form-select-sm" id="fVerdict">
+            <option value="">Any</option>
+            <option value="SAME">Same</option>
+            <option value="DIFFERENT">Different</option>
+            <option value="UNCERTAIN">Uncertain</option>
+            <option value="UNJUDGED">Not yet judged</option>
+          </select>
+        </div>
+        <div class="col-md-2">
+          <label class="form-label form-label-sm mb-0">SKU exact</label>
+          <select class="form-select form-select-sm" id="fExact">
+            <option value="">Any</option>
+            <option value="1">Exact only</option>
+            <option value="0">Reduced only</option>
+          </select>
+        </div>
+        <div class="col-md-2">
+          <label class="form-label form-label-sm mb-0">Matched on</label>
+          <select class="form-select form-select-sm" id="fMatchedOn">
+            <option value="">Any</option>
+            <option value="REDUCED_MFG">Manufacturer #</option>
+            <option value="REDUCED_VPN">Vendor #</option>
+          </select>
+        </div>
+        <div class="col-md-1">
+          <label class="form-label form-label-sm mb-0">Top N</label>
+          <input type="number" class="form-control form-control-sm" id="fMaxRank" min="1" placeholder="all">
+        </div>
+        <div class="col-md-2 text-end">
+          <button class="btn btn-outline-secondary btn-sm" id="resetFilters">Reset</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Results -->
+  <div class="card">
+    <div class="card-body p-0">
+      <div class="table-responsive">
+        <table class="table table-sm table-hover mb-0 align-middle" style="font-size: 0.83rem;">
+          <thead class="table-light">
+            <tr>
+              <th style="width:60px;">Row</th>
+              <th style="min-width:130px;">Input SKU</th>
+              <th style="min-width:230px;">Input description</th>
+              <th style="width:80px;">Exact</th>
+              <th style="width:110px;">Matched on</th>
+              <th style="width:80px;">Sim.</th>
+              <th style="width:55px;">Rank</th>
+              <th style="min-width:130px;">Matched SKU</th>
+              <th style="min-width:230px;">Matched description</th>
+              <th style="min-width:120px;">Contract</th>
+              <th style="min-width:120px;">Organization</th>
+              <th style="min-width:150px;">Vendor</th>
+              <th style="min-width:150px;">Manufacturer</th>
+              <th style="width:100px;">Verdict</th>
+              <th style="width:60px;">Conf.</th>
+              <th style="min-width:220px;">LLM reason</th>
+              <th style="width:70px;">Prompt</th>
+            </tr>
+          </thead>
+          <tbody id="resultsBody">
+            <tr><td colspan="17" class="text-center text-muted py-3">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card-footer py-2 d-flex justify-content-between align-items-center">
+      <div class="small text-muted" id="pageInfo"></div>
+      <div>
+        <button class="btn btn-outline-secondary btn-sm" id="prevBtn">Previous</button>
+        <button class="btn btn-outline-secondary btn-sm" id="nextBtn">Next</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- LLM scope modal -->
+<div class="modal fade" id="llmModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header py-2">
+        <h6 class="modal-title">Run LLM comparison</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <p class="small text-muted">
+          The LLM is asked, for each pair, whether the two descriptions describe the same
+          physical product. Pairs already judged are skipped.
+        </p>
+        <div class="form-check">
+          <input class="form-check-input" type="radio" name="scope" id="scopeTop" value="TOP_N" checked>
+          <label class="form-check-label" for="scopeTop">
+            Best matches per input line only
+            <input type="number" class="form-control form-control-sm d-inline-block ms-2"
+                   style="width:70px;" id="topN" value="3" min="1">
+          </label>
+        </div>
+        <div class="form-check mt-2">
+          <input class="form-check-input" type="radio" name="scope" id="scopeAll" value="ALL">
+          <label class="form-check-label" for="scopeAll">Every matched pair in this set</label>
+        </div>
+        <div class="alert alert-warning py-2 mt-3 mb-0 small" id="scopeWarning"></div>
+      </div>
+      <div class="modal-footer py-2">
+        <button class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+        <button class="btn btn-primary btn-sm" id="llmStartBtn">Start</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const PREFIX = "{{ url_prefix }}";
+const SET_ID = {{ set_id }};
+
+let offset = 0;
+let pageSize = 100;
+let total = 0;
+let llmRunning = false;
+let llmTotal = 0;
+
+function esc(value) {
+  return String(value == null ? "" : value)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+const VERDICT_BADGE = { SAME: "success", DIFFERENT: "danger", UNCERTAIN: "warning text-dark" };
+
+function verdictCell(row) {
+  if (row.llm_error) {
+    return `<span class="badge bg-secondary" title="${esc(row.llm_error)}">ERROR</span>`;
+  }
+  if (!row.llm_verdict) {
+    if (row.llm_status === "PENDING" || row.llm_status === "IN_PROGRESS") {
+      return `<span class="badge bg-light text-dark border">queued</span>`;
+    }
+    return `<span class="text-muted">—</span>`;
+  }
+  return `<span class="badge bg-${VERDICT_BADGE[row.llm_verdict] || "secondary"}">${esc(row.llm_verdict)}</span>`;
+}
+
+function filters() {
+  const params = new URLSearchParams();
+  const search = document.getElementById("fSearch").value.trim();
+  const verdict = document.getElementById("fVerdict").value;
+  const exact = document.getElementById("fExact").value;
+  const matchedOn = document.getElementById("fMatchedOn").value;
+  const maxRank = document.getElementById("fMaxRank").value;
+  if (search) params.set("search", search);
+  if (verdict) params.set("verdict", verdict);
+  if (exact) params.set("sku_exact", exact);
+  if (matchedOn) params.set("matched_on", matchedOn);
+  if (maxRank) params.set("max_rank", maxRank);
+  return params;
+}
+
+async function loadSummary() {
+  const resp = await fetch(`${PREFIX}/api/discovery/${SET_ID}/summary`);
+  const data = await resp.json();
+  if (!resp.ok) return;
+
+  const verdicts = data.llm_by_verdict || {};
+  const cards = [
+    ["Input lines", (data.item_count || 0).toLocaleString(), "secondary"],
+    ["Lines with a match", (data.items_with_match || 0).toLocaleString(), "primary"],
+    ["Total matches", (data.match_count || 0).toLocaleString(), "primary"],
+    ["Exact SKU matches", (data.sku_exact_count || 0).toLocaleString(), "info"],
+    ["Contracts touched", (data.contract_count || 0).toLocaleString(), "secondary"],
+    ["LLM: same", (verdicts.SAME || 0).toLocaleString(), "success"],
+    ["LLM: different", (verdicts.DIFFERENT || 0).toLocaleString(), "danger"],
+    ["LLM: uncertain", (verdicts.UNCERTAIN || 0).toLocaleString(), "warning"],
+  ];
+  document.getElementById("summaryCards").innerHTML = cards.map(([label, value, tone]) => `
+    <div class="col">
+      <div class="card border-${tone}">
+        <div class="card-body py-2 px-3">
+          <div class="text-muted" style="font-size:0.72rem;">${esc(label)}</div>
+          <div class="fs-5 fw-semibold">${esc(value)}</div>
+        </div>
+      </div>
+    </div>`).join("");
+
+  // Resume a run that was interrupted by a reload or a closed tab.
+  const pending = data.llm_pending || 0;
+  if (pending > 0 && !llmRunning) {
+    llmTotal = pending + (data.llm_done || 0);
+    document.getElementById("llmPanel").classList.remove("d-none");
+    document.getElementById("llmDetail").textContent =
+      `${pending.toLocaleString()} pair(s) still queued — resuming.`;
+    runLoop();
+  }
+  return data;
+}
+
+async function loadResults() {
+  const body = document.getElementById("resultsBody");
+  const params = filters();
+  params.set("offset", offset);
+  params.set("limit", pageSize);
+  try {
+    const resp = await fetch(`${PREFIX}/api/discovery/${SET_ID}/results?${params}`);
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || "Could not load results");
+    total = data.total;
+
+    if (!data.rows.length) {
+      body.innerHTML = `<tr><td colspan="17" class="text-center text-muted py-4">
+        No matches for these filters.</td></tr>`;
+    } else {
+      body.innerHTML = data.rows.map(r => `
+        <tr>
+          <td class="text-muted">${esc(r.file_row)}</td>
+          <td><code>${esc(r.sku_input)}</code></td>
+          <td>${esc(r.description_input)}</td>
+          <td>${r.sku_exact
+                ? '<span class="badge bg-success">Yes</span>'
+                : '<span class="badge bg-light text-dark border">No</span>'}</td>
+          <td><span class="small">${r.matched_on === "REDUCED_MFG" ? "Manufacturer #" : "Vendor #"}</span></td>
+          <td>${r.desc_similarity == null ? "" : (r.desc_similarity * 100).toFixed(0) + "%"}</td>
+          <td>${esc(r.rank_in_item)}</td>
+          <td><code>${esc(r.matched_on === "REDUCED_MFG"
+                ? r.mfg_catalog_num_matched : r.vendor_catalog_num_matched)}</code></td>
+          <td>${esc(r.description_matched)}</td>
+          <td class="small">${esc(r.contract_id_matched)}</td>
+          <td class="small">${esc(r.organization_matched)}</td>
+          <td class="small">${esc(r.vendor_name_matched)}</td>
+          <td class="small">${esc(r.mfg_name_matched)}</td>
+          <td>${verdictCell(r)}</td>
+          <td class="small">${r.llm_confidence == null ? "" : esc(r.llm_confidence)}</td>
+          <td class="small text-muted">${esc(r.llm_reason || r.llm_error || "")}</td>
+          <td class="small text-muted">${r.llm_prompt_version_id
+                ? "v" + esc(r.llm_prompt_version_id) : ""}</td>
+        </tr>`).join("");
+    }
+
+    const from = total === 0 ? 0 : offset + 1;
+    const to = Math.min(offset + pageSize, total);
+    document.getElementById("pageInfo").textContent =
+      `${from.toLocaleString()}–${to.toLocaleString()} of ${total.toLocaleString()}`;
+    document.getElementById("prevBtn").disabled = offset <= 0;
+    document.getElementById("nextBtn").disabled = offset + pageSize >= total;
+  } catch (err) {
+    body.innerHTML = `<tr><td colspan="17" class="text-center text-danger py-3">${esc(err.message)}</td></tr>`;
+  }
+}
+
+function refresh() { loadSummary(); loadResults(); }
+
+// --- matching -------------------------------------------------------------
+document.getElementById("matchBtn").addEventListener("click", async () => {
+  const btn = document.getElementById("matchBtn");
+  btn.disabled = true;
+  btn.textContent = "Matching…";
+  try {
+    const resp = await fetch(`${PREFIX}/api/discovery/${SET_ID}/match`, { method: "POST" });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || "Matching failed");
+    refresh();
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Re-run matching";
+  }
+});
+
+// --- LLM ------------------------------------------------------------------
+const llmModal = new bootstrap.Modal(document.getElementById("llmModal"));
+
+document.getElementById("llmBtn").addEventListener("click", async () => {
+  const resp = await fetch(`${PREFIX}/api/discovery/${SET_ID}/summary`);
+  const data = await resp.json();
+  const matches = data.match_count || 0;
+  const items = data.items_with_match || 0;
+  const topN = parseInt(document.getElementById("topN").value, 10) || 3;
+  document.getElementById("scopeWarning").textContent =
+    `This set has ${matches.toLocaleString()} matched pair(s) across ${items.toLocaleString()} input line(s). ` +
+    `"Best ${topN} per line" is roughly ${Math.min(matches, items * topN).toLocaleString()} LLM calls; ` +
+    `"every pair" is ${matches.toLocaleString()}.`;
+  llmModal.show();
+});
+
+document.getElementById("llmStartBtn").addEventListener("click", async () => {
+  const scope = document.querySelector('input[name="scope"]:checked').value;
+  const payload = { scope };
+  if (scope === "TOP_N") payload.top_n = parseInt(document.getElementById("topN").value, 10) || 3;
+
+  const resp = await fetch(`${PREFIX}/api/discovery/${SET_ID}/llm/start`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await resp.json();
+  if (!resp.ok) { alert(data.error || "Could not start"); return; }
+
+  llmModal.hide();
+  llmTotal = data.remaining;
+  if (!llmTotal) {
+    alert("Nothing new to judge — every pair in that scope already has a verdict.");
+    return;
+  }
+  document.getElementById("llmPanel").classList.remove("d-none");
+  document.getElementById("llmLabel").textContent =
+    `LLM comparison — prompt v${data.prompt_version_no}`;
+  runLoop();
+});
+
+document.getElementById("llmCancelBtn").addEventListener("click", async () => {
+  llmRunning = false;
+  await fetch(`${PREFIX}/api/discovery/${SET_ID}/llm/cancel`, { method: "POST" });
+  document.getElementById("llmDetail").textContent = "Stopped. Judged pairs keep their verdicts.";
+  refresh();
+});
+
+function setProgress(done, totalPairs) {
+  const pct = totalPairs ? Math.round((done / totalPairs) * 100) : 100;
+  const bar = document.getElementById("llmBar");
+  bar.style.width = `${pct}%`;
+  bar.textContent = `${pct}%`;
+}
+
+/**
+ * Drive the run one slice at a time. Each request judges a bounded number of
+ * pairs so no single HTTP call runs long, and the atomic claim on the server
+ * means a reload or a second tab can never double-charge a row.
+ */
+async function runLoop() {
+  if (llmRunning) return;
+  llmRunning = true;
+  let errors = 0;
+
+  while (llmRunning) {
+    let data;
+    try {
+      const resp = await fetch(`${PREFIX}/api/discovery/${SET_ID}/llm/run-slice`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || "Slice failed");
+    } catch (err) {
+      llmRunning = false;
+      document.getElementById("llmDetail").textContent = `Stopped: ${err.message}`;
+      refresh();
+      return;
+    }
+
+    errors += data.errors || 0;
+    const done = Math.max(0, llmTotal - data.remaining);
+    setProgress(done, llmTotal);
+    document.getElementById("llmDetail").textContent =
+      `${done.toLocaleString()} of ${llmTotal.toLocaleString()} judged` +
+      (errors ? ` · ${errors.toLocaleString()} error(s)` : "");
+
+    // Refresh the visible page every slice so verdicts appear as they land.
+    loadResults();
+
+    if (data.done || data.remaining === 0) {
+      llmRunning = false;
+      document.getElementById("llmDetail").textContent =
+        `Finished — ${llmTotal.toLocaleString()} pair(s) judged` +
+        (errors ? `, ${errors.toLocaleString()} error(s)` : "") + ".";
+      refresh();
+      return;
+    }
+  }
+}
+
+// --- filters & paging -----------------------------------------------------
+let filterTimer = null;
+function onFilterChange() {
+  clearTimeout(filterTimer);
+  filterTimer = setTimeout(() => { offset = 0; loadResults(); }, 250);
+}
+["fSearch", "fVerdict", "fExact", "fMatchedOn", "fMaxRank"].forEach(id => {
+  const el = document.getElementById(id);
+  el.addEventListener(el.tagName === "SELECT" ? "change" : "input", onFilterChange);
+});
+
+document.getElementById("resetFilters").addEventListener("click", () => {
+  ["fSearch", "fMaxRank"].forEach(id => document.getElementById(id).value = "");
+  ["fVerdict", "fExact", "fMatchedOn"].forEach(id => document.getElementById(id).value = "");
+  offset = 0;
+  loadResults();
+});
+
+document.getElementById("prevBtn").addEventListener("click", () => {
+  offset = Math.max(0, offset - pageSize);
+  loadResults();
+});
+document.getElementById("nextBtn").addEventListener("click", () => {
+  if (offset + pageSize < total) { offset += pageSize; loadResults(); }
+});
+
+document.getElementById("exportBtn").addEventListener("click", (event) => {
+  const params = filters();
+  event.currentTarget.href = `${PREFIX}/api/discovery/${SET_ID}/export.xlsx?${params}`;
+});
+
+// Freshly uploaded sets arrive with ?automatch=1 and start matching immediately.
+(async function init() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("automatch") === "1") {
+    history.replaceState(null, "", `${PREFIX}/discovery/${SET_ID}`);
+    document.getElementById("matchBtn").click();
+  } else {
+    refresh();
+  }
+})();
+</script>
+{% endblock %}

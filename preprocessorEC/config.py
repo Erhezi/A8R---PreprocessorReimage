@@ -74,6 +74,15 @@ class Config:
     LLM_MAX_TOKENS = int(_config_env("LLM_MAX_TOKENS", "1024"))
     LLM_TEMPERATURE = float(_config_env("LLM_TEMPERATURE", "0.0"))
 
+    # ── Quick Discovery ────────────────────────────────────────────
+    # Hard cap on rows per uploaded discovery set.
+    DISCOVERY_MAX_ROWS = int(_config_env("DISCOVERY_MAX_ROWS", "5000"))
+    # Pairs judged per /llm/run-slice call. Keep the slice short enough that a
+    # single HTTP request finishes well inside any proxy timeout.
+    DISCOVERY_LLM_SLICE = int(_config_env("DISCOVERY_LLM_SLICE", "50"))
+    # Concurrent LLM calls within one slice.
+    DISCOVERY_LLM_WORKERS = int(_config_env("DISCOVERY_LLM_WORKERS", "8"))
+
     # ── URL Prefix ─────────────────────────────────────────────────
     URL_PREFIX = os.environ.get("URL_PREFIX", "")
 

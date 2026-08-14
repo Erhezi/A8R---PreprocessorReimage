@@ -19,7 +19,7 @@ from typing import Iterable, Optional
 from sqlalchemy import bindparam
 from sqlalchemy.orm import Session
 
-from ..common.utils import ny_now
+from ..common.utils import ny_now, SQLSERVER_IN_CHUNK as SQLSERVER_EXPANDING_BATCH_SIZE
 from ..db.engine import get_sqlserver_engine
 from ..db.sql_loader import load_query
 from ..models import (
@@ -33,8 +33,6 @@ from .dedup_resolution import (
     default_actions,
     editable_for_side,
 )
-
-SQLSERVER_EXPANDING_BATCH_SIZE = 1000
 
 # Rows per bulk_insert_mappings call. These go through executemany (row-wise
 # parameters), so the 2100-parameter statement cap doesn't apply — the batch

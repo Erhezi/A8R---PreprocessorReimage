@@ -127,6 +127,19 @@ def api_run_preprocess(task_id: str):
     return jsonify(result)
 
 
+@preprocess_bp.route("/api/preprocess/<task_id>/data-freshness", methods=["GET"])
+@login_required
+def api_data_freshness(task_id: str):
+    """Report whether this task's CCX matches predate the last source reload.
+
+    The cascade itself is safe either way (it anchors on the stable Infor_pkid),
+    but the matched contract lines a reviewer sees were snapshotted from a table
+    that has since been replaced, so prices, UOMs, or whole contracts may have
+    moved on. Re-running SKU matching is the only way to get current truth.
+    """
+    return jsonify(preprocess_service.get_ccx_data_freshness(task_id))
+
+
 @preprocess_bp.route("/api/preprocess/<task_id>/sku-matching", methods=["POST"])
 @login_required
 def api_sku_matching(task_id: str):

@@ -120,6 +120,12 @@
       <button class="btn btn-sm btn-primary" id="btnRun">Run Full Preprocess</button>
     </div>
     <div class="card-body">
+      <!-- Filled by checkDataFreshness() when this task's matches predate the
+           last CCX reload. Hidden otherwise. -->
+      <div id="stalenessBanner" class="alert alert-warning py-2 d-none">
+        <div class="fw-semibold mb-1">Matched data may be out of date</div>
+        <div class="small" id="stalenessDetail"></div>
+      </div>
       <div class="form-check form-switch mb-3">
         <input class="form-check-input" type="checkbox" role="switch" id="toggleLlm" checked>
         <label class="form-check-label" for="toggleLlm">Enable LLM review steps</label>
@@ -1115,8 +1121,38 @@ document.getElementById("btnFinalize").addEventListener("click", async () => {
   if (resp.ok) location.href = `${PREFIX}/tasks/${TASK_ID}`;
 });
 
+/**
+ * Warn when this task's CCX matches predate the last source reload.
+ *
+ * The CCX line table is rebuilt (TRUNCATE + INSERT) roughly daily. A task
+ * matched before the last rebuild is showing contract lines snapshotted from a
+ * table that has since been replaced, so prices, UOMs, or whole contracts may
+ * have changed or gone away. Re-running SKU matching is the only way to refresh.
+ */
+async function checkDataFreshness() {
+  try {
+    const resp = await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/data-freshness`);
+    if (!resp.ok) return;
+    const f = await resp.json();
+    if (!f.is_stale) return;
+
+    const when = (iso) => iso ? iso.replace("T", " ").slice(0, 16) : "unknown";
+    const times = f.reloads_since === 1 ? "once" : `${f.reloads_since} times`;
+    document.getElementById("stalenessDetail").textContent =
+      `SKU matching for this task ran on ${when(f.matched_at)}. The CCX contract data has ` +
+      `been reloaded ${times} since then (most recently ${when(f.last_ccx_reload)}), so the ` +
+      `matched contract lines below may have changed price or UOM, or no longer exist. ` +
+      `Re-run the pipeline to match against current data.`;
+    document.getElementById("stalenessBanner").classList.remove("d-none");
+  } catch (err) {
+    // A freshness check failing must never block the page.
+    console.warn("data-freshness check failed:", err);
+  }
+}
+
 // Load existing data on page load
 (async function init() {
+  checkDataFreshness();
   const resp = await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/contract-summary`);
   const contracts = await resp.json();
   if (contracts.length) {
