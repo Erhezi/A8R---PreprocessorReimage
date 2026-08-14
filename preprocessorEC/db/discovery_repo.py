@@ -393,6 +393,89 @@ def cancel_llm_queue(set_id: int) -> int:
         return updated
 
 
+def _scope_filter(q, scope: str, top_n: Optional[int]):
+    """Narrow a DiscoveryMatch query to the requested scope."""
+    if scope == "TOP_N":
+        return q.filter(DiscoveryMatch.rank_in_item <= int(top_n or 1))
+    if scope == "ALL":
+        return q
+    raise ValueError(f"Unknown scope: {scope}")
+
+
+def _auto_skip_clause(skip_exact_above: Optional[float]):
+    """Rows the auto-skip rule excludes: exact SKU *and* near-identical wording.
+
+    An exact catalog number plus a description that already scores at or above
+    the threshold locally is not a judgement call — paying an LLM to confirm it
+    is waste. ``desc_similarity`` NULL compares as unknown, so unscored rows are
+    never auto-skipped.
+    """
+    if skip_exact_above is None:
+        return None
+    return (DiscoveryMatch.sku_exact == True) & (  # noqa: E712 - BIT column
+        DiscoveryMatch.desc_similarity >= float(skip_exact_above)
+    )
+
+
+def count_llm_candidates(
+    set_id: int,
+    scope: str,
+    *,
+    top_n: Optional[int] = None,
+    skip_exact_above: Optional[float] = None,
+    include_done: bool = False,
+) -> dict:
+    """Preview what a run would cost before any of it is spent.
+
+    Returns counts for the rows in scope, split into what would be sent, what
+    the auto-skip rule removes, and what already carries a verdict.
+    """
+    allowed = ["NONE", "PENDING", "ERROR"] + (["DONE"] if include_done else [])
+    with _session() as s:
+        base = _scope_filter(
+            s.query(func.count(DiscoveryMatch.discovery_match_id))
+            .filter(DiscoveryMatch.set_id == set_id),
+            scope, top_n,
+        )
+        in_scope = base.scalar() or 0
+        already_done = (
+            _scope_filter(
+                s.query(func.count(DiscoveryMatch.discovery_match_id))
+                .filter(DiscoveryMatch.set_id == set_id,
+                        DiscoveryMatch.llm_status == "DONE"),
+                scope, top_n,
+            ).scalar() or 0
+        )
+        sendable = _scope_filter(
+            s.query(func.count(DiscoveryMatch.discovery_match_id))
+            .filter(DiscoveryMatch.set_id == set_id,
+                    DiscoveryMatch.llm_status.in_(allowed)),
+            scope, top_n,
+        )
+        eligible_before_rule = sendable.scalar() or 0
+
+        clause = _auto_skip_clause(skip_exact_above)
+        if clause is None:
+            skipped_by_rule = 0
+        else:
+            skipped_by_rule = (
+                _scope_filter(
+                    s.query(func.count(DiscoveryMatch.discovery_match_id))
+                    .filter(DiscoveryMatch.set_id == set_id,
+                            DiscoveryMatch.llm_status.in_(allowed),
+                            clause),
+                    scope, top_n,
+                ).scalar() or 0
+            )
+
+        return {
+            "in_scope": in_scope,
+            "already_done": already_done if not include_done else 0,
+            "skipped_by_rule": skipped_by_rule,
+            "eligible": max(0, eligible_before_rule - skipped_by_rule),
+        }
+
+
 def queue_for_llm(
     set_id: int,
     scope: str,
@@ -400,50 +483,83 @@ def queue_for_llm(
     top_n: Optional[int] = None,
     match_ids: Optional[list[int]] = None,
     include_done: bool = False,
+    skip_exact_above: Optional[float] = None,
+    include_ids: Optional[list[int]] = None,
+    exclude_ids: Optional[list[int]] = None,
 ) -> int:
     """Mark rows PENDING for the LLM runner.
 
-    ``scope`` is ALL, TOP_N (best ``top_n`` matches per input line), or SELECTED.
-    Rows already DONE are skipped unless ``include_done`` — that is what stops a
-    second click from re-billing work that is already paid for.
+    ``scope`` is ALL, TOP_N (best ``top_n`` matches per input line), or SELECTED
+    (exactly ``match_ids``). Rows already DONE are skipped unless
+    ``include_done`` — that is what stops a second click re-billing work already
+    paid for.
+
+    ``skip_exact_above`` applies the auto-skip rule to ALL/TOP_N. The per-row
+    checkboxes then arrive as deltas from that rule: ``exclude_ids`` for rows the
+    user unticked, ``include_ids`` for rows the rule dropped but the user wants
+    judged anyway. Sending deltas rather than a full id list is what keeps this
+    workable on a set with a hundred thousand matches.
+
+    Any queue left over from a previous click is cleared first, so the selection
+    the user is looking at is the selection that runs.
     """
+    allowed = ["NONE", "PENDING", "ERROR"] + (["DONE"] if include_done else [])
+
     with _session() as s:
-        q = s.query(DiscoveryMatch).filter(DiscoveryMatch.set_id == set_id)
+        # Replace, don't accumulate.
+        s.query(DiscoveryMatch).filter(
+            DiscoveryMatch.set_id == set_id,
+            DiscoveryMatch.llm_status.in_(["PENDING", "IN_PROGRESS"]),
+        ).update({"llm_status": "NONE"}, synchronize_session=False)
+        s.flush()
 
-        if scope == "TOP_N":
-            q = q.filter(DiscoveryMatch.rank_in_item <= int(top_n or 1))
-        elif scope == "SELECTED":
+        if scope == "SELECTED":
             if not match_ids:
+                s.commit()
                 return 0
-            ids = [int(m) for m in match_ids]
-            total = 0
-            for batch in _chunked(ids):
-                total += (
-                    s.query(DiscoveryMatch)
-                    .filter(
-                        DiscoveryMatch.set_id == set_id,
-                        DiscoveryMatch.discovery_match_id.in_(batch),
-                        DiscoveryMatch.llm_status.in_(
-                            ["NONE", "PENDING", "ERROR"]
-                            if not include_done
-                            else ["NONE", "PENDING", "ERROR", "DONE"]
-                        ),
-                    )
-                    .update({"llm_status": "PENDING"}, synchronize_session=False)
-                )
-            s.commit()
-            return total
-        elif scope != "ALL":
-            raise ValueError(f"Unknown scope: {scope}")
+            for batch in _chunked([int(m) for m in match_ids]):
+                s.query(DiscoveryMatch).filter(
+                    DiscoveryMatch.set_id == set_id,
+                    DiscoveryMatch.discovery_match_id.in_(batch),
+                    DiscoveryMatch.llm_status.in_(allowed),
+                ).update({"llm_status": "PENDING"}, synchronize_session=False)
+        else:
+            q = _scope_filter(
+                s.query(DiscoveryMatch).filter(
+                    DiscoveryMatch.set_id == set_id,
+                    DiscoveryMatch.llm_status.in_(allowed),
+                ),
+                scope, top_n,
+            )
+            clause = _auto_skip_clause(skip_exact_above)
+            if clause is not None:
+                q = q.filter(~clause)
+            q.update({"llm_status": "PENDING"}, synchronize_session=False)
+            s.flush()
 
-        allowed = ["NONE", "PENDING", "ERROR"]
-        if include_done:
-            allowed.append("DONE")
-        updated = q.filter(DiscoveryMatch.llm_status.in_(allowed)).update(
-            {"llm_status": "PENDING"}, synchronize_session=False
+            # Per-row overrides, applied after the rule so they always win.
+            for batch in _chunked([int(m) for m in (exclude_ids or [])]):
+                s.query(DiscoveryMatch).filter(
+                    DiscoveryMatch.set_id == set_id,
+                    DiscoveryMatch.discovery_match_id.in_(batch),
+                    DiscoveryMatch.llm_status == "PENDING",
+                ).update({"llm_status": "NONE"}, synchronize_session=False)
+            for batch in _chunked([int(m) for m in (include_ids or [])]):
+                s.query(DiscoveryMatch).filter(
+                    DiscoveryMatch.set_id == set_id,
+                    DiscoveryMatch.discovery_match_id.in_(batch),
+                    DiscoveryMatch.llm_status.in_(allowed),
+                ).update({"llm_status": "PENDING"}, synchronize_session=False)
+
+        s.flush()
+        queued = (
+            s.query(func.count(DiscoveryMatch.discovery_match_id))
+            .filter(DiscoveryMatch.set_id == set_id,
+                    DiscoveryMatch.llm_status == "PENDING")
+            .scalar() or 0
         )
         s.commit()
-        return updated
+        return queued
 
 
 _CLAIM_SQL = text("""

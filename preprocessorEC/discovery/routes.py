@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+from typing import Optional
 
 from flask import (
     current_app,
@@ -302,6 +303,40 @@ def api_export(set_id: int):
 # ---------------------------------------------------------------------------
 # LLM run
 # ---------------------------------------------------------------------------
+def _skip_threshold(data: dict) -> Optional[float]:
+    """Parse the auto-skip similarity threshold; None disables the rule."""
+    raw = data.get("skip_exact_above")
+    if raw in (None, "", False):
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    # The UI slider spans 0.80-1.00; clamp so a hand-crafted request can't
+    # silently skip everything.
+    return max(0.5, min(1.0, value))
+
+
+@discovery_bp.route("/api/discovery/<int:set_id>/llm/estimate", methods=["POST"])
+@login_required
+def api_llm_estimate(set_id: int):
+    """How many pairs a run would send, before any of it is spent."""
+    if discovery_repo.get_set(set_id) is None:
+        return jsonify({"error": "Set not found"}), 404
+    data = request.get_json(silent=True) or {}
+    try:
+        counts = discovery_repo.count_llm_candidates(
+            set_id,
+            (data.get("scope") or "ALL").upper(),
+            top_n=data.get("top_n"),
+            skip_exact_above=_skip_threshold(data),
+            include_done=bool(data.get("include_done")),
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(counts)
+
+
 @discovery_bp.route("/api/discovery/<int:set_id>/llm/start", methods=["POST"])
 @login_required
 def api_llm_start(set_id: int):
@@ -325,6 +360,9 @@ def api_llm_start(set_id: int):
             top_n=top_n,
             match_ids=match_ids,
             include_done=include_done,
+            skip_exact_above=_skip_threshold(data),
+            include_ids=data.get("include_ids"),
+            exclude_ids=data.get("exclude_ids"),
         )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400

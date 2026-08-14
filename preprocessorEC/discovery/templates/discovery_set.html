@@ -47,6 +47,41 @@
     </div>
   </div>
 
+  <!-- LLM selection -->
+  <div class="card mb-2 border-primary-subtle">
+    <div class="card-body py-2">
+      <div class="row g-3 align-items-center">
+        <div class="col-md-4">
+          <label class="form-label form-label-sm mb-0 fw-semibold">
+            Skip exact SKU matches at or above
+            <span class="badge bg-primary" id="skipThresholdLabel">100%</span>
+            similarity
+          </label>
+          <input type="range" class="form-range" id="skipThreshold"
+                 min="80" max="100" step="1" value="100">
+          <div class="d-flex justify-content-between text-muted" style="font-size:0.7rem;">
+            <span>80%</span><span>100%</span>
+          </div>
+        </div>
+        <div class="col-md-5">
+          <div class="small" id="selectionSummary">
+            <span class="text-muted">Calculating…</span>
+          </div>
+          <div class="form-text mt-1">
+            An exact catalog number with a near-identical description is not a judgement
+            call, so those pairs are skipped by default. Lower the threshold to skip more.
+            Tick or untick individual rows to override.
+          </div>
+        </div>
+        <div class="col-md-3 text-end">
+          <button class="btn btn-outline-secondary btn-sm" id="clearOverridesBtn">
+            Clear row overrides <span class="badge bg-secondary" id="overrideCount">0</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Filters -->
   <div class="card mb-2">
     <div class="card-body py-2">
@@ -100,6 +135,9 @@
         <table class="table table-sm table-hover mb-0 align-middle" style="font-size: 0.83rem;">
           <thead class="table-light">
             <tr>
+              <th style="width:34px;" title="Send to LLM">
+                <input type="checkbox" class="form-check-input" id="selectAllPage">
+              </th>
               <th style="width:60px;">Row</th>
               <th style="min-width:130px;">Input SKU</th>
               <th style="min-width:230px;">Input description</th>
@@ -120,7 +158,7 @@
             </tr>
           </thead>
           <tbody id="resultsBody">
-            <tr><td colspan="17" class="text-center text-muted py-3">Loading…</td></tr>
+            <tr><td colspan="18" class="text-center text-muted py-3">Loading…</td></tr>
           </tbody>
         </table>
       </div>
@@ -182,6 +220,7 @@ let pageSize = 100;
 let total = 0;
 let llmRunning = false;
 let llmTotal = 0;
+let currentRows = [];   // rows on the visible page, for checkbox bookkeeping
 
 function esc(value) {
   return String(value == null ? "" : value)
@@ -190,6 +229,76 @@ function esc(value) {
 }
 
 const VERDICT_BADGE = { SAME: "success", DIFFERENT: "danger", UNCERTAIN: "warning text-dark" };
+
+// --- LLM selection state -------------------------------------------------
+// The auto-skip rule lives on the server; the browser only tracks the user's
+// deltas from it. That keeps this workable when a set has 100k matches and the
+// table is server-side paged, since we never need every id in memory.
+let skipThreshold = 1.0;          // skip exact-SKU rows at or above this similarity
+const excludeIds = new Set();     // rule would send, user unticked
+const includeIds = new Set();     // rule would skip, user ticked
+
+/** Would the auto-skip rule drop this row? Mirrors _auto_skip_clause() server-side. */
+function ruleSkips(row) {
+  return row.sku_exact === true
+      && row.desc_similarity !== null
+      && row.desc_similarity >= skipThreshold;
+}
+
+/** Is this row currently marked to be sent, rule plus any override? */
+function isSelected(row) {
+  const id = row.discovery_match_id;
+  if (excludeIds.has(id)) return false;
+  if (includeIds.has(id)) return true;
+  return !ruleSkips(row);
+}
+
+function selectionCell(row) {
+  // A row already judged is not re-sent; show why rather than a dead checkbox.
+  if (row.llm_status === "DONE") {
+    return `<span class="text-success" title="Already judged">&check;</span>`;
+  }
+  const checked = isSelected(row) ? "checked" : "";
+  const title = ruleSkips(row)
+    ? `Skipped by default: exact SKU and ${Math.round(row.desc_similarity * 100)}% similar`
+    : "Send this pair to the LLM";
+  return `<input type="checkbox" class="form-check-input row-select" `
+       + `data-mid="${row.discovery_match_id}" ${checked} title="${esc(title)}">`;
+}
+
+function overrideCount() { return excludeIds.size + includeIds.size; }
+
+function renderOverrideCount() {
+  document.getElementById("overrideCount").textContent = overrideCount();
+  document.getElementById("clearOverridesBtn").disabled = overrideCount() === 0;
+}
+
+/** Ask the server what the current rule + scope would send. Counts only, cheap.
+ *  Reads the same payload the run does, so the bar and the modal never disagree. */
+async function refreshSelectionSummary() {
+  const box = document.getElementById("selectionSummary");
+  try {
+    const payload = llmPayload();
+    const resp = await fetch(`${PREFIX}/api/discovery/${SET_ID}/llm/estimate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const d = await resp.json();
+    if (!resp.ok) throw new Error(d.error || "estimate failed");
+    const net = Math.max(0, d.eligible - excludeIds.size + includeIds.size);
+    const scopeLabel = payload.scope === "TOP_N"
+      ? `best ${payload.top_n} per input line` : "all matched pairs";
+    box.innerHTML =
+      `<span class="fw-semibold">${net.toLocaleString()}</span> pair(s) selected for the LLM `
+      + `<span class="text-muted">(${scopeLabel})</span><br>`
+      + `<span class="text-muted">${d.skipped_by_rule.toLocaleString()} skipped by the rule · `
+      + `${d.already_done.toLocaleString()} already judged · `
+      + `${d.in_scope.toLocaleString()} in scope</span>`;
+  } catch (err) {
+    box.innerHTML = `<span class="text-danger">Could not estimate: ${esc(err.message)}</span>`;
+  }
+}
 
 function verdictCell(row) {
   if (row.llm_error) {
@@ -267,13 +376,15 @@ async function loadResults() {
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.error || "Could not load results");
     total = data.total;
+    currentRows = data.rows;
 
     if (!data.rows.length) {
-      body.innerHTML = `<tr><td colspan="17" class="text-center text-muted py-4">
+      body.innerHTML = `<tr><td colspan="18" class="text-center text-muted py-4">
         No matches for these filters.</td></tr>`;
     } else {
       body.innerHTML = data.rows.map(r => `
         <tr>
+          <td>${selectionCell(r)}</td>
           <td class="text-muted">${esc(r.file_row)}</td>
           <td><code>${esc(r.sku_input)}</code></td>
           <td>${esc(r.description_input)}</td>
@@ -298,6 +409,14 @@ async function loadResults() {
         </tr>`).join("");
     }
 
+    // Header checkbox reflects the page: checked only if every sendable row is.
+    const sendable = currentRows.filter(r => r.llm_status !== "DONE");
+    const selectAll = document.getElementById("selectAllPage");
+    const selectedCount = sendable.filter(isSelected).length;
+    selectAll.checked = sendable.length > 0 && selectedCount === sendable.length;
+    selectAll.indeterminate = selectedCount > 0 && selectedCount < sendable.length;
+    renderOverrideCount();
+
     const from = total === 0 ? 0 : offset + 1;
     const to = Math.min(offset + pageSize, total);
     document.getElementById("pageInfo").textContent =
@@ -305,11 +424,66 @@ async function loadResults() {
     document.getElementById("prevBtn").disabled = offset <= 0;
     document.getElementById("nextBtn").disabled = offset + pageSize >= total;
   } catch (err) {
-    body.innerHTML = `<tr><td colspan="17" class="text-center text-danger py-3">${esc(err.message)}</td></tr>`;
+    body.innerHTML = `<tr><td colspan="18" class="text-center text-danger py-3">${esc(err.message)}</td></tr>`;
   }
 }
 
-function refresh() { loadSummary(); loadResults(); }
+function refresh() { loadSummary(); loadResults(); refreshSelectionSummary(); }
+
+// --- selection wiring ----------------------------------------------------
+const thresholdInput = document.getElementById("skipThreshold");
+let thresholdTimer = null;
+
+thresholdInput.addEventListener("input", () => {
+  skipThreshold = parseInt(thresholdInput.value, 10) / 100;
+  document.getElementById("skipThresholdLabel").textContent = `${thresholdInput.value}%`;
+  // Re-render immediately so the checkboxes track the slider, but debounce the
+  // server round-trip so dragging doesn't fire a request per pixel.
+  loadResults();
+  clearTimeout(thresholdTimer);
+  thresholdTimer = setTimeout(refreshSelectionSummary, 250);
+});
+
+// Checkbox clicks are recorded as deltas from the rule. Toggling a row back to
+// what the rule already says drops the override rather than storing a no-op.
+document.getElementById("resultsBody").addEventListener("change", (event) => {
+  const box = event.target.closest(".row-select");
+  if (!box) return;
+  const id = parseInt(box.getAttribute("data-mid"), 10);
+  const row = (currentRows || []).find(r => r.discovery_match_id === id);
+  if (!row) return;
+  const skippedByRule = ruleSkips(row);
+  excludeIds.delete(id);
+  includeIds.delete(id);
+  if (box.checked && skippedByRule) includeIds.add(id);
+  if (!box.checked && !skippedByRule) excludeIds.add(id);
+  renderOverrideCount();
+  refreshSelectionSummary();
+});
+
+document.getElementById("selectAllPage").addEventListener("change", (event) => {
+  const want = event.target.checked;
+  for (const row of currentRows || []) {
+    if (row.llm_status === "DONE") continue;
+    const id = row.discovery_match_id;
+    const skippedByRule = ruleSkips(row);
+    excludeIds.delete(id);
+    includeIds.delete(id);
+    if (want && skippedByRule) includeIds.add(id);
+    if (!want && !skippedByRule) excludeIds.add(id);
+  }
+  renderOverrideCount();
+  loadResults();
+  refreshSelectionSummary();
+});
+
+document.getElementById("clearOverridesBtn").addEventListener("click", () => {
+  excludeIds.clear();
+  includeIds.clear();
+  renderOverrideCount();
+  loadResults();
+  refreshSelectionSummary();
+});
 
 // --- matching -------------------------------------------------------------
 document.getElementById("matchBtn").addEventListener("click", async () => {
@@ -332,23 +506,54 @@ document.getElementById("matchBtn").addEventListener("click", async () => {
 // --- LLM ------------------------------------------------------------------
 const llmModal = new bootstrap.Modal(document.getElementById("llmModal"));
 
+/** Current scope + selection, shared by the estimate and the start call. */
+function llmPayload() {
+  const scope = document.querySelector('input[name="scope"]:checked').value;
+  const payload = { scope, skip_exact_above: skipThreshold };
+  if (scope === "TOP_N") payload.top_n = parseInt(document.getElementById("topN").value, 10) || 3;
+  if (excludeIds.size) payload.exclude_ids = [...excludeIds];
+  if (includeIds.size) payload.include_ids = [...includeIds];
+  return payload;
+}
+
+async function updateScopeWarning() {
+  const box = document.getElementById("scopeWarning");
+  const payload = llmPayload();
+  try {
+    const resp = await fetch(`${PREFIX}/api/discovery/${SET_ID}/llm/estimate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const d = await resp.json();
+    if (!resp.ok) throw new Error(d.error || "estimate failed");
+    const net = Math.max(0, d.eligible - excludeIds.size + includeIds.size);
+    const overrides = overrideCount()
+      ? ` (including ${overrideCount()} manual row override(s))` : "";
+    box.innerHTML =
+      `About <span class="fw-semibold">${net.toLocaleString()}</span> LLM call(s)${overrides}. `
+      + `${d.skipped_by_rule.toLocaleString()} pair(s) skipped as exact matches at or above `
+      + `${Math.round(skipThreshold * 100)}% similarity; `
+      + `${d.already_done.toLocaleString()} already judged and will not be re-sent.`;
+  } catch (err) {
+    box.textContent = `Could not estimate: ${err.message}`;
+  }
+}
+
 document.getElementById("llmBtn").addEventListener("click", async () => {
-  const resp = await fetch(`${PREFIX}/api/discovery/${SET_ID}/summary`);
-  const data = await resp.json();
-  const matches = data.match_count || 0;
-  const items = data.items_with_match || 0;
-  const topN = parseInt(document.getElementById("topN").value, 10) || 3;
-  document.getElementById("scopeWarning").textContent =
-    `This set has ${matches.toLocaleString()} matched pair(s) across ${items.toLocaleString()} input line(s). ` +
-    `"Best ${topN} per line" is roughly ${Math.min(matches, items * topN).toLocaleString()} LLM calls; ` +
-    `"every pair" is ${matches.toLocaleString()}.`;
+  updateScopeWarning();
   llmModal.show();
 });
 
+// Changing scope inside the modal re-costs the run.
+document.querySelectorAll('input[name="scope"]').forEach(el =>
+  el.addEventListener("change", () => { updateScopeWarning(); refreshSelectionSummary(); }));
+document.getElementById("topN").addEventListener("input", () => {
+  updateScopeWarning(); refreshSelectionSummary();
+});
+
 document.getElementById("llmStartBtn").addEventListener("click", async () => {
-  const scope = document.querySelector('input[name="scope"]:checked').value;
-  const payload = { scope };
-  if (scope === "TOP_N") payload.top_n = parseInt(document.getElementById("topN").value, 10) || 3;
+  const payload = llmPayload();
 
   const resp = await fetch(`${PREFIX}/api/discovery/${SET_ID}/llm/start`, {
     method: "POST",
