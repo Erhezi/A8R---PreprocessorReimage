@@ -138,23 +138,23 @@
               <th style="width:34px;" title="Send to LLM">
                 <input type="checkbox" class="form-check-input" id="selectAllPage">
               </th>
-              <th style="width:60px;">Row</th>
-              <th style="min-width:130px;">Input SKU</th>
-              <th style="min-width:230px;">Input description</th>
-              <th style="width:80px;">Exact</th>
-              <th style="width:110px;">Matched on</th>
-              <th style="width:80px;">Sim.</th>
-              <th style="width:55px;">Rank</th>
-              <th style="min-width:130px;">Matched SKU</th>
-              <th style="min-width:230px;">Matched description</th>
-              <th style="min-width:120px;">Contract</th>
-              <th style="min-width:120px;">Organization</th>
-              <th style="min-width:150px;">Vendor</th>
-              <th style="min-width:150px;">Manufacturer</th>
-              <th style="width:100px;">Verdict</th>
-              <th style="width:60px;">Conf.</th>
-              <th style="min-width:220px;">LLM reason</th>
-              <th style="width:70px;">Prompt</th>
+              <th style="width:60px;"       data-sort="file_row">Row</th>
+              <th style="min-width:130px;"  data-sort="sku_input">Input SKU</th>
+              <th style="min-width:230px;"  data-sort="description_input">Input description</th>
+              <th style="width:80px;"       data-sort="sku_exact" data-first="desc">Exact</th>
+              <th style="width:110px;"      data-sort="matched_on">Matched on</th>
+              <th style="width:80px;"       data-sort="desc_similarity" data-first="desc">Sim.</th>
+              <th style="width:55px;"       data-sort="rank_in_item">Rank</th>
+              <th style="min-width:130px;"  data-sort="matched_sku">Matched SKU</th>
+              <th style="min-width:230px;"  data-sort="description_matched">Matched description</th>
+              <th style="min-width:120px;"  data-sort="contract_id_matched">Contract</th>
+              <th style="min-width:120px;"  data-sort="organization_matched">Organization</th>
+              <th style="min-width:150px;"  data-sort="vendor_name_matched">Vendor</th>
+              <th style="min-width:150px;"  data-sort="mfg_name_matched">Manufacturer</th>
+              <th style="width:100px;"      data-sort="llm_verdict">Verdict</th>
+              <th style="width:60px;"       data-sort="llm_confidence" data-first="desc">Conf.</th>
+              <th style="min-width:220px;"  data-sort="llm_reason">LLM reason</th>
+              <th style="width:70px;"       data-sort="llm_prompt_version_id">Prompt</th>
             </tr>
           </thead>
           <tbody id="resultsBody">
@@ -221,6 +221,8 @@ let total = 0;
 let llmRunning = false;
 let llmTotal = 0;
 let currentRows = [];   // rows on the visible page, for checkbox bookkeeping
+let sortKey = "";       // "" = default order (best match per input line first)
+let sortDir = "asc";
 
 function esc(value) {
   return String(value == null ? "" : value)
@@ -325,8 +327,48 @@ function filters() {
   if (exact) params.set("sku_exact", exact);
   if (matchedOn) params.set("matched_on", matchedOn);
   if (maxRank) params.set("max_rank", maxRank);
+  if (sortKey) { params.set("sort", sortKey); params.set("dir", sortDir); }
   return params;
 }
+
+/**
+ * Sorting is server-side because the grid is paged — reordering just the
+ * hundred rows on screen would claim to sort the whole set and quietly lie.
+ */
+function applySortIndicators() {
+  document.querySelectorAll("th[data-sort]").forEach(th => {
+    const key = th.getAttribute("data-sort");
+    const active = key === sortKey;
+    th.classList.toggle("text-primary", active);
+    const arrow = active ? (sortDir === "asc" ? " ▲" : " ▼") : "";
+    th.textContent = th.getAttribute("data-label") + arrow;
+  });
+}
+
+document.querySelectorAll("th[data-sort]").forEach(th => {
+  // Stash the clean label once so the arrow can be re-appended on every render.
+  th.setAttribute("data-label", th.textContent.trim());
+  th.style.cursor = "pointer";
+  th.title = "Sort by this column";
+  th.addEventListener("click", () => {
+    const key = th.getAttribute("data-sort");
+    if (sortKey === key) {
+      // Same column: asc -> desc -> back to the default order.
+      if (sortDir === (th.getAttribute("data-first") || "asc")) {
+        sortDir = sortDir === "asc" ? "desc" : "asc";
+      } else {
+        sortKey = ""; sortDir = "asc";
+      }
+    } else {
+      // Scores and flags are most useful highest-first on the first click.
+      sortKey = key;
+      sortDir = th.getAttribute("data-first") || "asc";
+    }
+    offset = 0;
+    applySortIndicators();
+    loadResults();
+  });
+});
 
 async function loadSummary() {
   const resp = await fetch(`${PREFIX}/api/discovery/${SET_ID}/summary`);
@@ -651,6 +693,8 @@ function onFilterChange() {
 document.getElementById("resetFilters").addEventListener("click", () => {
   ["fSearch", "fMaxRank"].forEach(id => document.getElementById(id).value = "");
   ["fVerdict", "fExact", "fMatchedOn"].forEach(id => document.getElementById(id).value = "");
+  sortKey = ""; sortDir = "asc";
+  applySortIndicators();
   offset = 0;
   loadResults();
 });

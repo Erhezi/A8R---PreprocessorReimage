@@ -63,6 +63,17 @@ def _float_arg(name: str, default=None):
         return default
 
 
+def _sort_args() -> tuple:
+    """Column and direction for the results ORDER BY.
+
+    The repo whitelists the column name, so an unknown value falls back to the
+    default ordering rather than reaching a query.
+    """
+    sort = (request.args.get("sort") or "").strip() or None
+    direction = (request.args.get("dir") or "asc").strip().lower()
+    return sort, ("desc" if direction == "desc" else "asc")
+
+
 def _result_filters() -> dict:
     sku_exact = request.args.get("sku_exact")
     if sku_exact in ("1", "true", "True", "yes"):
@@ -236,8 +247,12 @@ def api_results(set_id: int):
     offset = max(0, _int_arg("offset", 0) or 0)
     limit = _int_arg("limit", 100) or 100
     limit = max(1, min(limit, 500))
+    sort, direction = _sort_args()
     return jsonify(
-        discovery_repo.get_results_page(set_id, _result_filters(), offset=offset, limit=limit)
+        discovery_repo.get_results_page(
+            set_id, _result_filters(), offset=offset, limit=limit,
+            sort=sort, direction=direction,
+        )
     )
 
 
@@ -248,7 +263,10 @@ def api_export(set_id: int):
     if discovery_set is None:
         return jsonify({"error": "Set not found"}), 404
 
-    rows = discovery_repo.get_results_for_export(set_id, _result_filters())
+    sort, direction = _sort_args()
+    rows = discovery_repo.get_results_for_export(
+        set_id, _result_filters(), sort=sort, direction=direction
+    )
 
     import pandas as pd
 

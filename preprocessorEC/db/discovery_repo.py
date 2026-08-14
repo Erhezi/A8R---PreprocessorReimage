@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from sqlalchemy import func, text
+from sqlalchemy import case, func, text
 from sqlalchemy.orm import Session
 
 from ..models import (
@@ -240,22 +240,77 @@ def _results_query(s: Session, set_id: int, filters: dict):
     return q
 
 
+def _matched_sku_expr():
+    """The SKU shown in the 'Matched SKU' column, which side depends on the hit."""
+    return case(
+        (DiscoveryMatch.matched_on == "REDUCED_MFG", DiscoveryMatch.mfg_catalog_num_matched),
+        else_=DiscoveryMatch.vendor_catalog_num_matched,
+    )
+
+
+# Sortable columns, keyed by the field name the browser sends. Anything not in
+# here is ignored rather than trusted — this feeds an ORDER BY.
+def _sort_columns() -> dict:
+    return {
+        "file_row": DiscoveryItem.file_row,
+        "sku_input": DiscoveryItem.sku_input,
+        "description_input": DiscoveryItem.description_input,
+        "supplier_input": DiscoveryItem.supplier_input,
+        "sku_exact": DiscoveryMatch.sku_exact,
+        "matched_on": DiscoveryMatch.matched_on,
+        "desc_similarity": DiscoveryMatch.desc_similarity,
+        "rank_in_item": DiscoveryMatch.rank_in_item,
+        "matched_sku": _matched_sku_expr(),
+        "description_matched": DiscoveryMatch.description_matched,
+        "contract_id_matched": DiscoveryMatch.contract_id_matched,
+        "organization_matched": DiscoveryMatch.organization_matched,
+        "vendor_name_matched": DiscoveryMatch.vendor_name_matched,
+        "mfg_name_matched": DiscoveryMatch.mfg_name_matched,
+        "llm_verdict": DiscoveryMatch.llm_verdict,
+        "llm_confidence": DiscoveryMatch.llm_confidence,
+        "llm_reason": DiscoveryMatch.llm_reason,
+        "llm_prompt_version_id": DiscoveryMatch.llm_prompt_version_id,
+    }
+
+
+def _order_by(sort: Optional[str], direction: Optional[str]) -> list:
+    """Build the ORDER BY, always ending in a unique tiebreaker.
+
+    OFFSET/FETCH paging over a non-deterministic order lets rows repeat on one
+    page and vanish from another, so discovery_match_id always closes the sort.
+    """
+    desc_dir = (direction or "").lower() == "desc"
+    column = _sort_columns().get(sort or "")
+
+    if column is None:
+        # Default view: each input line's best match first.
+        return [
+            DiscoveryMatch.discovery_item_id.asc(),
+            DiscoveryMatch.rank_in_item.asc(),
+            DiscoveryMatch.discovery_match_id.asc(),
+        ]
+    return [
+        column.desc() if desc_dir else column.asc(),
+        DiscoveryMatch.discovery_match_id.asc(),
+    ]
+
+
 def get_results_page(
     set_id: int,
     filters: dict,
     offset: int = 0,
     limit: int = 100,
+    sort: Optional[str] = None,
+    direction: Optional[str] = None,
 ) -> dict:
     """Server-side paged results. A set can hold tens of thousands of matches,
-    well past the point where shipping everything to the browser is sensible."""
+    well past the point where shipping everything to the browser is sensible —
+    which is also why sorting has to happen here and not in the page."""
     with _session() as s:
         q = _results_query(s, set_id, filters)
         total = q.order_by(None).count()
         rows = (
-            q.order_by(
-                DiscoveryMatch.discovery_item_id.asc(),
-                DiscoveryMatch.rank_in_item.asc(),
-            )
+            q.order_by(*_order_by(sort, direction))
             .offset(offset)
             .limit(limit)
             .all()
@@ -272,18 +327,32 @@ def get_results_page(
                 "supplier_input": item.supplier_input,
             })
             results.append(payload)
-        return {"total": total, "offset": offset, "limit": limit, "rows": results}
+        # Echo the sort that was actually applied, not what was asked for — an
+        # unrecognised column silently falls back, and the caller should see that.
+        applied = sort if sort in _sort_columns() else ""
+        return {
+            "total": total, "offset": offset, "limit": limit,
+            "sort": applied,
+            "direction": (direction or "asc").lower() if applied else "asc",
+            "rows": results,
+        }
 
 
-def get_results_for_export(set_id: int, filters: dict) -> list[dict]:
-    """Same shape as get_results_page but unpaged, for the xlsx export."""
+def get_results_for_export(
+    set_id: int,
+    filters: dict,
+    sort: Optional[str] = None,
+    direction: Optional[str] = None,
+) -> list[dict]:
+    """Same shape as get_results_page but unpaged, for the xlsx export.
+
+    Takes the sort too, so the spreadsheet comes out in the order the user
+    arranged on screen.
+    """
     with _session() as s:
         rows = (
             _results_query(s, set_id, filters)
-            .order_by(
-                DiscoveryMatch.discovery_item_id.asc(),
-                DiscoveryMatch.rank_in_item.asc(),
-            )
+            .order_by(*_order_by(sort, direction))
             .all()
         )
         out = []
