@@ -833,6 +833,10 @@ class DiscoveryPrompt(Base):
     prompt_version_id = Column(Integer, primary_key=True, autoincrement=True)
     prompt_key = Column(String(50), nullable=False, default="ITEM_COMPARE")
     version_no = Column(Integer, nullable=False)
+    # PAIR: one comparison per call. GROUP: one input line and all its candidate
+    # contract lines per call. The mode is a property of the text, since the two
+    # shapes need different template variables and different reply schemas.
+    prompt_mode = Column(String(10), nullable=False, default="PAIR")
     system_prompt = Column(Text, nullable=False)
     user_template = Column(Text, nullable=False)
     model = Column(String(100), nullable=True)
@@ -847,6 +851,7 @@ class DiscoveryPrompt(Base):
             "prompt_version_id": self.prompt_version_id,
             "prompt_key": self.prompt_key,
             "version_no": self.version_no,
+            "prompt_mode": self.prompt_mode or "PAIR",
             "model": self.model,
             "temperature": self.temperature,
             "is_active": bool(self.is_active),
@@ -1000,6 +1005,21 @@ class DiscoveryMatch(Base):
     llm_reviewed_at = Column(DateTime, nullable=True)
     llm_error = Column(String(500), nullable=True)
 
+    # The core product the model read on each side, and whether it called them
+    # the same kind of thing. Narrower than the verdict on purpose: same noun
+    # with a DIFFERENT verdict is an attribute call worth a human look, while a
+    # different noun means the candidate match itself was wrong.
+    llm_same_noun = Column(Boolean, nullable=True)
+    llm_input_noun = Column(String(120), nullable=True)
+    llm_matched_noun = Column(String(120), nullable=True)
+
+    # Human override of the verdict. The llm_* columns are never overwritten, so
+    # a row shows both what the model said and what a person decided. SAME or
+    # DIFFERENT only: an override exists to resolve an UNCERTAIN, not to add one.
+    user_verdict = Column(String(10), nullable=True)
+    user_verdict_by = Column(String(120), nullable=True)
+    user_verdict_at = Column(DateTime, nullable=True)
+
     created_at = Column(DateTime, default=ny_now)
 
     def to_dict(self) -> dict:
@@ -1034,6 +1054,17 @@ class DiscoveryMatch(Base):
             "llm_prompt_version_id": self.llm_prompt_version_id,
             "llm_reviewed_at": self.llm_reviewed_at.isoformat() if self.llm_reviewed_at else None,
             "llm_error": self.llm_error,
+            "llm_same_noun": (
+                None if self.llm_same_noun is None else bool(self.llm_same_noun)
+            ),
+            "llm_input_noun": self.llm_input_noun,
+            "llm_matched_noun": self.llm_matched_noun,
+            "user_verdict": self.user_verdict,
+            "user_verdict_by": self.user_verdict_by,
+            "user_verdict_at": self.user_verdict_at.isoformat() if self.user_verdict_at else None,
+            # What the row actually says, once a human has had a look. Every
+            # reader wants this rather than the two columns it is built from.
+            "final_verdict": self.user_verdict or self.llm_verdict,
         }
 
 

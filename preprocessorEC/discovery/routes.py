@@ -26,7 +26,7 @@ from flask_login import current_user, login_required
 from . import discovery_bp
 from ..common.utils import role_required
 from ..db import discovery_repo
-from ..services import discovery_llm, discovery_service
+from ..services import discovery_export, discovery_llm, discovery_service
 from ..services.discovery_service import DiscoveryInputError
 from ..services.llm_client import build_client, client_settings_from_config
 
@@ -74,18 +74,23 @@ def _sort_args() -> tuple:
     return sort, ("desc" if direction == "desc" else "asc")
 
 
-def _result_filters() -> dict:
-    sku_exact = request.args.get("sku_exact")
-    if sku_exact in ("1", "true", "True", "yes"):
-        sku_exact_val = True
-    elif sku_exact in ("0", "false", "False", "no"):
-        sku_exact_val = False
-    else:
-        sku_exact_val = None
+def _tri_state_arg(name: str) -> Optional[bool]:
+    """True / False / None (no filter) from a query-string flag."""
+    raw = request.args.get(name)
+    if raw in ("1", "true", "True", "yes"):
+        return True
+    if raw in ("0", "false", "False", "no"):
+        return False
+    return None
 
+
+def _result_filters() -> dict:
     return {
         "verdict": request.args.get("verdict") or None,
-        "sku_exact": sku_exact_val,
+        "overridden": _tri_state_arg("overridden"),
+        "same_noun": _tri_state_arg("same_noun"),
+        "min_confidence": _int_arg("min_confidence"),
+        "sku_exact": _tri_state_arg("sku_exact"),
         "matched_on": request.args.get("matched_on") or None,
         "min_similarity": _float_arg("min_similarity"),
         "max_rank": _int_arg("max_rank"),
@@ -133,6 +138,7 @@ def discovery_prompts_page():
         "discovery_prompt.html",
         is_preprocessor=_is_preprocessor(),
         template_variables=list(discovery_llm.TEMPLATE_VARIABLES),
+        group_template_variables=list(discovery_llm.GROUP_TEMPLATE_VARIABLES),
     )
 
 
@@ -256,12 +262,65 @@ def api_results(set_id: int):
     )
 
 
+def _xlsx_response(frame, columns, discovery_set, set_id: int, suffix: str):
+    """Write a frame to xlsx and name the download after the set."""
+    import pandas as pd
+
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        frame.to_excel(writer, index=False, sheet_name="Discovery")
+    buffer.seek(0)
+
+    # Set names are free text and may contain path separators or other
+    # characters that don't belong in a download filename.
+    name = re.sub(r"[^A-Za-z0-9._-]+", "_", discovery_set.set_name or f"discovery-{set_id}")
+    name = name.strip("._-") or f"discovery-{set_id}"
+    return send_file(
+        buffer,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name=f"{name}_{suffix}_{set_id}.xlsx",
+    )
+
+
+def _located_contract_export(discovery_set, set_id: int):
+    """The located-contract report: one row per input line, unmatched included."""
+    import pandas as pd
+
+    raw = request.args.get("similarity_threshold")
+    if raw in (None, "", "off"):
+        # Explicitly disabling the rule is meaningful: it restricts the report to
+        # pairs a human or the model actually ruled on.
+        threshold = None if raw == "off" else 1.0
+    else:
+        try:
+            threshold = max(0.0, min(1.0, float(raw)))
+        except (TypeError, ValueError):
+            threshold = 1.0
+
+    include_unmatched = request.args.get("include_unmatched") not in ("0", "false", "False", "no")
+
+    report = discovery_export.build_located_contract_report(
+        set_id,
+        has_supplier=bool(discovery_set.has_supplier),
+        similarity_threshold=threshold,
+        include_unmatched=include_unmatched,
+    )
+    logger.info("Located-contract report for set %s: %s", set_id, report["stats"])
+
+    frame = pd.DataFrame(report["rows"], columns=report["columns"])
+    return _xlsx_response(frame, report["columns"], discovery_set, set_id, "located_contracts")
+
+
 @discovery_bp.route("/api/discovery/<int:set_id>/export.xlsx", methods=["GET"])
 @login_required
 def api_export(set_id: int):
     discovery_set = discovery_repo.get_set(set_id)
     if discovery_set is None:
         return jsonify({"error": "Set not found"}), 404
+
+    if (request.args.get("mode") or "").lower() in ("located_contract_report", "located_contract"):
+        return _located_contract_export(discovery_set, set_id)
 
     sort, direction = _sort_args()
     rows = discovery_repo.get_results_for_export(
@@ -291,31 +350,69 @@ def api_export(set_id: int):
         ("erp_vendor_id_matched", "ERP Vendor ID"),
         ("vendor_name_matched", "Vendor Name"),
         ("mfg_name_matched", "Manufacturer Name"),
+        ("final_verdict", "Verdict"),
+        ("llm_input_noun", "Input Core Product"),
+        ("llm_matched_noun", "Matched Core Product"),
+        ("llm_same_noun", "Same Core Product"),
         ("llm_verdict", "LLM Verdict"),
         ("llm_confidence", "LLM Confidence"),
         ("llm_reason", "LLM Reason"),
         ("llm_prompt_version_id", "Prompt Version"),
+        ("user_verdict", "Human Verdict"),
+        ("user_verdict_by", "Marked By"),
+        ("user_verdict_at", "Marked At"),
     ]
+    labels = [label for _key, label in columns]
     frame = pd.DataFrame(
         [{label: row.get(key) for key, label in columns} for row in rows],
-        columns=[label for _key, label in columns],
+        columns=labels,
     )
+    return _xlsx_response(frame, labels, discovery_set, set_id, "discovery")
 
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        frame.to_excel(writer, index=False, sheet_name="Discovery")
-    buffer.seek(0)
 
-    # Set names are free text and may contain path separators or other
-    # characters that don't belong in a download filename.
-    name = re.sub(r"[^A-Za-z0-9._-]+", "_", discovery_set.set_name or f"discovery-{set_id}")
-    name = name.strip("._-") or f"discovery-{set_id}"
-    return send_file(
-        buffer,
-        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        as_attachment=True,
-        download_name=f"{name}_discovery_{set_id}.xlsx",
-    )
+# ---------------------------------------------------------------------------
+# Human verdict override
+# ---------------------------------------------------------------------------
+# Ticks persist as the reviewer pages, so a legitimate selection spans several
+# pages of 500. Well past that is a malformed request, not a review.
+MAX_VERDICT_BATCH = 5000
+
+
+@discovery_bp.route("/api/discovery/<int:set_id>/verdicts", methods=["POST"])
+@login_required
+def api_set_verdicts(set_id: int):
+    """Mark selected pairs SAME or DIFFERENT by hand, or clear the mark.
+
+    The LLM verdict is preserved either way — this records what a person
+    decided on top of it, not a correction to the model's own answer.
+    """
+    if discovery_repo.get_set(set_id) is None:
+        return jsonify({"error": "Set not found"}), 404
+
+    data = request.get_json(silent=True) or {}
+    raw_verdict = data.get("verdict")
+    verdict = str(raw_verdict).strip().upper() if raw_verdict not in (None, "") else None
+    if verdict is not None and verdict not in discovery_repo.USER_VERDICTS:
+        return jsonify({
+            "error": "verdict must be SAME, DIFFERENT, or null to clear the override"
+        }), 400
+
+    match_ids = data.get("match_ids") or []
+    if not isinstance(match_ids, list):
+        return jsonify({"error": "match_ids must be a list"}), 400
+    if len(match_ids) > MAX_VERDICT_BATCH:
+        return jsonify({
+            "error": f"Too many rows at once — mark at most {MAX_VERDICT_BATCH}."
+        }), 400
+
+    try:
+        updated = discovery_repo.set_user_verdicts(
+            set_id, match_ids, verdict, _current_username()
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    return jsonify({"updated": updated, "verdict": verdict})
 
 
 # ---------------------------------------------------------------------------
@@ -466,6 +563,8 @@ def api_list_prompts():
         "prompt_key": PROMPT_KEY,
         "can_edit": _is_preprocessor(),
         "variables": list(discovery_llm.TEMPLATE_VARIABLES),
+        "group_variables": list(discovery_llm.GROUP_TEMPLATE_VARIABLES),
+        "modes": list(discovery_llm.PROMPT_MODES),
         "versions": [p.to_dict() for p in prompts],
     })
 
@@ -479,8 +578,14 @@ def api_create_prompt():
     system_prompt = data.get("system_prompt") or ""
     user_template = data.get("user_template") or ""
 
+    prompt_mode = (data.get("prompt_mode") or discovery_llm.DEFAULT_PROMPT_MODE).upper()
+    if prompt_mode not in discovery_llm.PROMPT_MODES:
+        return jsonify({
+            "error": f"prompt_mode must be one of {', '.join(discovery_llm.PROMPT_MODES)}"
+        }), 400
+
     try:
-        discovery_llm.validate_template(system_prompt, user_template)
+        discovery_llm.validate_template(system_prompt, user_template, prompt_mode)
     except discovery_llm.PromptRenderError as exc:
         return jsonify({"error": str(exc)}), 400
 
@@ -501,6 +606,7 @@ def api_create_prompt():
         notes=(data.get("notes") or "").strip()[:500] or None,
         model=(data.get("model") or "").strip() or None,
         temperature=temperature,
+        prompt_mode=prompt_mode,
         activate=bool(data.get("activate", True)),
     )
     return jsonify(row.to_dict())
@@ -532,8 +638,22 @@ def api_preview_prompt():
         "matched_on": "REDUCED_MFG",
         "desc_similarity": 0.82,
     }
+    prompt_mode = (data.get("prompt_mode") or discovery_llm.DEFAULT_PROMPT_MODE).upper()
+    template = data.get("user_template") or ""
+
     try:
-        rendered = discovery_llm.render_user_prompt(data.get("user_template") or "", sample)
+        if prompt_mode == "GROUP":
+            # A second candidate makes the loop visible in the preview, which is
+            # the whole thing an author needs to check on a grouped template.
+            second = dict(sample, **{
+                "matched_sku": "AB1234-B",
+                "matched_description": "SCALPEL BLADE #10 STERILE DISP 100/BX",
+                "matched_vendor_name": "MCKESSON",
+                "desc_similarity": 0.74,
+            })
+            rendered = discovery_llm.render_group_prompt(template, sample, [sample, second])
+        else:
+            rendered = discovery_llm.render_user_prompt(template, sample)
     except discovery_llm.PromptRenderError as exc:
         return jsonify({"error": str(exc)}), 400
-    return jsonify({"rendered": rendered, "sample": sample})
+    return jsonify({"rendered": rendered, "sample": sample, "prompt_mode": prompt_mode})

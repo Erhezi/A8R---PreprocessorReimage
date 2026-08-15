@@ -1,6 +1,26 @@
 {% extends "base.html" %}
 {% block title %}Discovery #{{ set_id }}{% endblock %}
 
+{% block head %}
+<style>
+  /* The grid scrolls inside itself so the filters and the Mark buttons above it
+     stay on screen — a hundred rows would otherwise push them out of reach. */
+  #resultsScroll {
+    max-height: 600px;
+    overflow: auto;
+  }
+  /* Column headers double as the sort control, so they have to survive the
+     scroll. An explicit background is needed: Bootstrap paints .table-light
+     cells with an inset shadow that a sticky row lets rows show through. */
+  #resultsScroll thead th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background-color: #f2f3f5;
+  }
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="container-fluid mt-3">
 
@@ -24,8 +44,26 @@
     <div class="text-end">
       <button class="btn btn-outline-secondary btn-sm" id="matchBtn">Re-run matching</button>
       <button class="btn btn-primary btn-sm" id="llmBtn">Run LLM comparison</button>
-      <a class="btn btn-outline-success btn-sm" id="exportBtn"
-         href="{{ url_prefix }}/api/discovery/{{ set_id }}/export.xlsx">Export</a>
+      <div class="btn-group">
+        <a class="btn btn-outline-success btn-sm" id="exportBtn"
+           href="{{ url_prefix }}/api/discovery/{{ set_id }}/export.xlsx">Export</a>
+        <button type="button"
+                class="btn btn-outline-success btn-sm dropdown-toggle dropdown-toggle-split"
+                data-bs-toggle="dropdown" aria-expanded="false">
+          <span class="visually-hidden">More export options</span>
+        </button>
+        <ul class="dropdown-menu dropdown-menu-end">
+          <li><a class="dropdown-item" href="#" id="exportResultsItem">
+            Results as shown
+            <div class="small text-muted">Every candidate pair, current filters and sort.</div>
+          </a></li>
+          <li><hr class="dropdown-divider"></li>
+          <li><a class="dropdown-item" href="#" id="exportLocatedItem">
+            Located contract report…
+            <div class="small text-muted">One row per input line, unmatched lines included.</div>
+          </a></li>
+        </ul>
+      </div>
     </div>
   </div>
 
@@ -86,19 +124,28 @@
   <div class="card mb-2">
     <div class="card-body py-2">
       <div class="row g-2 align-items-end">
-        <div class="col-md-3">
+        <div class="col-md-4">
           <label class="form-label form-label-sm mb-0">Search</label>
           <input type="text" class="form-control form-control-sm" id="fSearch"
                  placeholder="SKU or description">
         </div>
         <div class="col-md-2">
-          <label class="form-label form-label-sm mb-0">LLM verdict</label>
+          <label class="form-label form-label-sm mb-0">Verdict</label>
           <select class="form-select form-select-sm" id="fVerdict">
             <option value="">Any</option>
             <option value="SAME">Same</option>
             <option value="DIFFERENT">Different</option>
             <option value="UNCERTAIN">Uncertain</option>
             <option value="UNJUDGED">Not yet judged</option>
+            <option value="ERROR">LLM error</option>
+          </select>
+        </div>
+        <div class="col-md-2">
+          <label class="form-label form-label-sm mb-0">Marked by hand</label>
+          <select class="form-select form-select-sm" id="fOverridden">
+            <option value="">Any</option>
+            <option value="1">Marked</option>
+            <option value="0">Not marked</option>
           </select>
         </div>
         <div class="col-md-2">
@@ -117,30 +164,114 @@
             <option value="REDUCED_VPN">Vendor #</option>
           </select>
         </div>
-        <div class="col-md-1">
+      </div>
+      <div class="row g-2 align-items-end mt-0">
+        <div class="col-md-2">
           <label class="form-label form-label-sm mb-0">Top N</label>
           <input type="number" class="form-control form-control-sm" id="fMaxRank" min="1" placeholder="all">
         </div>
-        <div class="col-md-2 text-end">
-          <button class="btn btn-outline-secondary btn-sm" id="resetFilters">Reset</button>
+        <div class="col-md-2">
+          <label class="form-label form-label-sm mb-0">Min LLM confidence</label>
+          <input type="number" class="form-control form-control-sm" id="fMinConf"
+                 min="0" max="100" placeholder="any">
+        </div>
+        <div class="col-md-2">
+          <label class="form-label form-label-sm mb-0">Core product</label>
+          <select class="form-select form-select-sm" id="fSameNoun">
+            <option value="">Any</option>
+            <option value="1">Same core product</option>
+            <option value="0">Different core product</option>
+          </select>
+        </div>
+        <div class="col-md-6 text-end">
+          <div class="dropdown d-inline-block">
+            <button class="btn btn-outline-secondary btn-sm dropdown-toggle" type="button"
+                    data-bs-toggle="dropdown" data-bs-auto-close="outside">Columns</button>
+            <ul class="dropdown-menu dropdown-menu-end p-2">
+              <li class="mb-1">
+                <label class="d-flex align-items-center gap-2 mb-0" style="cursor:pointer">
+                  <input type="checkbox" class="form-check-input m-0" id="colSupplier"
+                         {% if discovery_set.has_supplier %}checked{% else %}disabled{% endif %}>
+                  Supplier
+                  {% if not discovery_set.has_supplier %}
+                  <span class="text-muted small">(not in this upload)</span>
+                  {% endif %}
+                </label>
+              </li>
+              <li class="mb-1">
+                <label class="d-flex align-items-center gap-2 mb-0" style="cursor:pointer">
+                  <input type="checkbox" class="form-check-input m-0" id="colOrganization" checked>
+                  Organization
+                </label>
+              </li>
+              <li class="mb-1">
+                <label class="d-flex align-items-center gap-2 mb-0" style="cursor:pointer">
+                  <input type="checkbox" class="form-check-input m-0" id="colVendor" checked>
+                  Vendor
+                </label>
+              </li>
+              <li class="mb-1">
+                <label class="d-flex align-items-center gap-2 mb-0" style="cursor:pointer">
+                  <input type="checkbox" class="form-check-input m-0" id="colVendorid" checked>
+                  Vendor ID
+                </label>
+              </li>
+              <li>
+                <label class="d-flex align-items-center gap-2 mb-0" style="cursor:pointer">
+                  <input type="checkbox" class="form-check-input m-0" id="colManufacturer" checked>
+                  Manufacturer
+                </label>
+              </li>
+            </ul>
+          </div>
+          <button class="btn btn-outline-secondary btn-sm" id="resetFilters">Reset filters</button>
         </div>
       </div>
     </div>
   </div>
 
+  <!-- Human verdict marking -->
+  <div class="d-flex align-items-center flex-wrap gap-2 mb-2" id="reviewBar">
+    <span class="small text-muted">
+      <span class="fw-semibold" id="reviewCount">0</span> row(s) ticked for marking
+    </span>
+    <button class="btn btn-success btn-sm" id="markSameBtn" disabled>Mark as Same</button>
+    <button class="btn btn-danger btn-sm" id="markDifferentBtn" disabled>Mark as Different</button>
+    <button class="btn btn-outline-secondary btn-sm" id="markClearBtn" disabled>Clear mark</button>
+    <button class="btn btn-outline-primary btn-sm" id="resendBtn" disabled>Send to LLM again</button>
+    <button class="btn btn-link btn-sm text-decoration-none" id="reviewClearSelBtn" disabled>
+      Deselect all
+    </button>
+    <span class="form-text ms-2 mb-0">
+      A hand mark wins over the LLM verdict for that row. The model's own answer is kept
+      and still exported. Ticked rows can also be sent back for another LLM pass, which
+      re-judges them under the current prompt version even if they already have a verdict.
+    </span>
+  </div>
+
   <!-- Results -->
   <div class="card">
     <div class="card-body p-0">
-      <div class="table-responsive">
+      <div class="table-responsive" id="resultsScroll">
         <table class="table table-sm table-hover mb-0 align-middle" style="font-size: 0.83rem;">
           <thead class="table-light">
             <tr>
-              <th style="width:34px;" title="Send to LLM">
+              <!-- Two selections, deliberately separate: what to spend LLM calls
+                   on, and what to mark by hand. A judged row is no longer a
+                   candidate for the first but is exactly a candidate for the
+                   second, so one shared checkbox could not serve both. -->
+              <th style="width:42px;" title="Send to the LLM">
+                <div class="text-muted" style="font-size:0.6rem; line-height:1;">LLM</div>
                 <input type="checkbox" class="form-check-input" id="selectAllPage">
+              </th>
+              <th style="width:42px;" title="Tick rows to mark Same or Different by hand">
+                <div class="text-muted" style="font-size:0.6rem; line-height:1;">Mark</div>
+                <input type="checkbox" class="form-check-input" id="reviewAllPage">
               </th>
               <th style="width:60px;"       data-sort="file_row">Row</th>
               <th style="min-width:130px;"  data-sort="sku_input">Input SKU</th>
               <th style="min-width:230px;"  data-sort="description_input">Input description</th>
+              <th style="min-width:140px;"  data-sort="supplier_input" class="col-supplier">Supplier</th>
               <th style="width:80px;"       data-sort="sku_exact" data-first="desc">Exact</th>
               <th style="width:110px;"      data-sort="matched_on">Matched on</th>
               <th style="width:80px;"       data-sort="desc_similarity" data-first="desc">Sim.</th>
@@ -148,17 +279,25 @@
               <th style="min-width:130px;"  data-sort="matched_sku">Matched SKU</th>
               <th style="min-width:230px;"  data-sort="description_matched">Matched description</th>
               <th style="min-width:120px;"  data-sort="contract_id_matched">Contract</th>
-              <th style="min-width:120px;"  data-sort="organization_matched">Organization</th>
-              <th style="min-width:150px;"  data-sort="vendor_name_matched">Vendor</th>
-              <th style="min-width:150px;"  data-sort="mfg_name_matched">Manufacturer</th>
-              <th style="width:100px;"      data-sort="llm_verdict">Verdict</th>
+              <th style="min-width:120px;"  data-sort="organization_matched"
+                  class="col-organization">Organization</th>
+              <th style="min-width:150px;"  data-sort="vendor_name_matched"
+                  class="col-vendor">Vendor</th>
+              <th style="width:90px;"       data-sort="erp_vendor_id_matched"
+                  class="col-vendorid">Vendor ID</th>
+              <th style="min-width:150px;"  data-sort="mfg_name_matched"
+                  class="col-manufacturer">Manufacturer</th>
+              <th style="min-width:130px;"  data-sort="llm_input_noun">Input core product</th>
+              <th style="min-width:130px;"  data-sort="llm_matched_noun">Matched core product</th>
+              <th style="width:70px;"       data-sort="llm_same_noun" data-first="desc">Same?</th>
+              <th style="width:110px;"      data-sort="final_verdict">Verdict</th>
               <th style="width:60px;"       data-sort="llm_confidence" data-first="desc">Conf.</th>
               <th style="min-width:220px;"  data-sort="llm_reason">LLM reason</th>
               <th style="width:70px;"       data-sort="llm_prompt_version_id">Prompt</th>
             </tr>
           </thead>
           <tbody id="resultsBody">
-            <tr><td colspan="18" class="text-center text-muted py-3">Loading…</td></tr>
+            <tr><td colspan="24" class="text-center text-muted py-3">Loading…</td></tr>
           </tbody>
         </table>
       </div>
@@ -172,6 +311,62 @@
     </div>
   </div>
 
+</div>
+
+<!-- Located contract report modal -->
+<div class="modal fade" id="locatedModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header py-2">
+        <h6 class="modal-title">Located contract report</h6>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <p class="small text-muted">
+          One row per input line rather than per candidate pair. Pairs judged
+          <span class="badge bg-danger">DIFFERENT</span> are left out, so an input line
+          whose every candidate was rejected reports as located nothing.
+        </p>
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" id="locatedIncludeUnmatched" checked>
+          <label class="form-check-label" for="locatedIncludeUnmatched">
+            Include input lines with no contract located
+            <div class="form-text mt-0">
+              On by default. Leaving them out makes the report look like full coverage
+              of the file when it is not.
+            </div>
+          </label>
+        </div>
+        <hr class="my-2">
+        <label class="form-label form-label-sm mb-0">
+          Count an exact SKU match as Same at or above
+          <span class="badge bg-primary" id="locatedThresholdLabel">100%</span>
+          similarity
+        </label>
+        <input type="range" class="form-range" id="locatedThreshold"
+               min="80" max="100" step="1" value="100">
+        <div class="form-text mt-0">
+          These pairs are never sent to the LLM — an exact catalog number with a
+          near-identical description is not a judgement call — so without this rule they
+          would have no verdict and report as not located.
+        </div>
+        <div class="form-check mt-2">
+          <input class="form-check-input" type="checkbox" id="locatedNoAutoSame">
+          <label class="form-check-label small" for="locatedNoAutoSame">
+            Turn the rule off — leave those pairs with an empty Verdict instead of Same
+            <div class="form-text mt-0">
+              They still appear in the report; only the label changes. Nothing here
+              excludes a row except a DIFFERENT verdict.
+            </div>
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer py-2">
+        <button class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
+        <button class="btn btn-success btn-sm" id="locatedDownloadBtn">Download</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- LLM scope modal -->
@@ -199,6 +394,18 @@
           <input class="form-check-input" type="radio" name="scope" id="scopeAll" value="ALL">
           <label class="form-check-label" for="scopeAll">Every matched pair in this set</label>
         </div>
+        <hr class="my-2">
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" id="includeDone">
+          <label class="form-check-label" for="includeDone">
+            Re-judge pairs that already have a verdict
+            <div class="form-text mt-0">
+              Off by default so a second click cannot re-bill work already paid for. Turn it
+              on to re-run a set under a newer prompt version. Verdicts are overwritten;
+              anything you marked by hand is left alone.
+            </div>
+          </label>
+        </div>
         <div class="alert alert-warning py-2 mt-3 mb-0 small" id="scopeWarning"></div>
       </div>
       <div class="modal-footer py-2">
@@ -223,6 +430,54 @@ let llmTotal = 0;
 let currentRows = [];   // rows on the visible page, for checkbox bookkeeping
 let sortKey = "";       // "" = default order (best match per input line first)
 let sortDir = "asc";
+
+// --- optional columns ------------------------------------------------------
+// Hidden rather than omitted, so the header and every row keep the same cell
+// count and colspan regardless of what is on screen.
+const HAS_SUPPLIER = {{ 'true' if discovery_set.has_supplier else 'false' }};
+const OPTIONAL_COLUMNS = [
+  ["colSupplier", "col-supplier"],
+  ["colOrganization", "col-organization"],
+  ["colVendor", "col-vendor"],
+  ["colVendorid", "col-vendorid"],
+  ["colManufacturer", "col-manufacturer"],
+];
+const COLUMN_PREFS_KEY = "discoveryColumns";
+
+function applyColumnVisibility() {
+  const prefs = {};
+  for (const [checkboxId, cellClass] of OPTIONAL_COLUMNS) {
+    const box = document.getElementById(checkboxId);
+    // An upload with no supplier has nothing to show in that column ever.
+    const show = box.checked && !(cellClass === "col-supplier" && !HAS_SUPPLIER);
+    document.querySelectorAll(`.${cellClass}`)
+      .forEach(cell => cell.classList.toggle("d-none", !show));
+    prefs[checkboxId] = box.checked;
+  }
+  try { localStorage.setItem(COLUMN_PREFS_KEY, JSON.stringify(prefs)); } catch (err) { /* private mode */ }
+}
+
+function restoreColumnPrefs() {
+  let prefs = null;
+  try { prefs = JSON.parse(localStorage.getItem(COLUMN_PREFS_KEY) || "null"); } catch (err) { prefs = null; }
+  if (prefs) {
+    for (const [checkboxId] of OPTIONAL_COLUMNS) {
+      const box = document.getElementById(checkboxId);
+      if (!box.disabled && typeof prefs[checkboxId] === "boolean") box.checked = prefs[checkboxId];
+    }
+  }
+  applyColumnVisibility();
+}
+
+OPTIONAL_COLUMNS.forEach(([checkboxId]) =>
+  document.getElementById(checkboxId).addEventListener("change", applyColumnVisibility));
+
+/** Send the grid back to its first row. Called when the row set changes —
+ *  never on the periodic refresh during an LLM run, which would yank the page
+ *  out from under someone reading it. */
+function resetGridScroll() {
+  document.getElementById("resultsScroll").scrollTop = 0;
+}
 
 function esc(value) {
   return String(value == null ? "" : value)
@@ -255,9 +510,20 @@ function isSelected(row) {
   return !ruleSkips(row);
 }
 
+/** Is re-judging turned on? Decides whether a judged row is still a candidate. */
+function includeDone() {
+  return document.getElementById("includeDone").checked;
+}
+
+/** Rows this run could send, which is every row once re-judging is on. */
+function sendableRows() {
+  return (currentRows || []).filter(r => includeDone() || r.llm_status !== "DONE");
+}
+
 function selectionCell(row) {
   // A row already judged is not re-sent; show why rather than a dead checkbox.
-  if (row.llm_status === "DONE") {
+  // Turning on re-judging puts it back in play, so the checkbox returns.
+  if (row.llm_status === "DONE" && !includeDone()) {
     return `<span class="text-success" title="Already judged">&check;</span>`;
   }
   const checked = isSelected(row) ? "checked" : "";
@@ -295,14 +561,65 @@ async function refreshSelectionSummary() {
       `<span class="fw-semibold">${net.toLocaleString()}</span> pair(s) selected for the LLM `
       + `<span class="text-muted">(${scopeLabel})</span><br>`
       + `<span class="text-muted">${d.skipped_by_rule.toLocaleString()} skipped by the rule · `
-      + `${d.already_done.toLocaleString()} already judged · `
+      + (payload.include_done
+          ? `re-judging existing verdicts · `
+          : `${d.already_done.toLocaleString()} already judged · `)
       + `${d.in_scope.toLocaleString()} in scope</span>`;
   } catch (err) {
     box.innerHTML = `<span class="text-danger">Could not estimate: ${esc(err.message)}</span>`;
   }
 }
 
+// --- human verdict marking ----------------------------------------------
+// A separate selection from the LLM one: the rows worth marking by hand are
+// mostly the rows already judged, which the LLM selection deliberately excludes.
+// Ticks survive paging so a reviewer can work through several pages, then mark.
+const reviewIds = new Set();
+
+function reviewCell(row) {
+  const checked = reviewIds.has(row.discovery_match_id) ? "checked" : "";
+  return `<input type="checkbox" class="form-check-input row-review" `
+       + `data-mid="${row.discovery_match_id}" ${checked} `
+       + `title="Tick to mark this pair Same or Different">`;
+}
+
+function renderReviewCount() {
+  const count = reviewIds.size;
+  document.getElementById("reviewCount").textContent = count.toLocaleString();
+  ["markSameBtn", "markDifferentBtn", "markClearBtn", "resendBtn", "reviewClearSelBtn"]
+    .forEach(id => document.getElementById(id).disabled = count === 0);
+  // Re-queueing replaces whatever is already queued, so it must not run while a
+  // run is in flight — that would cut the current run short.
+  document.getElementById("resendBtn").disabled = count === 0 || llmRunning;
+}
+
+/** Did the model read both sides as the same core product? */
+function nounCell(row) {
+  if (row.llm_same_noun === true) {
+    return `<span class="badge bg-success-subtle text-success-emphasis border border-success-subtle"
+                  title="Same core product">Yes</span>`;
+  }
+  if (row.llm_same_noun === false) {
+    return `<span class="badge bg-danger-subtle text-danger-emphasis border border-danger-subtle"
+                  title="Different core product — the candidate match itself is suspect">No</span>`;
+  }
+  // Judged under a prompt version that predates this output, or not judged yet.
+  return `<span class="text-muted">—</span>`;
+}
+
 function verdictCell(row) {
+  // A hand mark is the answer for the row; the model's own verdict moves into
+  // the tooltip rather than disappearing.
+  if (row.user_verdict) {
+    const who = row.user_verdict_by ? ` by ${row.user_verdict_by}` : "";
+    const said = row.llm_verdict
+      ? `LLM said ${row.llm_verdict}`
+      : (row.llm_error ? "LLM errored" : "not judged by the LLM");
+    return `<span class="badge bg-${VERDICT_BADGE[row.user_verdict] || "secondary"}">`
+         + `${esc(row.user_verdict)}</span>`
+         + `<span class="badge bg-dark ms-1" style="font-size:0.6rem;" `
+         + `title="Marked by hand${esc(who)} — ${esc(said)}">&#9998;</span>`;
+  }
   if (row.llm_error) {
     return `<span class="badge bg-secondary" title="${esc(row.llm_error)}">ERROR</span>`;
   }
@@ -319,14 +636,20 @@ function filters() {
   const params = new URLSearchParams();
   const search = document.getElementById("fSearch").value.trim();
   const verdict = document.getElementById("fVerdict").value;
+  const overridden = document.getElementById("fOverridden").value;
   const exact = document.getElementById("fExact").value;
   const matchedOn = document.getElementById("fMatchedOn").value;
   const maxRank = document.getElementById("fMaxRank").value;
+  const minConf = document.getElementById("fMinConf").value;
+  const sameNoun = document.getElementById("fSameNoun").value;
   if (search) params.set("search", search);
   if (verdict) params.set("verdict", verdict);
+  if (overridden) params.set("overridden", overridden);
   if (exact) params.set("sku_exact", exact);
   if (matchedOn) params.set("matched_on", matchedOn);
   if (maxRank) params.set("max_rank", maxRank);
+  if (minConf) params.set("min_confidence", minConf);
+  if (sameNoun) params.set("same_noun", sameNoun);
   if (sortKey) { params.set("sort", sortKey); params.set("dir", sortDir); }
   return params;
 }
@@ -366,6 +689,7 @@ document.querySelectorAll("th[data-sort]").forEach(th => {
     }
     offset = 0;
     applySortIndicators();
+    resetGridScroll();
     loadResults();
   });
 });
@@ -375,16 +699,19 @@ async function loadSummary() {
   const data = await resp.json();
   if (!resp.ok) return;
 
-  const verdicts = data.llm_by_verdict || {};
+  // Verdict cards count the effective verdict — what the row says now, hand
+  // marks included — so they agree with the Verdict column and its filter.
+  const verdicts = data.final_by_verdict || data.llm_by_verdict || {};
   const cards = [
     ["Input lines", (data.item_count || 0).toLocaleString(), "secondary"],
     ["Lines with a match", (data.items_with_match || 0).toLocaleString(), "primary"],
     ["Total matches", (data.match_count || 0).toLocaleString(), "primary"],
     ["Exact SKU matches", (data.sku_exact_count || 0).toLocaleString(), "info"],
     ["Contracts touched", (data.contract_count || 0).toLocaleString(), "secondary"],
-    ["LLM: same", (verdicts.SAME || 0).toLocaleString(), "success"],
-    ["LLM: different", (verdicts.DIFFERENT || 0).toLocaleString(), "danger"],
-    ["LLM: uncertain", (verdicts.UNCERTAIN || 0).toLocaleString(), "warning"],
+    ["Same", (verdicts.SAME || 0).toLocaleString(), "success"],
+    ["Different", (verdicts.DIFFERENT || 0).toLocaleString(), "danger"],
+    ["Uncertain", (verdicts.UNCERTAIN || 0).toLocaleString(), "warning"],
+    ["Marked by hand", (data.overridden_count || 0).toLocaleString(), "dark"],
   ];
   document.getElementById("summaryCards").innerHTML = cards.map(([label, value, tone]) => `
     <div class="col">
@@ -421,15 +748,17 @@ async function loadResults() {
     currentRows = data.rows;
 
     if (!data.rows.length) {
-      body.innerHTML = `<tr><td colspan="18" class="text-center text-muted py-4">
+      body.innerHTML = `<tr><td colspan="24" class="text-center text-muted py-4">
         No matches for these filters.</td></tr>`;
     } else {
       body.innerHTML = data.rows.map(r => `
         <tr>
           <td>${selectionCell(r)}</td>
+          <td>${reviewCell(r)}</td>
           <td class="text-muted">${esc(r.file_row)}</td>
           <td><code>${esc(r.sku_input)}</code></td>
           <td>${esc(r.description_input)}</td>
+          <td class="small col-supplier">${esc(r.supplier_input)}</td>
           <td>${r.sku_exact
                 ? '<span class="badge bg-success">Yes</span>'
                 : '<span class="badge bg-light text-dark border">No</span>'}</td>
@@ -440,9 +769,13 @@ async function loadResults() {
                 ? r.mfg_catalog_num_matched : r.vendor_catalog_num_matched)}</code></td>
           <td>${esc(r.description_matched)}</td>
           <td class="small">${esc(r.contract_id_matched)}</td>
-          <td class="small">${esc(r.organization_matched)}</td>
-          <td class="small">${esc(r.vendor_name_matched)}</td>
-          <td class="small">${esc(r.mfg_name_matched)}</td>
+          <td class="small col-organization">${esc(r.organization_matched)}</td>
+          <td class="small col-vendor">${esc(r.vendor_name_matched)}</td>
+          <td class="small col-vendorid">${esc(r.erp_vendor_id_matched)}</td>
+          <td class="small col-manufacturer">${esc(r.mfg_name_matched)}</td>
+          <td class="small">${esc(r.llm_input_noun)}</td>
+          <td class="small">${esc(r.llm_matched_noun)}</td>
+          <td>${nounCell(r)}</td>
           <td>${verdictCell(r)}</td>
           <td class="small">${r.llm_confidence == null ? "" : esc(r.llm_confidence)}</td>
           <td class="small text-muted">${esc(r.llm_reason || r.llm_error || "")}</td>
@@ -452,12 +785,22 @@ async function loadResults() {
     }
 
     // Header checkbox reflects the page: checked only if every sendable row is.
-    const sendable = currentRows.filter(r => r.llm_status !== "DONE");
+    const sendable = sendableRows();
     const selectAll = document.getElementById("selectAllPage");
     const selectedCount = sendable.filter(isSelected).length;
     selectAll.checked = sendable.length > 0 && selectedCount === sendable.length;
     selectAll.indeterminate = selectedCount > 0 && selectedCount < sendable.length;
     renderOverrideCount();
+
+    // Rows are rebuilt from scratch each render, so hidden columns have to be
+    // re-hidden here or they reappear on every slice of an LLM run.
+    applyColumnVisibility();
+
+    const reviewAll = document.getElementById("reviewAllPage");
+    const ticked = currentRows.filter(r => reviewIds.has(r.discovery_match_id)).length;
+    reviewAll.checked = currentRows.length > 0 && ticked === currentRows.length;
+    reviewAll.indeterminate = ticked > 0 && ticked < currentRows.length;
+    renderReviewCount();
 
     const from = total === 0 ? 0 : offset + 1;
     const to = Math.min(offset + pageSize, total);
@@ -466,7 +809,7 @@ async function loadResults() {
     document.getElementById("prevBtn").disabled = offset <= 0;
     document.getElementById("nextBtn").disabled = offset + pageSize >= total;
   } catch (err) {
-    body.innerHTML = `<tr><td colspan="18" class="text-center text-danger py-3">${esc(err.message)}</td></tr>`;
+    body.innerHTML = `<tr><td colspan="24" class="text-center text-danger py-3">${esc(err.message)}</td></tr>`;
   }
 }
 
@@ -505,8 +848,7 @@ document.getElementById("resultsBody").addEventListener("change", (event) => {
 
 document.getElementById("selectAllPage").addEventListener("change", (event) => {
   const want = event.target.checked;
-  for (const row of currentRows || []) {
-    if (row.llm_status === "DONE") continue;
+  for (const row of sendableRows()) {
     const id = row.discovery_match_id;
     const skippedByRule = ruleSkips(row);
     excludeIds.delete(id);
@@ -526,6 +868,70 @@ document.getElementById("clearOverridesBtn").addEventListener("click", () => {
   loadResults();
   refreshSelectionSummary();
 });
+
+// --- human verdict marking -----------------------------------------------
+document.getElementById("resultsBody").addEventListener("change", (event) => {
+  const box = event.target.closest(".row-review");
+  if (!box) return;
+  const id = parseInt(box.getAttribute("data-mid"), 10);
+  if (box.checked) reviewIds.add(id); else reviewIds.delete(id);
+
+  const reviewAll = document.getElementById("reviewAllPage");
+  const ticked = (currentRows || []).filter(r => reviewIds.has(r.discovery_match_id)).length;
+  reviewAll.checked = currentRows.length > 0 && ticked === currentRows.length;
+  reviewAll.indeterminate = ticked > 0 && ticked < currentRows.length;
+  renderReviewCount();
+});
+
+document.getElementById("reviewAllPage").addEventListener("change", (event) => {
+  // Only the rows on screen — the header checkbox cannot honestly claim to
+  // speak for pages the reviewer has not looked at.
+  for (const row of currentRows || []) {
+    if (event.target.checked) reviewIds.add(row.discovery_match_id);
+    else reviewIds.delete(row.discovery_match_id);
+  }
+  renderReviewCount();
+  loadResults();
+});
+
+document.getElementById("reviewClearSelBtn").addEventListener("click", () => {
+  reviewIds.clear();
+  renderReviewCount();
+  loadResults();
+});
+
+/** Apply (or with null, clear) a hand verdict on every ticked row. */
+async function markSelected(verdict, button) {
+  if (!reviewIds.size) return;
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = "Saving…";
+  try {
+    const resp = await fetch(`${PREFIX}/api/discovery/${SET_ID}/verdicts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ verdict, match_ids: [...reviewIds] }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || "Could not save");
+    // The ticks stay put: the most likely next action is correcting a mark that
+    // was just applied to the wrong rows.
+    loadSummary();
+    loadResults();
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    button.textContent = label;
+    renderReviewCount();
+  }
+}
+
+document.getElementById("markSameBtn").addEventListener("click", (e) =>
+  markSelected("SAME", e.currentTarget));
+document.getElementById("markDifferentBtn").addEventListener("click", (e) =>
+  markSelected("DIFFERENT", e.currentTarget));
+document.getElementById("markClearBtn").addEventListener("click", (e) =>
+  markSelected(null, e.currentTarget));
 
 // --- matching -------------------------------------------------------------
 document.getElementById("matchBtn").addEventListener("click", async () => {
@@ -551,7 +957,11 @@ const llmModal = new bootstrap.Modal(document.getElementById("llmModal"));
 /** Current scope + selection, shared by the estimate and the start call. */
 function llmPayload() {
   const scope = document.querySelector('input[name="scope"]:checked').value;
-  const payload = { scope, skip_exact_above: skipThreshold };
+  const payload = {
+    scope,
+    skip_exact_above: skipThreshold,
+    include_done: document.getElementById("includeDone").checked,
+  };
   if (scope === "TOP_N") payload.top_n = parseInt(document.getElementById("topN").value, 10) || 3;
   if (excludeIds.size) payload.exclude_ids = [...excludeIds];
   if (includeIds.size) payload.include_ids = [...includeIds];
@@ -576,7 +986,9 @@ async function updateScopeWarning() {
       `About <span class="fw-semibold">${net.toLocaleString()}</span> LLM call(s)${overrides}. `
       + `${d.skipped_by_rule.toLocaleString()} pair(s) skipped as exact matches at or above `
       + `${Math.round(skipThreshold * 100)}% similarity; `
-      + `${d.already_done.toLocaleString()} already judged and will not be re-sent.`;
+      + (payload.include_done
+          ? `pairs that already have a verdict are included and will be judged again.`
+          : `${d.already_done.toLocaleString()} already judged and will not be re-sent.`);
   } catch (err) {
     box.textContent = `Could not estimate: ${err.message}`;
   }
@@ -593,28 +1005,59 @@ document.querySelectorAll('input[name="scope"]').forEach(el =>
 document.getElementById("topN").addEventListener("input", () => {
   updateScopeWarning(); refreshSelectionSummary();
 });
+// Re-judging changes which rows are candidates at all, so the grid's checkboxes
+// have to be redrawn alongside the estimate.
+document.getElementById("includeDone").addEventListener("change", () => {
+  updateScopeWarning(); refreshSelectionSummary(); loadResults();
+});
 
-document.getElementById("llmStartBtn").addEventListener("click", async () => {
-  const payload = llmPayload();
-
+/** Queue a payload and drive the run. Shared by the scope modal and the
+ *  per-row re-send, so both report progress the same way. */
+async function startRun(payload, emptyMessage) {
   const resp = await fetch(`${PREFIX}/api/discovery/${SET_ID}/llm/start`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
   const data = await resp.json();
-  if (!resp.ok) { alert(data.error || "Could not start"); return; }
+  if (!resp.ok) { alert(data.error || "Could not start"); return false; }
 
-  llmModal.hide();
   llmTotal = data.remaining;
-  if (!llmTotal) {
-    alert("Nothing new to judge — every pair in that scope already has a verdict.");
-    return;
-  }
+  if (!llmTotal) { alert(emptyMessage); return false; }
   document.getElementById("llmPanel").classList.remove("d-none");
   document.getElementById("llmLabel").textContent =
     `LLM comparison — prompt v${data.prompt_version_no}`;
   runLoop();
+  return true;
+}
+
+document.getElementById("llmStartBtn").addEventListener("click", async () => {
+  const payload = llmPayload();
+  llmModal.hide();
+  await startRun(
+    payload,
+    "Nothing new to judge — every pair in that scope already has a verdict."
+  );
+});
+
+// Re-judge exactly the ticked rows, verdict or no verdict. SELECTED scope
+// bypasses the auto-skip rule by design: an explicit pick should not be
+// second-guessed by a similarity threshold.
+document.getElementById("resendBtn").addEventListener("click", async (event) => {
+  if (!reviewIds.size || llmRunning) return;
+  const button = event.currentTarget;
+  const label = button.textContent;
+  button.disabled = true;
+  button.textContent = "Queueing…";
+  try {
+    await startRun(
+      { scope: "SELECTED", match_ids: [...reviewIds], include_done: true },
+      "Those rows could not be queued for another pass."
+    );
+  } finally {
+    button.textContent = label;
+    renderReviewCount();
+  }
 });
 
 document.getElementById("llmCancelBtn").addEventListener("click", async () => {
@@ -683,16 +1126,18 @@ async function runLoop() {
 let filterTimer = null;
 function onFilterChange() {
   clearTimeout(filterTimer);
-  filterTimer = setTimeout(() => { offset = 0; loadResults(); }, 250);
+  filterTimer = setTimeout(() => { offset = 0; resetGridScroll(); loadResults(); }, 250);
 }
-["fSearch", "fVerdict", "fExact", "fMatchedOn", "fMaxRank"].forEach(id => {
-  const el = document.getElementById(id);
-  el.addEventListener(el.tagName === "SELECT" ? "change" : "input", onFilterChange);
-});
+["fSearch", "fVerdict", "fOverridden", "fExact", "fMatchedOn", "fMaxRank", "fMinConf",
+ "fSameNoun"].forEach(id => {
+    const el = document.getElementById(id);
+    el.addEventListener(el.tagName === "SELECT" ? "change" : "input", onFilterChange);
+  });
 
 document.getElementById("resetFilters").addEventListener("click", () => {
-  ["fSearch", "fMaxRank"].forEach(id => document.getElementById(id).value = "");
-  ["fVerdict", "fExact", "fMatchedOn"].forEach(id => document.getElementById(id).value = "");
+  ["fSearch", "fMaxRank", "fMinConf"].forEach(id => document.getElementById(id).value = "");
+  ["fVerdict", "fOverridden", "fExact", "fMatchedOn", "fSameNoun"]
+    .forEach(id => document.getElementById(id).value = "");
   sortKey = ""; sortDir = "asc";
   applySortIndicators();
   offset = 0;
@@ -701,19 +1146,63 @@ document.getElementById("resetFilters").addEventListener("click", () => {
 
 document.getElementById("prevBtn").addEventListener("click", () => {
   offset = Math.max(0, offset - pageSize);
+  resetGridScroll();
   loadResults();
 });
 document.getElementById("nextBtn").addEventListener("click", () => {
-  if (offset + pageSize < total) { offset += pageSize; loadResults(); }
+  if (offset + pageSize < total) { offset += pageSize; resetGridScroll(); loadResults(); }
 });
 
+// --- exports ---------------------------------------------------------------
+/** The results export mirrors what is on screen, filters and sort included. */
+function resultsExportUrl() {
+  return `${PREFIX}/api/discovery/${SET_ID}/export.xlsx?${filters()}`;
+}
+
 document.getElementById("exportBtn").addEventListener("click", (event) => {
-  const params = filters();
-  event.currentTarget.href = `${PREFIX}/api/discovery/${SET_ID}/export.xlsx?${params}`;
+  event.currentTarget.href = resultsExportUrl();
+});
+
+document.getElementById("exportResultsItem").addEventListener("click", (event) => {
+  event.preventDefault();
+  window.location = resultsExportUrl();
+});
+
+const locatedModal = new bootstrap.Modal(document.getElementById("locatedModal"));
+const locatedThreshold = document.getElementById("locatedThreshold");
+const locatedNoAutoSame = document.getElementById("locatedNoAutoSame");
+
+function renderLocatedThreshold() {
+  document.getElementById("locatedThresholdLabel").textContent = `${locatedThreshold.value}%`;
+  // Turning the rule off makes the slider meaningless, so stop offering it.
+  locatedThreshold.disabled = locatedNoAutoSame.checked;
+}
+locatedThreshold.addEventListener("input", renderLocatedThreshold);
+locatedNoAutoSame.addEventListener("change", renderLocatedThreshold);
+
+document.getElementById("exportLocatedItem").addEventListener("click", (event) => {
+  event.preventDefault();
+  // Default to the same threshold the run used, so the report agrees with what
+  // was actually skipped rather than quietly applying a different cutoff.
+  locatedThreshold.value = Math.round(skipThreshold * 100);
+  renderLocatedThreshold();
+  locatedModal.show();
+});
+
+document.getElementById("locatedDownloadBtn").addEventListener("click", () => {
+  const params = new URLSearchParams({ mode: "located_contract_report" });
+  params.set("similarity_threshold",
+    locatedNoAutoSame.checked ? "off" : (parseInt(locatedThreshold.value, 10) / 100).toFixed(2));
+  if (!document.getElementById("locatedIncludeUnmatched").checked) {
+    params.set("include_unmatched", "0");
+  }
+  locatedModal.hide();
+  window.location = `${PREFIX}/api/discovery/${SET_ID}/export.xlsx?${params}`;
 });
 
 // Freshly uploaded sets arrive with ?automatch=1 and start matching immediately.
 (async function init() {
+  restoreColumnPrefs();
   const params = new URLSearchParams(window.location.search);
   if (params.get("automatch") === "1") {
     history.replaceState(null, "", `${PREFIX}/discovery/${SET_ID}`);

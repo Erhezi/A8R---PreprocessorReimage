@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from sqlalchemy import case, func, text
+from sqlalchemy import bindparam, case, func, text
 from sqlalchemy.orm import Session
 
 from ..models import (
@@ -197,6 +197,11 @@ def count_matches(set_id: int) -> int:
         )
 
 
+def _final_verdict_expr():
+    """The verdict a reader should act on: the human call, else the machine one."""
+    return func.coalesce(DiscoveryMatch.user_verdict, DiscoveryMatch.llm_verdict)
+
+
 def _results_query(s: Session, set_id: int, filters: dict):
     """Build the joined results query with optional filters applied."""
     q = (
@@ -205,11 +210,35 @@ def _results_query(s: Session, set_id: int, filters: dict):
         .filter(DiscoveryMatch.set_id == set_id)
     )
 
+    # Verdict filtering runs on the effective verdict, so a row a human marked
+    # SAME is found under SAME rather than under whatever the model first said.
     verdict = filters.get("verdict")
     if verdict == "UNJUDGED":
-        q = q.filter(DiscoveryMatch.llm_verdict.is_(None))
+        q = q.filter(
+            DiscoveryMatch.llm_verdict.is_(None), DiscoveryMatch.user_verdict.is_(None)
+        )
+    elif verdict == "ERROR":
+        q = q.filter(DiscoveryMatch.llm_status == "ERROR")
     elif verdict:
-        q = q.filter(DiscoveryMatch.llm_verdict == verdict)
+        q = q.filter(_final_verdict_expr() == verdict)
+
+    overridden = filters.get("overridden")
+    if overridden is True:
+        q = q.filter(DiscoveryMatch.user_verdict.isnot(None))
+    elif overridden is False:
+        q = q.filter(DiscoveryMatch.user_verdict.is_(None))
+
+    if filters.get("min_confidence") is not None:
+        q = q.filter(DiscoveryMatch.llm_confidence >= int(filters["min_confidence"]))
+
+    # BIT column, so `== True` rather than `.is_(True)` — T-SQL allows IS only
+    # with NULL. A row judged under a prompt that predates the noun output has
+    # NULL here and is excluded from both sides, which is correct.
+    same_noun = filters.get("same_noun")
+    if same_noun is True:
+        q = q.filter(DiscoveryMatch.llm_same_noun == True)  # noqa: E712
+    elif same_noun is False:
+        q = q.filter(DiscoveryMatch.llm_same_noun == False)  # noqa: E712
 
     sku_exact = filters.get("sku_exact")
     if sku_exact is not None:
@@ -265,9 +294,15 @@ def _sort_columns() -> dict:
         "contract_id_matched": DiscoveryMatch.contract_id_matched,
         "organization_matched": DiscoveryMatch.organization_matched,
         "vendor_name_matched": DiscoveryMatch.vendor_name_matched,
+        "erp_vendor_id_matched": DiscoveryMatch.erp_vendor_id_matched,
         "mfg_name_matched": DiscoveryMatch.mfg_name_matched,
         "llm_verdict": DiscoveryMatch.llm_verdict,
+        "user_verdict": DiscoveryMatch.user_verdict,
+        "final_verdict": _final_verdict_expr(),
         "llm_confidence": DiscoveryMatch.llm_confidence,
+        "llm_same_noun": DiscoveryMatch.llm_same_noun,
+        "llm_input_noun": DiscoveryMatch.llm_input_noun,
+        "llm_matched_noun": DiscoveryMatch.llm_matched_noun,
         "llm_reason": DiscoveryMatch.llm_reason,
         "llm_prompt_version_id": DiscoveryMatch.llm_prompt_version_id,
     }
@@ -368,6 +403,114 @@ def get_results_for_export(
         return out
 
 
+def get_items_with_matches(set_id: int) -> list[dict]:
+    """Every input line in a set with its matches attached.
+
+    Unlike the results query this starts from DiscoveryItem, so a line that
+    matched nothing is still present with an empty ``matches`` list — the
+    located-contract report has to show those.
+    """
+    with _session() as s:
+        items = (
+            s.query(DiscoveryItem)
+            .filter(DiscoveryItem.set_id == set_id)
+            .order_by(DiscoveryItem.file_row, DiscoveryItem.discovery_item_id)
+            .all()
+        )
+        matches = (
+            s.query(DiscoveryMatch)
+            .filter(DiscoveryMatch.set_id == set_id)
+            .order_by(
+                DiscoveryMatch.discovery_item_id,
+                DiscoveryMatch.rank_in_item,
+                DiscoveryMatch.discovery_match_id,
+            )
+            .all()
+        )
+        by_item: dict[int, list[dict]] = {}
+        for match in matches:
+            by_item.setdefault(match.discovery_item_id, []).append(match.to_dict())
+
+        return [{
+            "discovery_item_id": item.discovery_item_id,
+            "file_row": item.file_row,
+            "sku_input": item.sku_input,
+            "sku_raw": item.sku_raw,
+            "description_input": item.description_input,
+            "supplier_input": item.supplier_input,
+            "matches": by_item.get(item.discovery_item_id, []),
+        } for item in items]
+
+
+def ccx_business_key(
+    org_eid, contract_id, erp_vendor_id, mfg_num, uom, uom_to_match_infor
+) -> tuple:
+    """The stable CCX line identity — the UX_CCXSyncedCL_ItemPerRN unique index.
+
+    Matches ``preprocess_service._ccx_business_key``; kept here so discovery can
+    resolve a snapshotted match back to its live contract line without importing
+    the preprocessor.
+    """
+    return tuple(
+        str(part or "").strip().upper()
+        for part in (org_eid, contract_id, erp_vendor_id, mfg_num, uom, uom_to_match_infor)
+    )
+
+
+# CCX_pkid is joined inside this one statement rather than carried across
+# requests: the daily reload re-issues it, so it is only trustworthy within a
+# single read of both tables. Aggregation happens in Python because the server
+# is SQL Server 2016 and STRING_AGG arrived in 2017.
+_CCX_LINE_SQL = text("""
+SELECT ccx.OrganizationEID, ccx.ContractID, ccx.ERPVendorID,
+       ccx.ManufacturerNumber_CCX, ccx.UOM_CCX, ccx.UOMtoMatchInfor_CCX,
+       ccx.EffectiveDate_CCX, ccx.ExpirationDate_CCX,
+       icl.Item AS infor_item
+FROM [Preprocessor].[CCXSyncedContractLine] ccx
+LEFT JOIN [Preprocessor].[InforActiveCLRefCCXSyncedCL] icl
+       ON icl.CCX_pkid = ccx.CCX_pkid
+WHERE ccx.ManufacturerNumber_CCX IN :mfg_nums
+""")
+
+
+def get_ccx_line_details(mfg_numbers: list[str]) -> dict[tuple, dict]:
+    """Contract dates and Infor item number, keyed by CCX business key.
+
+    Read live rather than from the match snapshot: none of this is captured at
+    match time, and a contract's dates can move afterwards, so a report that
+    claims to locate a contract should quote what the contract says now.
+
+    Narrowed by manufacturer number — the one key part that is both selective
+    and always populated, whichever reduced column produced the hit.
+
+    A CCX line maps to one Infor item in all but a handful of cases across the
+    whole table, but the rare second one is collected rather than dropped, so
+    the report never quietly picks a winner.
+    """
+    wanted = sorted({str(n).strip() for n in mfg_numbers if str(n or "").strip()})
+    if not wanted:
+        return {}
+
+    stmt = _CCX_LINE_SQL.bindparams(bindparam("mfg_nums", expanding=True))
+    out: dict[tuple, dict] = {}
+    with _session() as s:
+        for batch in _chunked(wanted):
+            for row in s.execute(stmt, {"mfg_nums": batch}).mappings():
+                key = ccx_business_key(
+                    row["OrganizationEID"], row["ContractID"], row["ERPVendorID"],
+                    row["ManufacturerNumber_CCX"], row["UOM_CCX"], row["UOMtoMatchInfor_CCX"],
+                )
+                entry = out.setdefault(key, {
+                    "effective_date": row["EffectiveDate_CCX"],
+                    "expiration_date": row["ExpirationDate_CCX"],
+                    "infor_items": set(),
+                })
+                item = str(row["infor_item"] or "").strip()
+                if item:
+                    entry["infor_items"].add(item)
+    return out
+
+
 def get_summary(set_id: int) -> dict:
     """Counts for the header cards and the LLM progress bar."""
     with _session() as s:
@@ -407,6 +550,21 @@ def get_summary(set_id: int) -> dict:
             .group_by(DiscoveryMatch.llm_verdict)
             .all()
         )
+        # The cards report the effective verdict; the LLM-only split stays
+        # available so a reader can still see how much the humans moved.
+        final_expr = _final_verdict_expr()
+        by_final = dict(
+            s.query(final_expr, func.count(DiscoveryMatch.discovery_match_id))
+            .filter(DiscoveryMatch.set_id == set_id, final_expr.isnot(None))
+            .group_by(final_expr)
+            .all()
+        )
+        overridden = (
+            s.query(func.count(DiscoveryMatch.discovery_match_id))
+            .filter(DiscoveryMatch.set_id == set_id, DiscoveryMatch.user_verdict.isnot(None))
+            .scalar()
+            or 0
+        )
         contracts = (
             s.query(func.count(func.distinct(DiscoveryMatch.contract_id_matched)))
             .filter(DiscoveryMatch.set_id == set_id)
@@ -422,10 +580,66 @@ def get_summary(set_id: int) -> dict:
             "contract_count": contracts,
             "llm_by_status": {k: v for k, v in by_status.items()},
             "llm_by_verdict": {k: v for k, v in by_verdict.items()},
+            "final_by_verdict": {k: v for k, v in by_final.items()},
+            "overridden_count": overridden,
             "llm_pending": by_status.get("PENDING", 0) + by_status.get("IN_PROGRESS", 0),
             "llm_done": by_status.get("DONE", 0),
             "llm_error": by_status.get("ERROR", 0),
         }
+
+
+USER_VERDICTS = ("SAME", "DIFFERENT")
+
+
+def set_user_verdicts(
+    set_id: int,
+    match_ids: list[int],
+    verdict: Optional[str],
+    username: str,
+) -> int:
+    """Record a human verdict on specific rows; ``verdict=None`` clears it.
+
+    The LLM columns are left alone. A row the model called DIFFERENT and a
+    person called SAME keeps both, so the disagreement is visible in the export
+    and a re-run of the prompt can be measured against it.
+
+    ``set_id`` is part of the predicate so an id from another set cannot be
+    marked by hand-crafting a request.
+    """
+    ids = []
+    for raw in match_ids or []:
+        try:
+            ids.append(int(raw))
+        except (TypeError, ValueError):
+            continue
+    if not ids:
+        return 0
+
+    if verdict is not None:
+        verdict = str(verdict).strip().upper()
+        if verdict not in USER_VERDICTS:
+            raise ValueError(f"Unknown verdict: {verdict}")
+        payload = {
+            "user_verdict": verdict,
+            "user_verdict_by": username,
+            "user_verdict_at": ny_now(),
+        }
+    else:
+        payload = {"user_verdict": None, "user_verdict_by": None, "user_verdict_at": None}
+
+    updated = 0
+    with _session() as s:
+        for batch in _chunked(ids):
+            updated += (
+                s.query(DiscoveryMatch)
+                .filter(
+                    DiscoveryMatch.set_id == set_id,
+                    DiscoveryMatch.discovery_match_id.in_(batch),
+                )
+                .update(payload, synchronize_session=False)
+            )
+        s.commit()
+    return updated
 
 
 # ---------------------------------------------------------------------------
@@ -653,6 +867,100 @@ def claim_llm_slice(set_id: int, slice_size: int) -> list[int]:
         return [r[0] for r in rows]
 
 
+# Claims every PENDING row of the first N input lines, not the first N rows.
+# GROUP mode describes an input line once per call, so a line whose candidates
+# straddled two slices would be described twice and could drift between them.
+# TOP applies to the grouped set, so N counts lines; the rows updated is however
+# many candidates those lines have.
+_CLAIM_BY_ITEM_SQL = text("""
+WITH picked AS (
+    SELECT TOP (:slice_size) discovery_item_id
+    FROM [Preprocessor].[PreprocessorDiscoveryMatch]
+    WHERE set_id = :set_id AND llm_status = 'PENDING'
+    GROUP BY discovery_item_id
+    ORDER BY MIN(discovery_match_id)
+)
+UPDATE m
+SET llm_status = 'IN_PROGRESS'
+OUTPUT inserted.discovery_match_id
+FROM [Preprocessor].[PreprocessorDiscoveryMatch] m
+INNER JOIN picked p ON p.discovery_item_id = m.discovery_item_id
+WHERE m.set_id = :set_id AND m.llm_status = 'PENDING'
+""")
+
+
+def claim_llm_slice_by_item(set_id: int, slice_size: int) -> list[int]:
+    """Atomically claim every PENDING row of up to ``slice_size`` input lines.
+
+    Still one statement, so the concurrency guarantee is the same as the
+    per-match claim: two tabs cannot both take the same row.
+    """
+    with _session() as s:
+        rows = s.execute(
+            _CLAIM_BY_ITEM_SQL, {"slice_size": int(slice_size), "set_id": set_id}
+        ).fetchall()
+        s.commit()
+        return [r[0] for r in rows]
+
+
+def get_items_for_llm(match_ids: list[int]) -> list[dict]:
+    """Load claimed rows grouped by input line, best candidate first.
+
+    Shape mirrors what a GROUP template renders: the input line once, then its
+    candidates carrying the same matched_* fields a PAIR template receives.
+    """
+    if not match_ids:
+        return []
+
+    groups: dict[int, dict] = {}
+    with _session() as s:
+        for batch in _chunked(match_ids):
+            rows = (
+                s.query(DiscoveryMatch, DiscoveryItem)
+                .join(
+                    DiscoveryItem,
+                    DiscoveryMatch.discovery_item_id == DiscoveryItem.discovery_item_id,
+                )
+                .filter(DiscoveryMatch.discovery_match_id.in_(batch))
+                .order_by(
+                    DiscoveryMatch.discovery_item_id,
+                    DiscoveryMatch.rank_in_item,
+                    DiscoveryMatch.discovery_match_id,
+                )
+                .all()
+            )
+            for match, item in rows:
+                group = groups.setdefault(item.discovery_item_id, {
+                    "discovery_item_id": item.discovery_item_id,
+                    "input_sku": item.sku_input,
+                    "input_description": item.description_input,
+                    "input_supplier": item.supplier_input,
+                    "candidates": [],
+                })
+                group["candidates"].append({
+                    "discovery_match_id": match.discovery_match_id,
+                    "rank_in_item": match.rank_in_item,
+                    "matched_sku": (
+                        match.mfg_catalog_num_matched
+                        if match.matched_on == "REDUCED_MFG"
+                        else match.vendor_catalog_num_matched
+                    ),
+                    "matched_description": match.description_matched,
+                    "matched_vendor_name": match.vendor_name_matched,
+                    "matched_manufacturer_name": match.mfg_name_matched,
+                    "sku_exact": bool(match.sku_exact),
+                    "matched_on": match.matched_on,
+                    "desc_similarity": match.desc_similarity,
+                })
+    # One line's candidates can straddle two id chunks, so re-sort rather than
+    # trusting the per-chunk ORDER BY to have put the best candidate first.
+    for group in groups.values():
+        group["candidates"].sort(
+            key=lambda c: (c["rank_in_item"] is None, c["rank_in_item"], c["discovery_match_id"])
+        )
+    return list(groups.values())
+
+
 def get_matches_for_llm(match_ids: list[int]) -> list[dict]:
     """Load the comparison payload for claimed rows, joined to their input line."""
     if not match_ids:
@@ -762,6 +1070,7 @@ def create_prompt_version(
     notes: Optional[str] = None,
     model: Optional[str] = None,
     temperature: Optional[float] = None,
+    prompt_mode: str = "PAIR",
     activate: bool = True,
 ) -> DiscoveryPrompt:
     """Insert a new version. Existing versions are never modified.
@@ -787,6 +1096,7 @@ def create_prompt_version(
         row = DiscoveryPrompt(
             prompt_key=prompt_key,
             version_no=next_version,
+            prompt_mode=prompt_mode,
             system_prompt=system_prompt,
             user_template=user_template,
             model=model,

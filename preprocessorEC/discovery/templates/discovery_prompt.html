@@ -43,7 +43,7 @@
       <div class="card mb-3">
         <div class="card-header py-2 d-flex justify-content-between align-items-center">
           <span class="fw-semibold small">User template</span>
-          <span class="small text-muted">Jinja — one render per compared pair.</span>
+          <span class="small text-muted" id="templateHint">Jinja — one render per compared pair.</span>
         </div>
         <div class="card-body p-0">
           <textarea class="form-control border-0 font-monospace" id="userTemplate" rows="16"
@@ -56,7 +56,14 @@
       <div class="card mb-3">
         <div class="card-body py-2">
           <div class="row g-2">
-            <div class="col-md-4">
+            <div class="col-md-3">
+              <label class="form-label form-label-sm mb-0">Sending shape</label>
+              <select class="form-select form-select-sm" id="promptMode">
+                <option value="PAIR">One pair per call</option>
+                <option value="GROUP">One input line per call</option>
+              </select>
+            </div>
+            <div class="col-md-3">
               <label class="form-label form-label-sm mb-0">Model override</label>
               <input type="text" class="form-control form-control-sm" id="model"
                      placeholder="blank = use app default">
@@ -66,12 +73,13 @@
               <input type="number" step="0.1" min="0" max="2" class="form-control form-control-sm"
                      id="temperature" placeholder="default">
             </div>
-            <div class="col-md-6">
+            <div class="col-md-4">
               <label class="form-label form-label-sm mb-0">Change note</label>
               <input type="text" class="form-control form-control-sm" id="notes"
                      placeholder="What changed and why">
             </div>
           </div>
+          <div class="form-text mt-1" id="modeHelp"></div>
         </div>
       </div>
       {% endif %}
@@ -99,11 +107,27 @@
           <pre class="small bg-light p-2 rounded mb-2">{% raw %}{% if input_supplier %}
   Supplier: {{ input_supplier }}
 {% endif %}{% endraw %}</pre>
-          <ul class="list-unstyled small mb-0">
+          <ul class="list-unstyled small mb-0" id="varsPair">
             {% for variable in template_variables %}
             <li><code>{{ variable }}</code></li>
             {% endfor %}
           </ul>
+          <div id="varsGroup" class="d-none">
+            <p class="small text-muted mb-2">
+              A grouped template describes the input once, then loops over
+              <code>candidates</code>. Every candidate must print its
+              <code>index</code> — that number is how the reply is matched back
+              to a contract line.
+            </p>
+            <pre class="small bg-light p-2 rounded mb-2">{% raw %}{% for c in candidates %}
+[{{ c.index }}] {{ c.matched_description }}
+{% endfor %}{% endraw %}</pre>
+            <ul class="list-unstyled small mb-0">
+              {% for variable in group_template_variables %}
+              <li><code>{{ variable }}</code></li>
+              {% endfor %}
+            </ul>
+          </div>
         </div>
       </div>
 
@@ -146,6 +170,31 @@ function fmtDate(iso) {
   return iso ? iso.replace("T", " ").slice(0, 16) : "";
 }
 
+/** The mode currently in the editor — what a save would be validated against. */
+function currentMode() {
+  const select = document.getElementById("promptMode");
+  return select ? select.value : "PAIR";
+}
+
+/** Keep the sidebar and the hints describing the shape actually selected. */
+function renderMode() {
+  const grouped = currentMode() === "GROUP";
+  document.getElementById("templateHint").textContent = grouped
+    ? "Jinja — one render per input line, looping over its candidates."
+    : "Jinja — one render per compared pair.";
+  document.getElementById("varsPair").classList.toggle("d-none", grouped);
+  document.getElementById("varsGroup").classList.toggle("d-none", !grouped);
+  const help = document.getElementById("modeHelp");
+  if (help) {
+    help.textContent = grouped
+      ? "One call carries an input line and all its candidates, and the reply must "
+        + "return one entry per candidate. The input is described once, so the core "
+        + "product noun cannot drift between that line's own candidates."
+      : "One call carries a single input/contract pair. The input is re-described "
+        + "for every candidate, so its core product noun can vary between them.";
+  }
+}
+
 function loadIntoEditor(version) {
   document.getElementById("systemPrompt").value = version.system_prompt || "";
   document.getElementById("userTemplate").value = version.user_template || "";
@@ -153,7 +202,9 @@ function loadIntoEditor(version) {
     document.getElementById("model").value = version.model || "";
     document.getElementById("temperature").value =
       version.temperature == null ? "" : version.temperature;
+    document.getElementById("promptMode").value = version.prompt_mode || "PAIR";
   }
+  renderMode();
 }
 
 function renderVersions() {
@@ -169,6 +220,10 @@ function renderVersions() {
         <div>
           <span class="fw-semibold small">v${v.version_no}</span>
           ${v.is_active ? '<span class="badge bg-success ms-1">active</span>' : ''}
+          <span class="badge bg-light text-dark border ms-1"
+                title="${v.prompt_mode === 'GROUP'
+                  ? 'One input line and all its candidates per call'
+                  : 'One input/contract pair per call'}">${esc(v.prompt_mode || 'PAIR')}</span>
           <div class="text-muted" style="font-size:0.72rem;">
             ${esc(v.created_by)} · ${esc(fmtDate(v.created_at))}
           </div>
@@ -223,12 +278,17 @@ async function load() {
 }
 
 if (CAN_EDIT) {
+  document.getElementById("promptMode").addEventListener("change", renderMode);
+
   document.getElementById("previewBtn").addEventListener("click", async () => {
     showStatus("", "info");
     const resp = await fetch(`${PREFIX}/api/discovery/prompts/preview`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user_template: document.getElementById("userTemplate").value }),
+      body: JSON.stringify({
+        user_template: document.getElementById("userTemplate").value,
+        prompt_mode: currentMode(),
+      }),
     });
     const data = await resp.json();
     if (!resp.ok) { showStatus(data.error || "Preview failed", "danger"); return; }
@@ -248,6 +308,7 @@ if (CAN_EDIT) {
         body: JSON.stringify({
           system_prompt: document.getElementById("systemPrompt").value,
           user_template: document.getElementById("userTemplate").value,
+          prompt_mode: currentMode(),
           model: document.getElementById("model").value.trim(),
           temperature: document.getElementById("temperature").value,
           notes: document.getElementById("notes").value.trim(),
