@@ -30,8 +30,9 @@ from .scoring import (
     refine_pair_type,
     compute_similarities_batch,
     bucket_score,
+    resolve_threshold_config,
 )
-from .llm_review import review_match_pair
+from .llm_review import PROMPT as LLM_REVIEW_PROMPT, review_match_pair
 
 logger = logging.getLogger(__name__)
 
@@ -731,12 +732,22 @@ def _build_matched_snapshot(row, matched_source: str) -> dict:
 # ---------------------------------------------------------------------------
 # Step 1 -- CCX SKU Matching
 # ---------------------------------------------------------------------------
-def run_sku_matching(task_id: str, state_machine: TaskStateMachine) -> dict:
+def run_sku_matching(
+    task_id: str,
+    state_machine: TaskStateMachine,
+    threshold_config: str | None = None,
+) -> dict:
     """Match INPUT items against CCXSyncedContractLine via reduced SKU.
 
     Deletes any previous match results first (supports clean reruns).
     Uses multi-factor scoring with pair-type awareness.
-    Returns summary: {matched_count, total_items, contracts_found}.
+    Returns summary: {matched_count, total_items, contracts_found, threshold_config}.
+
+    *threshold_config* switches the HIGH/MED/LOW cut-offs for this run. Omit it to
+    keep whatever the task last ran under. Because this step rebuilds every CCX
+    match, it is the only place a new configuration takes effect, and the resolved
+    key is written back to the task so later steps and the UI agree with the
+    buckets now stored.
     """
     state = state_machine.get_state(task_id)
     state["status"] = Status.PREPROCESSING
@@ -754,6 +765,10 @@ def run_sku_matching(task_id: str, state_machine: TaskStateMachine) -> dict:
     process_type = (task.process_type or "").upper()
     is_distributor = "DISTRIBUTOR" in process_type
     precheck_mode = task.precheck_mode or "default"
+    threshold_config = resolve_threshold_config(
+        threshold_config if threshold_config is not None
+        else getattr(task, "threshold_config", None)
+    )
 
     contract_type = _determine_contract_type(task.process_type)
     item_entries = _build_reduced_item_entries(input_items)
@@ -858,6 +873,7 @@ def run_sku_matching(task_id: str, state_machine: TaskStateMachine) -> dict:
                 cn_input=task.contract_number or "",
                 cn_match=row.get("ContractID", ""),
                 desc_score_override=pair.get("desc_score_override"),
+                threshold_config=threshold_config,
             )
 
             # matched_item_ref: mfg+UOM for manufacturer, vendor+UOM for distributor
@@ -921,11 +937,17 @@ def run_sku_matching(task_id: str, state_machine: TaskStateMachine) -> dict:
     ]
     state_machine.save_state(task_id, state)
 
+    # Stamp the configuration these buckets were actually cut with. This step
+    # rebuilds every CCX match from scratch, so it is the point where the task's
+    # stored buckets and its recorded config are guaranteed to agree.
+    task_repo.update_task_fields(task_id, threshold_config=threshold_config)
+
     contracts = set(m["contract_number"] for m in all_matches if m["contract_number"])
     return {
         "matched_count": len(all_matches),
         "total_items": len(input_items),
         "contracts_found": len(contracts),
+        "threshold_config": threshold_config,
     }
 
 
@@ -1066,6 +1088,14 @@ def _llm_review_matches(matches: list, item_by_id: dict, task=None) -> int:
             llm_reason=result.get("reason"),
         )
         reviewed += 1
+
+    # Record which prompt version produced these verdicts. Stamped only when a
+    # verdict was actually written, so a no-op pass never overwrites the version
+    # the stored verdicts were judged under.
+    if reviewed and task is not None:
+        task_repo.update_task_fields(
+            task.task_id, llm_prompt_version=LLM_REVIEW_PROMPT.name,
+        )
     return reviewed
 
 
@@ -1288,6 +1318,7 @@ def run_infor_residue(task_id: str, state_machine: TaskStateMachine) -> dict:
     process_type = (task.process_type or "").upper()
     is_distributor = "DISTRIBUTOR" in process_type
     precheck_mode = task.precheck_mode or "default"
+    threshold_config = resolve_threshold_config(getattr(task, "threshold_config", None))
 
     org_eid = getattr(input_items[0], "organization_eid", None) or MHS_ORG_EID
     item_entries = _build_reduced_item_entries(input_items)
@@ -1339,6 +1370,7 @@ def run_infor_residue(task_id: str, state_machine: TaskStateMachine) -> dict:
                 cn_input=task.contract_number or "",
                 cn_match=row.get("ContractID", ""),
                 desc_score_override=pair.get("desc_score_override"),
+                threshold_config=threshold_config,
             )
 
             # matched_item_ref: mfg+UOM for manufacturer, vendor+UOM for distributor
@@ -1385,7 +1417,10 @@ def run_infor_residue(task_id: str, state_machine: TaskStateMachine) -> dict:
     ]
     state_machine.save_state(task_id, state)
 
-    return {"residue_matches": len(residue_matches)}
+    return {
+        "residue_matches": len(residue_matches),
+        "threshold_config": threshold_config,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1818,6 +1853,7 @@ def run_full_preprocess(
     task_id: str,
     state_machine: TaskStateMachine,
     enable_llm: bool = True,
+    threshold_config: str | None = None,
 ) -> dict:
     """Run the complete preprocess pipeline.
 
@@ -1830,6 +1866,9 @@ def run_full_preprocess(
     7. Buy UOM aggregation
 
     Returns aggregated results dict.
+
+    *threshold_config* overrides the HIGH/MED/LOW cut-offs for this run; omit it
+    to keep whatever the task last ran under.
 
     Gate-keeper: in ``explicit`` precheck mode we first reconcile dup state
     across all input rows. If any open ``DUPLICATE_ITEM_ERROR`` remains the
@@ -1848,7 +1887,11 @@ def run_full_preprocess(
             )
 
     results = {}
-    results["sku_matching"] = run_sku_matching(task_id, state_machine)
+    # Only SKU matching takes the override; it stamps the resolved key on the
+    # task, and every later step reads it back from there.
+    results["sku_matching"] = run_sku_matching(
+        task_id, state_machine, threshold_config=threshold_config,
+    )
     results["contract_check"] = run_contract_check(task_id, state_machine)
     # Keep the initial INFOR_CL candidate set independent from the LLM toggle.
     results["infor_cascade"] = run_infor_cascade(task_id, state_machine)

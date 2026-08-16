@@ -7,7 +7,12 @@ from urllib.parse import urljoin
 
 from flask import current_app
 
-from .llm_client import build_client, build_ssl_verify, client_settings_from_config
+from .llm_client import (
+    build_client,
+    build_ssl_verify,
+    chat_completion_model_kwargs,
+    client_settings_from_config,
+)
 
 
 def _describe_exception(exc: Exception) -> dict:
@@ -24,15 +29,15 @@ def _describe_exception(exc: Exception) -> dict:
 
 def test_openai_connection() -> dict:
     """Exercise the configured OpenAI client with a tiny chat completion."""
-    api_key = current_app.config.get("OPENAI_API_KEY", "")
-    model = current_app.config.get("OPENAI_MODEL", "gpt-4.1-mini")
-    base_url = current_app.config.get("OPENAI_BASE_URL", "")
-    azure_endpoint = current_app.config.get("AZURE_OPENAI_ENDPOINT", "")
-    disable_ssl_verify = bool(current_app.config.get("OPENAI_DISABLE_SSL_VERIFY", False))
-    timeout = current_app.config.get("OPENAI_TIMEOUT_SECONDS", 30.0)
+    settings = client_settings_from_config(current_app.config)
+    api_key = settings["api_key"]
+    model = settings["model"]
+    base_url = settings["base_url"]
+    azure_endpoint = settings["azure_endpoint"]
+    disable_ssl_verify = settings["disable_ssl_verify"]
+    timeout = settings["timeout"]
     endpoint_mode = "azure" if azure_endpoint else "openai"
     resolved_base_url = base_url or "https://api.openai.com/v1"
-    settings = client_settings_from_config(current_app.config)
 
     if not api_key:
         return {
@@ -104,7 +109,7 @@ def test_openai_connection() -> dict:
                 {"role": "user", "content": "Reply with OK."},
             ],
             max_completion_tokens=5,
-            temperature=0,
+            **chat_completion_model_kwargs(model, temperature=0),
         )
         elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
         content = response.choices[0].message.content if response.choices else ""

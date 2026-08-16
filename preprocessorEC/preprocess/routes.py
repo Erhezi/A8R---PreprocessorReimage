@@ -24,7 +24,7 @@ from sqlalchemy import inspect, text
 from . import preprocess_bp
 from ..db import task_repo, workstate_repo
 from ..db.engine import get_sqlserver_engine
-from ..services import preprocess_service
+from ..services import preprocess_service, scoring
 from ..state import TaskStateMachine
 
 
@@ -115,13 +115,36 @@ def _fetch_contract_lookup(conn, matched_source: str, organization_eid: str, con
     }
 
 
+def _requested_threshold_config(data: dict):
+    """Pull an optional threshold_config off a request body.
+
+    Returns ``(value, error_message)``. An unknown key is rejected rather than
+    silently falling back, so a typo in a scripted call cannot quietly rescore a
+    task under the default.
+    """
+    requested = data.get("threshold_config")
+    if requested is None:
+        return None, None
+    if str(requested).strip().upper() not in scoring.THRESHOLD_CONFIGS:
+        return None, f"threshold_config must be one of {sorted(scoring.THRESHOLD_CONFIGS)}"
+    return requested, None
+
+
 @preprocess_bp.route("/api/preprocess/<task_id>/run", methods=["POST"])
 @login_required
 def api_run_preprocess(task_id: str):
     data = request.get_json(silent=True) or {}
     enable_llm = data.get("enable_llm", True)
+    threshold_config, error = _requested_threshold_config(data)
+    if error:
+        return jsonify({"error": error}), 400
     try:
-        result = preprocess_service.run_full_preprocess(task_id, _sm(), enable_llm=bool(enable_llm))
+        result = preprocess_service.run_full_preprocess(
+            task_id,
+            _sm(),
+            enable_llm=bool(enable_llm),
+            threshold_config=threshold_config,
+        )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
     return jsonify(result)
@@ -143,8 +166,19 @@ def api_data_freshness(task_id: str):
 @preprocess_bp.route("/api/preprocess/<task_id>/sku-matching", methods=["POST"])
 @login_required
 def api_sku_matching(task_id: str):
-    """Run just CCX SKU matching + similarity scoring."""
-    result = preprocess_service.run_sku_matching(task_id, _sm())
+    """Run just CCX SKU matching + similarity scoring.
+
+    Accepts an optional ``threshold_config``: this step rebuilds every CCX match
+    from scratch, so it is where a new bucket configuration takes effect and gets
+    recorded on the task. Later steps read it back off the task row.
+    """
+    data = request.get_json(silent=True) or {}
+    threshold_config, error = _requested_threshold_config(data)
+    if error:
+        return jsonify({"error": error}), 400
+    result = preprocess_service.run_sku_matching(
+        task_id, _sm(), threshold_config=threshold_config,
+    )
     return jsonify(result)
 
 
@@ -660,7 +694,13 @@ def preprocess_page(task_id: str):
             preprocess_service._recompute_explicit_duplicates(task_id)
         except Exception:  # noqa: BLE001 — safety net, don't break page render
             pass
-    return render_template("preprocess.html", task_id=task_id, task=task.to_dict())
+    return render_template(
+        "preprocess.html",
+        task_id=task_id,
+        task=task.to_dict(),
+        threshold_configs=scoring.threshold_config_options(),
+        selected_threshold_config=scoring.resolve_threshold_config(task.threshold_config),
+    )
 
 
 # ---------------------------------------------------------------------------

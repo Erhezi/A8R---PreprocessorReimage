@@ -36,6 +36,7 @@ from jinja2.sandbox import SandboxedEnvironment
 
 from ..common.utils import ny_now
 from ..db import discovery_repo
+from .llm_client import chat_completion_model_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -330,8 +331,8 @@ def _chat(client, *, model, temperature, max_tokens, system_prompt, user_content
                 {"role": "user", "content": user_content},
             ],
             max_completion_tokens=max_tokens,
-            temperature=temperature,
             response_format={"type": "json_object"},
+            **chat_completion_model_kwargs(model, temperature=temperature),
         )
         return response.choices[0].message.content, None
     except Exception as exc:  # noqa: BLE001 — surfaced per row, not raised

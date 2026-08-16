@@ -62,6 +62,12 @@ class Task(Base):
     # Precheck duplicate mode
     precheck_mode = Column(String(20), nullable=True, default="default")  # default|strict|explicit|distributor
 
+    # What the last preprocess run applied, recorded so a stored similarity
+    # bucket or LLM verdict can be read back against the settings that produced
+    # it. Both are stamped by the run, not by the UI selection.
+    threshold_config = Column(String(10), nullable=True, default="B")  # A|B|C, see services.scoring
+    llm_prompt_version = Column(String(60), nullable=True)  # e.g. preprocess_review_v1
+
     # Phase / status tracking
     phase = Column(String(30), nullable=False, default="INTAKE")
     status = Column(String(50), nullable=False, default="DRAFT")
@@ -111,6 +117,8 @@ class Task(Base):
             "contract_manufacturer_name_infor": self.contract_manufacturer_name_infor,
             "contract_description": self.contract_description,
             "precheck_mode": self.precheck_mode,
+            "threshold_config": self.threshold_config,
+            "llm_prompt_version": self.llm_prompt_version,
             "phase": self.phase,
             "status": self.status,
             "parent_task_id": self.parent_task_id,

@@ -17,6 +17,19 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 
+def chat_completion_model_kwargs(model: str, *, temperature: float) -> dict:
+    """Return model-compatible Chat Completions tuning parameters.
+
+    GPT-5.6 only accepts its default sampling temperature.  Explicitly keep the
+    prior GPT-5.4 mini reasoning baseline instead of sending the unsupported
+    ``temperature=0`` value used by this application.
+    """
+    normalized_model = (model or "").strip().lower()
+    if normalized_model == "gpt-5.6" or normalized_model.startswith("gpt-5.6-"):
+        return {"reasoning_effort": "none"}
+    return {"temperature": temperature}
+
+
 def client_settings_from_config(config) -> dict:
     """Snapshot the LLM settings out of a Flask config into a plain dict."""
     return {
@@ -31,7 +44,7 @@ def client_settings_from_config(config) -> dict:
         "project": config.get("OPENAI_PROJECT", ""),
         "azure_endpoint": config.get("AZURE_OPENAI_ENDPOINT", ""),
         "azure_api_version": config.get("AZURE_OPENAI_API_VERSION", ""),
-        "model": config.get("OPENAI_MODEL", "gpt-4.1-mini"),
+        "model": config.get("OPENAI_MODEL", "gpt-5.6-luna"),
         "max_tokens": config.get("LLM_MAX_TOKENS", 1024),
         "temperature": config.get("LLM_TEMPERATURE", 0.0),
     }

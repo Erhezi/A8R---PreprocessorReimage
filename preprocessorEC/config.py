@@ -57,7 +57,7 @@ class Config:
 
     # ── LLM / OpenAI ───────────────────────────────────────────────
     OPENAI_API_KEY = _config_env("OPENAI_API_KEY", "")
-    OPENAI_MODEL = _config_env("OPENAI_MODEL", "gpt-5.4-mini")
+    OPENAI_MODEL = _config_env("OPENAI_MODEL", "gpt-5.6-luna")
     OPENAI_BASE_URL = _config_env("OPENAI_BASE_URL", "").strip().rstrip("/")
     OPENAI_TIMEOUT_SECONDS = float(_config_env("OPENAI_TIMEOUT_SECONDS", "30"))
     OPENAI_MAX_RETRIES = int(_config_env("OPENAI_MAX_RETRIES", "2"))

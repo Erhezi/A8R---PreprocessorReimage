@@ -126,10 +126,27 @@
         <div class="fw-semibold mb-1">Matched data may be out of date</div>
         <div class="small" id="stalenessDetail"></div>
       </div>
-      <div class="form-check form-switch mb-3">
-        <input class="form-check-input" type="checkbox" role="switch" id="toggleLlm" checked>
-        <label class="form-check-label" for="toggleLlm">Enable LLM review steps</label>
-        <div class="form-text">When off, both LLM review phases are skipped and no LLM API calls are made.</div>
+      <div class="row g-3 mb-3">
+        <div class="col-md-6">
+          <label class="form-label mb-1" for="thresholdConfig">Similarity thresholds</label>
+          <select class="form-select form-select-sm" id="thresholdConfig">
+            {% for cfg in threshold_configs %}
+            <option value="{{ cfg.key }}"
+                    data-description="{{ cfg.description }}"
+                    {% if cfg.key == selected_threshold_config %}selected{% endif %}>
+              {{ cfg.label }}
+            </option>
+            {% endfor %}
+          </select>
+          <div class="form-text" id="thresholdConfigHelp"></div>
+        </div>
+        <div class="col-md-6 d-flex align-items-end">
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" role="switch" id="toggleLlm" checked>
+            <label class="form-check-label" for="toggleLlm">Enable LLM review steps</label>
+            <div class="form-text">When off, both LLM review phases are skipped and no LLM API calls are made.</div>
+          </div>
+        </div>
       </div>
       <div id="progressArea">
         <p class="text-muted mb-2">Click "Run Full Preprocess" to start the pipeline.</p>
@@ -191,6 +208,14 @@
         <div>
           <div class="task-meta-label">Precheck Mode</div>
           <div class="task-meta-value">{{ task.precheck_mode or '—' }}</div>
+        </div>
+        <div>
+          <div class="task-meta-label">Thresholds Applied</div>
+          <div class="task-meta-value">{{ task.threshold_config or 'not yet run' }}</div>
+        </div>
+        <div>
+          <div class="task-meta-label">LLM Prompt Applied</div>
+          <div class="task-meta-value">{{ task.llm_prompt_version or 'not yet run' }}</div>
         </div>
         <div>
           <div class="task-meta-label">Type</div>
@@ -373,7 +398,11 @@ let selectedMatchIds = new Set();
 
 // ---- Step-by-step pipeline -----------
 const STEPS = [
-  { key: "sku-matching",    endpoint: `${PREFIX}/api/preprocess/${TASK_ID}/sku-matching` },
+  // Only SKU matching carries the threshold choice: it rebuilds every CCX match,
+  // so it is where a new configuration takes effect and gets recorded on the
+  // task. The later steps read it back from there.
+  { key: "sku-matching",    endpoint: `${PREFIX}/api/preprocess/${TASK_ID}/sku-matching`,
+    body: () => ({ threshold_config: document.getElementById("thresholdConfig").value }) },
   { key: "contract-check",  endpoint: `${PREFIX}/api/preprocess/${TASK_ID}/contract-check` },
   { key: "llm-review-ccx",  endpoint: `${PREFIX}/api/preprocess/${TASK_ID}/llm-review?source=CCX` },
   { key: "infor-cascade",   endpoint: `${PREFIX}/api/preprocess/${TASK_ID}/infor-cascade` },
@@ -471,7 +500,8 @@ function summariseResult(key, data) {
   if (data.error) return `Error: ${data.error}`;
   switch (key) {
     case "sku-matching":
-      return `${data.matched_count || 0} matches across ${data.contracts_found || 0} contracts`;
+      return `${data.matched_count || 0} matches across ${data.contracts_found || 0} contracts`
+        + (data.threshold_config ? ` (thresholds ${data.threshold_config})` : "");
     case "contract-check":
       return `${(data.contracts || []).length} contracts grouped`;
     case "llm-review-ccx":
@@ -503,11 +533,26 @@ async function readResponsePayload(resp) {
   }
 }
 
+/* Threshold configuration. The dropdown is a choice for the NEXT run — nothing
+   is saved until SKU matching applies it, so the "Thresholds Applied" field on
+   the task always describes the buckets currently stored, never a pending pick. */
+function renderThresholdHelp() {
+  const select = document.getElementById("thresholdConfig");
+  const option = select.options[select.selectedIndex];
+  document.getElementById("thresholdConfigHelp").textContent =
+    option ? (option.dataset.description || "") : "";
+}
+
+document.getElementById("thresholdConfig").addEventListener("change", renderThresholdHelp);
+renderThresholdHelp();
+
 document.getElementById("btnRun").addEventListener("click", async () => {
   const btn = document.getElementById("btnRun");
   const llmToggle = document.getElementById("toggleLlm");
+  const thresholdSelect = document.getElementById("thresholdConfig");
   btn.disabled = true; btn.textContent = "Running…";
   llmToggle.disabled = true;
+  thresholdSelect.disabled = true;
   document.getElementById("progressArea").classList.add("d-none");
   document.getElementById("stepsList").classList.remove("d-none");
   document.getElementById("runSummary").classList.add("d-none");
@@ -521,7 +566,12 @@ document.getElementById("btnRun").addEventListener("click", async () => {
     }
     setStepStatus(step.key, "running");
     try {
-      const resp = await fetch(step.endpoint, { method: "POST" });
+      const init = { method: "POST" };
+      if (step.body) {
+        init.headers = { "Content-Type": "application/json" };
+        init.body = JSON.stringify(step.body());
+      }
+      const resp = await fetch(step.endpoint, init);
       const data = await readResponsePayload(resp);
       if (resp.ok) {
         setStepStatus(step.key, "done", summariseResult(step.key, data));
@@ -547,6 +597,7 @@ document.getElementById("btnRun").addEventListener("click", async () => {
   }
   btn.disabled = false; btn.textContent = "Rerun Full Preprocess";
   llmToggle.disabled = false;
+  thresholdSelect.disabled = false;
 });
 
 let contractSummaryData = [];

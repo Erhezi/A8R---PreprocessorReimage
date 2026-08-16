@@ -29,7 +29,8 @@ Weight regimes per pair type:
         desc > 0.4: MFN 40%, Desc 30%, Price 15%, UOM 10%, QOE 5%
         desc ≤ 0.4: MFN 20%, Desc 50%, Price 15%, UOM 10%, QOE 5%
 
-Buckets:  HIGH ≥ 0.80,  MED ≥ 0.60,  LOW < 0.60
+Buckets are cut by a named threshold configuration (A / B / C) chosen per task —
+see THRESHOLD_CONFIGS below.
 """
 
 from __future__ import annotations
@@ -41,9 +42,83 @@ from typing import Optional
 from flask import current_app
 
 
-# ── Thresholds ──────────────────────────────────────────────────────────
-HIGH_THRESHOLD = 0.80
-MED_THRESHOLD = 0.60
+# ── Threshold configurations ────────────────────────────────────────────
+# Where HIGH/MED/LOW get cut is a property of the run, not of the code: the same
+# weighted scores split differently depending on how much MED volume the reviewer
+# wants to push through LLM review. Each task records the configuration it was
+# scored under (``Task.threshold_config``), so a stored bucket can always be read
+# back against the thresholds that produced it.
+#
+# HIGH auto-accepts. MED and LOW go to LLM review, then to a human. So raising
+# HIGH and lowering MED both widen the band that gets a second opinion.
+THRESHOLD_CONFIGS: dict[str, dict] = {
+    "A": {
+        "label": "A — Legacy (HIGH ≥ 0.80, MED ≥ 0.60)",
+        "high": 0.80,
+        "med": 0.60,
+        "description": (
+            "The original fixed thresholds. Widest HIGH band, so the most "
+            "auto-accepts and the least review volume."
+        ),
+    },
+    "B": {
+        "label": "B — Default (HIGH ≥ 0.90, MED ≥ 0.45)",
+        "high": 0.90,
+        "med": 0.45,
+        "description": (
+            "Auto-accepts only near-certain matches and pulls a wider tail into "
+            "MED for review."
+        ),
+    },
+    "C": {
+        "label": "C — Strict (HIGH ≥ 0.95, MED ≥ 0.40)",
+        "high": 0.95,
+        "med": 0.40,
+        "description": (
+            "Narrowest HIGH band with the widest review tail. Highest LLM cost "
+            "and the most rows a human ends up seeing."
+        ),
+    },
+}
+
+#: Applied when a task has no configuration recorded.
+DEFAULT_THRESHOLD_CONFIG = "B"
+
+
+def resolve_threshold_config(config: Optional[str] = None) -> str:
+    """Normalise a configuration key, falling back to the default.
+
+    Accepts ``None``, lower case, or an unknown key so a task row written before
+    this setting existed still scores rather than raising.
+    """
+    key = str(config or "").strip().upper()
+    return key if key in THRESHOLD_CONFIGS else DEFAULT_THRESHOLD_CONFIG
+
+
+def get_thresholds(config: Optional[str] = None) -> tuple[float, float]:
+    """Return ``(high, med)`` cut-offs for a configuration key."""
+    cfg = THRESHOLD_CONFIGS[resolve_threshold_config(config)]
+    return cfg["high"], cfg["med"]
+
+
+def threshold_config_options() -> list[dict]:
+    """Configurations as UI-ready dicts, in A / B / C order."""
+    return [
+        {
+            "key": key,
+            "label": cfg["label"],
+            "high": cfg["high"],
+            "med": cfg["med"],
+            "description": cfg["description"],
+            "is_default": key == DEFAULT_THRESHOLD_CONFIG,
+        }
+        for key, cfg in THRESHOLD_CONFIGS.items()
+    ]
+
+
+#: Thresholds of the default configuration. Prefer ``get_thresholds(config)`` —
+#: these are only correct for a task running under the default.
+HIGH_THRESHOLD, MED_THRESHOLD = get_thresholds(DEFAULT_THRESHOLD_CONFIG)
 
 
 # ── Model access ────────────────────────────────────────────────────────
@@ -480,10 +555,13 @@ def calculate_confidence_score(
     cn_input: str = "",
     cn_match: str = "",
     desc_score_override: Optional[float] = None,
+    threshold_config: Optional[str] = None,
 ) -> dict:
     """Calculate multi-factor weighted confidence score.
 
     Returns a dict with all sub-scores and the final weighted_score + bucket.
+    *threshold_config* only affects the bucket, never the score itself, so two
+    configurations over the same pair differ in routing and nothing else.
     """
     # --- Sub-factor computation ---
     mfn_score_raw, mfn_complexity = calculate_mfn_match_score(mfn_input, mfn_match)
@@ -597,9 +675,11 @@ def calculate_confidence_score(
             if uom_score == 0.0 and qoe_score == 0.0:
                 weighted = 0.0
 
-    bucket = bucket_score(weighted)
+    applied_config = resolve_threshold_config(threshold_config)
+    bucket = bucket_score(weighted, applied_config)
 
     return {
+        "threshold_config": applied_config,
         "mfn_score": round(float(mfn_score_raw), 4),
         "mfn_complexity": round(float(mfn_complexity), 4),
         "uom_score": round(float(uom_score), 4),
@@ -620,12 +700,17 @@ def calculate_confidence_score(
 # Bucket helper
 # =====================================================================
 
-def bucket_score(score: Optional[float]) -> str:
-    """Classify a score (0-1 scale) into HIGH / MED / LOW."""
+def bucket_score(score: Optional[float], threshold_config: Optional[str] = None) -> str:
+    """Classify a score (0-1 scale) into HIGH / MED / LOW.
+
+    *threshold_config* names the cut-offs to apply (see THRESHOLD_CONFIGS);
+    an unknown or missing key falls back to DEFAULT_THRESHOLD_CONFIG.
+    """
     if score is None:
         return "LOW"
-    if score >= HIGH_THRESHOLD:
+    high, med = get_thresholds(threshold_config)
+    if score >= high:
         return "HIGH"
-    if score >= MED_THRESHOLD:
+    if score >= med:
         return "MED"
     return "LOW"
