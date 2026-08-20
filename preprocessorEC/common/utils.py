@@ -9,6 +9,7 @@ from functools import wraps
 import re
 import unicodedata
 from datetime import datetime
+from typing import Optional
 from zoneinfo import ZoneInfo
 
 from flask import flash, redirect, url_for
@@ -122,6 +123,43 @@ def reduce_catalog_number(part_num: str) -> str:
     if reduced.isdigit():
         reduced = reduced.lstrip('0') or '0'
     return reduced
+
+
+def normalize_qoe(value) -> Optional[str]:
+    """Compare QOE by numeric value, so 5, "5", and "05" are one thing.
+
+    Returns None for a blank/missing value, which callers treat as unknown
+    rather than as a mismatch.
+    """
+    text = str(value if value is not None else "").strip()
+    if not text:
+        return None
+    try:
+        return str(int(float(text)))
+    except (TypeError, ValueError):
+        return text.upper()
+
+
+def same_uom_qoe(
+    input_uom, input_qoe, matched_uom, matched_qoe,
+) -> Optional[bool]:
+    """True when an input row and a matched line share sale unit AND pack size.
+
+    Both UOMs must be the Infor-mapped ones, not the raw values: the raw UOM can
+    be a vendor spelling of the same unit, and the Infor-mapped one is what these
+    rows are compared on downstream. Both halves must agree -- BX 5 vs PK 5 is
+    False on the unit, BX 5 vs EA 1 is False on both, PK 10 vs PK 10 is True.
+
+    Returns None when either side is missing a value, since that is unknown
+    rather than a mismatch. Callers render that as blank, never as "different".
+    """
+    left_uom = str(input_uom or "").strip().upper()
+    right_uom = str(matched_uom or "").strip().upper()
+    left_qoe = normalize_qoe(input_qoe)
+    right_qoe = normalize_qoe(matched_qoe)
+    if not left_uom or not right_uom or left_qoe is None or right_qoe is None:
+        return None
+    return left_uom == right_uom and left_qoe == right_qoe
 
 
 def role_required(*allowed_roles: str):

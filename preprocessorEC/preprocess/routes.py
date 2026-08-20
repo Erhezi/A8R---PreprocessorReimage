@@ -24,6 +24,7 @@ from sqlalchemy import inspect, text
 from . import preprocess_bp
 from ..db import task_repo, workstate_repo
 from ..db.engine import get_sqlserver_engine
+from ..common.utils import same_uom_qoe
 from ..services import preprocess_service, scoring
 from ..services import llm_review_prompts
 from ..state import TaskStateMachine
@@ -550,37 +551,23 @@ def api_contract_summary(task_id: str):
     return jsonify(_build_contract_summary_rows(task_id))
 
 
-def _norm_qoe(value) -> str | None:
-    """Compare QOE by numeric value, so 5, "5", and "05" are one thing."""
-    text = str(value if value is not None else "").strip()
-    if not text:
-        return None
-    try:
-        return str(int(float(text)))
-    except (TypeError, ValueError):
-        return text.upper()
-
-
 def _same_uom_qoe(input_item, match) -> str | None:
-    """Yes when the input row and the matched line share sale unit AND pack size.
+    """"Yes"/"No" for the Same UOM/QOE column, or None when either side is blank.
 
-    Both sides are read on the Infor-mapped UOM rather than the raw one, because
-    that is the unit these rows are compared on downstream — the raw UOM can be a
-    vendor spelling of the same unit. Both must agree: BX 5 vs PK 5 is No on the
-    unit, BX 5 vs EA 1 is No on both, PK 10 vs PK 10 is Yes.
-
-    Returns None when either side is missing a value, since that is unknown
-    rather than a mismatch.
+    Thin wrapper over the shared comparison so this table and the dedup export
+    can never disagree about what counts as the same sale unit.
     """
     if input_item is None:
         return None
-    input_uom = str(input_item.uom_to_match_infor or "").strip().upper()
-    match_uom = str(match.uom_to_match_infor_matched or "").strip().upper()
-    input_qoe = _norm_qoe(input_item.qoe)
-    match_qoe = _norm_qoe(match.qoe_matched)
-    if not input_uom or not match_uom or input_qoe is None or match_qoe is None:
+    result = same_uom_qoe(
+        input_item.uom_to_match_infor,
+        input_item.qoe,
+        match.uom_to_match_infor_matched,
+        match.qoe_matched,
+    )
+    if result is None:
         return None
-    return "Yes" if (input_uom == match_uom and input_qoe == match_qoe) else "No"
+    return "Yes" if result else "No"
 
 
 @preprocess_bp.route("/api/preprocess/<task_id>/matches", methods=["GET"])

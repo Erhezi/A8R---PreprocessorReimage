@@ -91,6 +91,12 @@
     background: #d9e1f2 !important;
   }
 
+  /* Derived column — belongs to neither the matched nor the input block, and
+     matches the light purple the workbook shades it. */
+  th.derived-col {
+    background: #e4dfec !important;
+  }
+
   .empty-msg {
     color: #6b7280;
     font-style: italic;
@@ -268,10 +274,16 @@
     });
   }
 
+  // Headers shaded off their block colour, mirroring SPECIAL_HEADER_FILLS in
+  // dedup_review_export.py so the preview and the workbook agree.
+  const DERIVED_HEADERS = new Set(["Different UOM/QOE"]);
+
   function buildSheet(sheet, leftHeaders, rightHeaders, leftClass, rightClass) {
+    const headerClass = (h, blockClass) =>
+      DERIVED_HEADERS.has(h) ? "derived-col" : blockClass;
     const headerCells = leftHeaders
-      .map((h) => `<th class="${leftClass}">${escapeHtml(h)}</th>`)
-      .concat(rightHeaders.map((h) => `<th class="${rightClass}">${escapeHtml(h)}</th>`))
+      .map((h) => `<th class="${headerClass(h, leftClass)}">${escapeHtml(h)}</th>`)
+      .concat(rightHeaders.map((h) => `<th class="${headerClass(h, rightClass)}">${escapeHtml(h)}</th>`))
       .join("");
 
     const allHeaders = leftHeaders.concat(rightHeaders);

@@ -27,7 +27,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-from ..common.utils import ny_now
+from ..common.utils import ny_now, same_uom_qoe
 from ..db import task_repo
 from ..db.engine import get_sqlserver_engine
 from ..db.sql_loader import load_query
@@ -48,6 +48,7 @@ MATCHED_HEADERS = [
     "Organization",
     "Action",
     "Notes",
+    "Different UOM/QOE",
 ]
 INPUT_HEADERS = [
     "Mfg Part Num (Input)",
@@ -84,6 +85,7 @@ VIEW_BY_INPUT_INPUT_HEADERS = [
     "Input Ref",
     "Dup Matched (Y/N)",
     "Total Matched Lines",
+    "Different UOM/QOE",
 ]
 VIEW_BY_INPUT_MATCHED_HEADERS = [
     "Mfg Part Number",
@@ -107,7 +109,15 @@ DATE_COLUMNS = {"Effective Date", "Expiration Date"}
 YELLOW_FILL = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
 LIGHT_BLUE_FILL = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
 INVALID_BUY_UOM_FILL = PatternFill(start_color="FCE4D6", end_color="FCE4D6", fill_type="solid")
+PURPLE_FILL = PatternFill(start_color="E4DFEC", end_color="E4DFEC", fill_type="solid")
 HEADER_FONT = Font(bold=True)
+
+UOM_QOE_HEADER = "Different UOM/QOE"
+
+# Headers shaded off their block colour. This column is derived rather than
+# copied from either side, so it reads as neither the matched (yellow) nor the
+# input (blue) block it happens to sit next to.
+SPECIAL_HEADER_FILLS = {UOM_QOE_HEADER: PURPLE_FILL}
 HYPERLINK_FONT = Font(color="0563C1", underline="single")
 
 
@@ -192,10 +202,37 @@ def _normalize_sheet_name(name: str) -> str:
     return cleaned[:31] or "contract"
 
 
+def _uom_qoe_label(input_uom, input_qoe, matched_uom, matched_qoe) -> str:
+    """Cell text for the Different UOM/QOE column.
+
+    Blank when either side has no value: that is unknown, and labelling it
+    "Different" would invent a discrepancy the data does not show.
+    """
+    same = same_uom_qoe(input_uom, input_qoe, matched_uom, matched_qoe)
+    if same is None:
+        return ""
+    return "Same UOM/QOE" if same else UOM_QOE_HEADER
+
+
+def _fills_for(headers: list[str], base: list[PatternFill]) -> list[PatternFill]:
+    """Block fills with the specially-shaded headers overridden in place."""
+    fills = list(base)
+    for idx, header in enumerate(headers):
+        if header in SPECIAL_HEADER_FILLS:
+            fills[idx] = SPECIAL_HEADER_FILLS[header]
+    return fills
+
+
 def _matched_row_dict(row) -> dict:
     group = row.get("resolution_grouping")
     intention = row.get("task_intention")
     action = dedup_review_rules.action_for(group, intention)
+    same_units = same_uom_qoe(
+        row.get("uom_to_match_infor_input"),
+        row.get("qoe_input"),
+        row.get("uom_to_match_infor_matched"),
+        row.get("qoe_matched"),
+    )
     notes = dedup_review_rules.notes_for(
         group,
         intention,
@@ -206,6 +243,7 @@ def _matched_row_dict(row) -> dict:
         input_source_type=row.get("input_contract_source_type"),
         ea_matched=row.get("ea_price_matched"),
         ea_input=row.get("ea_price_input"),
+        same_uom_qoe=same_units,
     )
     return {
         "Mfg Part Number": _safe_str(row["manufacturer_number_matched"]),
@@ -222,6 +260,10 @@ def _matched_row_dict(row) -> dict:
         "Organization": _safe_str(row["organization_matched"]),
         "Action": action,
         "Notes": notes,
+        UOM_QOE_HEADER: (
+            "" if same_units is None
+            else ("Same UOM/QOE" if same_units else UOM_QOE_HEADER)
+        ),
         "Mfg Part Num (Input)": _safe_str(row["manufacturer_number_input"]),
         "Vendor Part Num (Input)": _safe_str(row["vendor_item_input"]),
         "Description (Input)": _safe_str(row["item_description_input"]),
@@ -420,6 +462,8 @@ def _replacement_unmatched_row_dict(row) -> dict:
         "Organization": _safe_str(row.get("organization_matched")),
         "Action": f"Only seen on to-be replaced contract {matched_contract_id}",
         "Notes": REPLACEMENT_UNMATCHED_NOTES,
+        # No input line on these rows, so there is nothing to compare against.
+        UOM_QOE_HEADER: "",
         "Mfg Part Num (Input)": "",
         "Vendor Part Num (Input)": "",
         "Description (Input)": "",
@@ -464,6 +508,12 @@ def _view_by_input_row_dict(row) -> dict:
         "Input Ref": _safe_number(row["file_row"]),
         "Dup Matched (Y/N)": "Yes" if has_match else "No",
         "Total Matched Lines": total,
+        UOM_QOE_HEADER: _uom_qoe_label(
+            row.get("uom_to_match_infor_input"),
+            row.get("qoe_input"),
+            row.get("uom_to_match_infor_matched"),
+            row.get("qoe_matched"),
+        ) if has_match else "",
         "Mfg Part Number": _safe_str(row["manufacturer_number_matched"]) if has_match else "",
         "Vendor Part Number": _safe_str(row["vendor_item_matched"]) if has_match else "",
         "Buyer Part Num": "",
@@ -726,9 +776,10 @@ def build_excel(task_id: str) -> tuple[str, io.BytesIO]:
     vbi_input_headers = view_by_input.get("input_headers", VIEW_BY_INPUT_INPUT_HEADERS)
     vbi_matched_headers = view_by_input.get("matched_headers", VIEW_BY_INPUT_MATCHED_HEADERS)
     vbi_headers = view_by_input.get("headers", VIEW_BY_INPUT_HEADERS)
-    vbi_fills = (
+    vbi_fills = _fills_for(
+        vbi_headers,
         [LIGHT_BLUE_FILL] * len(vbi_input_headers)
-        + [YELLOW_FILL] * len(vbi_matched_headers)
+        + [YELLOW_FILL] * len(vbi_matched_headers),
     )
     vbi_ws = workbook.create_sheet(
         title=view_by_input.get("sheet_name", VIEW_BY_INPUT_SHEET_NAME)
@@ -743,7 +794,10 @@ def build_excel(task_id: str) -> tuple[str, io.BytesIO]:
     _autofit(vbi_ws, vbi_headers, vbi_rows)
     vbi_ws.freeze_panes = "A2"
 
-    fills = [YELLOW_FILL] * len(MATCHED_HEADERS) + [LIGHT_BLUE_FILL] * len(INPUT_HEADERS)
+    fills = _fills_for(
+        ALL_HEADERS,
+        [YELLOW_FILL] * len(MATCHED_HEADERS) + [LIGHT_BLUE_FILL] * len(INPUT_HEADERS),
+    )
 
     for sheet in data["sheets"]:
         ws = workbook.create_sheet(title=sheet["sheet_name"])

@@ -99,6 +99,24 @@ def action_for(group: Optional[str], intention: Optional[str]) -> str:
 # Notes
 # ---------------------------------------------------------------------------
 
+# Price claims are hedged when the two lines are not on the same sale unit. The
+# comparison runs on EA price, which divides by a QOE that is only trustworthy
+# when both sides agree on the unit -- so across different UOM/QOE the ranking
+# may be an artefact of the conversion rather than a real price difference.
+# Applied to the finished note so every phrasing, present and future, is covered.
+_HEDGES = (
+    ("have the same price", "seem to have the same unit price"),
+    ("has better price", "may have better unit price"),
+)
+
+
+def _hedge_price_claims(note: str) -> str:
+    """Soften a note's price comparison for a different-UOM/QOE pair."""
+    for direct, hedged in _HEDGES:
+        note = note.replace(direct, hedged)
+    return note
+
+
 def notes_for(
     group: Optional[str],
     intention: Optional[str],
@@ -110,8 +128,14 @@ def notes_for(
     input_source_type: Optional[str] = None,
     ea_matched: Optional[float] = None,
     ea_input: Optional[float] = None,
+    same_uom_qoe: Optional[bool] = None,
 ) -> str:
-    """Return the Notes cell value for a dedup pair."""
+    """Return the Notes cell value for a dedup pair.
+
+    *same_uom_qoe* False hedges the price wording; None (unknown) leaves it
+    alone, since an unknown sale unit is not evidence that the comparison is
+    unsound.
+    """
     g = _norm(group)
     intent = _intent(intention)
 
@@ -127,12 +151,15 @@ def notes_for(
     cid = (matched_contract_id or "").strip()
 
     if g == "ODO":
-        return _odo_notes(matched_org, input_org)
-    if g == "TCCD":
-        return _tccd_notes(pr, mt_p, in_p, cid)
-    if g == "CECCD":
-        return _ceccd_notes(pr, matched_org, input_org, mt_p, in_p, cid)
-    return ""
+        note = _odo_notes(matched_org, input_org)
+    elif g == "TCCD":
+        note = _tccd_notes(pr, mt_p, in_p, cid)
+    elif g == "CECCD":
+        note = _ceccd_notes(pr, matched_org, input_org, mt_p, in_p, cid)
+    else:
+        return ""
+
+    return _hedge_price_claims(note) if same_uom_qoe is False else note
 
 
 def _odo_notes(matched_org: str, input_org: str) -> str:

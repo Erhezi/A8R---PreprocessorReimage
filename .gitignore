@@ -18,7 +18,6 @@ ENV/
 
 # Environment / secrets
 .env
-.env.*
 *.env
 
 # IDE / editor
