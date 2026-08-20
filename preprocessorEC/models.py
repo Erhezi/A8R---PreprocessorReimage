@@ -67,6 +67,7 @@ class Task(Base):
     # it. Both are stamped by the run, not by the UI selection.
     threshold_config = Column(String(10), nullable=True, default="B")  # A|B|C, see services.scoring
     llm_prompt_version = Column(String(60), nullable=True)  # e.g. preprocess_review_v1
+    llm_review_mode = Column(String(10), nullable=True, default="GROUP")  # PAIR|GROUP
 
     # Phase / status tracking
     phase = Column(String(30), nullable=False, default="INTAKE")
@@ -119,6 +120,7 @@ class Task(Base):
             "precheck_mode": self.precheck_mode,
             "threshold_config": self.threshold_config,
             "llm_prompt_version": self.llm_prompt_version,
+            "llm_review_mode": self.llm_review_mode,
             "phase": self.phase,
             "status": self.status,
             "parent_task_id": self.parent_task_id,

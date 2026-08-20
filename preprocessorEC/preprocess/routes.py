@@ -25,6 +25,7 @@ from . import preprocess_bp
 from ..db import task_repo, workstate_repo
 from ..db.engine import get_sqlserver_engine
 from ..services import preprocess_service, scoring
+from ..services import llm_review_prompts
 from ..state import TaskStateMachine
 
 
@@ -130,6 +131,50 @@ def _requested_threshold_config(data: dict):
     return requested, None
 
 
+def _requested_prompt_version(data: dict):
+    """Pull an optional prompt_version off a request body.
+
+    Returns the value, or None to keep whatever the task last ran under. Raises
+    KeyError naming the valid options when the value is not a known prompt.
+    """
+    requested = data.get("prompt_version")
+    if requested is None or not str(requested).strip():
+        return None
+    llm_review_prompts.resolve(requested)  # raises KeyError if unknown
+    return requested
+
+
+def _requested_review_mode(data: dict):
+    """Pull an optional review_mode off a request body.
+
+    Returns ``(value, error_message)``. An unknown mode is rejected rather than
+    silently falling back, so a typo cannot quietly rejudge a task per pair when
+    the caller asked for per input group.
+    """
+    requested = data.get("review_mode")
+    if requested is None or not str(requested).strip():
+        return None, None
+    if str(requested).strip().upper() not in llm_review_prompts.MODES:
+        return None, f"review_mode must be one of {list(llm_review_prompts.MODES)}"
+    return requested, None
+
+
+def _selected_prompt_name(stored: str | None) -> str:
+    """Which prompt the picker should pre-select for a task.
+
+    Falls back to the default when the task has never been reviewed, or when it
+    was stamped with a version that has since been retired out of the picker —
+    the dropdown can only offer what it lists.
+    """
+    try:
+        prompt = llm_review_prompts.resolve(stored)
+    except KeyError:
+        return llm_review_prompts.DEFAULT_PROMPT_NAME
+    if prompt.name not in llm_review_prompts.names():
+        return llm_review_prompts.DEFAULT_PROMPT_NAME
+    return prompt.name
+
+
 @preprocess_bp.route("/api/preprocess/<task_id>/run", methods=["POST"])
 @login_required
 def api_run_preprocess(task_id: str):
@@ -139,11 +184,20 @@ def api_run_preprocess(task_id: str):
     if error:
         return jsonify({"error": error}), 400
     try:
+        prompt_version = _requested_prompt_version(data)
+    except KeyError as exc:
+        return jsonify({"error": str(exc.args[0])}), 400
+    review_mode, error = _requested_review_mode(data)
+    if error:
+        return jsonify({"error": error}), 400
+    try:
         result = preprocess_service.run_full_preprocess(
             task_id,
             _sm(),
             enable_llm=bool(enable_llm),
             threshold_config=threshold_config,
+            prompt_version=prompt_version,
+            review_mode=review_mode,
         )
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
@@ -318,13 +372,49 @@ def api_buy_uom(task_id: str):
 @preprocess_bp.route("/api/preprocess/<task_id>/llm-review", methods=["POST"])
 @login_required
 def api_llm_review(task_id: str):
-    """Run LLM review for pending MED/LOW matches."""
+    """Run LLM review for pending MED/LOW matches.
+
+    Accepts an optional ``prompt_version`` and ``review_mode``.
+    """
+    data = request.get_json(silent=True) or {}
+    try:
+        prompt_version = _requested_prompt_version(data)
+    except KeyError as exc:
+        return jsonify({"error": str(exc.args[0])}), 400
+    review_mode, error = _requested_review_mode(data)
+    if error:
+        return jsonify({"error": error}), 400
+
     source = request.args.get("source", "CCX")
     if source == "CCX":
-        result = preprocess_service.run_llm_review(task_id, _sm())
+        result = preprocess_service.run_llm_review(
+            task_id, _sm(), prompt_version=prompt_version, review_mode=review_mode,
+        )
     else:
-        result = preprocess_service.run_infor_residue_llm_review(task_id, _sm())
+        result = preprocess_service.run_infor_residue_llm_review(
+            task_id, _sm(), prompt_version=prompt_version, review_mode=review_mode,
+        )
     return jsonify(result)
+
+
+@preprocess_bp.route("/api/preprocess/llm-review-prompts/<name>", methods=["GET"])
+@login_required
+def api_llm_review_prompt(name: str):
+    """Full text of one review prompt, for the prompt-viewer modal.
+
+    Retired versions load too, so a task stamped with an old version can still
+    show the text its stored verdicts were judged under.
+    """
+    try:
+        prompt = llm_review_prompts.load(name)
+    except KeyError as exc:
+        return jsonify({"error": str(exc.args[0])}), 404
+    # Render for the mode the caller is looking at, so the modal shows the text
+    # that would actually be sent rather than the Jinja source with both branches.
+    mode = request.args.get("mode") or prompt.default_mode
+    if not prompt.supports(mode):
+        mode = prompt.default_mode
+    return jsonify(prompt.to_dict(mode))
 
 
 @preprocess_bp.route("/api/preprocess/<task_id>/llm-review-pending", methods=["POST"])
@@ -334,7 +424,17 @@ def api_llm_review_pending(task_id: str):
 
     Used after manual review to auto-decide leftover PENDING rows in one batch.
     """
-    result = preprocess_service.run_llm_review_pending_all(task_id, _sm())
+    data = request.get_json(silent=True) or {}
+    try:
+        prompt_version = _requested_prompt_version(data)
+    except KeyError as exc:
+        return jsonify({"error": str(exc.args[0])}), 400
+    review_mode, error = _requested_review_mode(data)
+    if error:
+        return jsonify({"error": error}), 400
+    result = preprocess_service.run_llm_review_pending_all(
+        task_id, _sm(), prompt_version=prompt_version, review_mode=review_mode,
+    )
     return jsonify(result)
 
 
@@ -450,6 +550,39 @@ def api_contract_summary(task_id: str):
     return jsonify(_build_contract_summary_rows(task_id))
 
 
+def _norm_qoe(value) -> str | None:
+    """Compare QOE by numeric value, so 5, "5", and "05" are one thing."""
+    text = str(value if value is not None else "").strip()
+    if not text:
+        return None
+    try:
+        return str(int(float(text)))
+    except (TypeError, ValueError):
+        return text.upper()
+
+
+def _same_uom_qoe(input_item, match) -> str | None:
+    """Yes when the input row and the matched line share sale unit AND pack size.
+
+    Both sides are read on the Infor-mapped UOM rather than the raw one, because
+    that is the unit these rows are compared on downstream — the raw UOM can be a
+    vendor spelling of the same unit. Both must agree: BX 5 vs PK 5 is No on the
+    unit, BX 5 vs EA 1 is No on both, PK 10 vs PK 10 is Yes.
+
+    Returns None when either side is missing a value, since that is unknown
+    rather than a mismatch.
+    """
+    if input_item is None:
+        return None
+    input_uom = str(input_item.uom_to_match_infor or "").strip().upper()
+    match_uom = str(match.uom_to_match_infor_matched or "").strip().upper()
+    input_qoe = _norm_qoe(input_item.qoe)
+    match_qoe = _norm_qoe(match.qoe_matched)
+    if not input_uom or not match_uom or input_qoe is None or match_qoe is None:
+        return None
+    return "Yes" if (input_uom == match_uom and input_qoe == match_qoe) else "No"
+
+
 @preprocess_bp.route("/api/preprocess/<task_id>/matches", methods=["GET"])
 @login_required
 def api_get_matches(task_id: str):
@@ -506,8 +639,10 @@ def api_get_matches(task_id: str):
             md["input_vendor_catalog_num"] = inp.vendor_catalog_num
             md["input_description"] = inp.description
             md["input_uom"] = inp.uom
+            md["input_uom_to_match_infor"] = inp.uom_to_match_infor
             md["input_qoe"] = inp.qoe
             md["input_unit_price"] = float(inp.unit_price) if inp.unit_price is not None else None
+        md["same_uom_qoe"] = _same_uom_qoe(inp, m)
         results.append(md)
 
     return jsonify(results)
@@ -700,6 +835,10 @@ def preprocess_page(task_id: str):
         task=task.to_dict(),
         threshold_configs=scoring.threshold_config_options(),
         selected_threshold_config=scoring.resolve_threshold_config(task.threshold_config),
+        prompt_versions=llm_review_prompts.options(),
+        selected_prompt_version=_selected_prompt_name(task.llm_prompt_version),
+        review_modes=llm_review_prompts.mode_options(),
+        selected_review_mode=llm_review_prompts.resolve_mode(task.llm_review_mode),
     )
 
 

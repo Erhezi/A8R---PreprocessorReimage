@@ -1,11 +1,11 @@
 ---
 key: preprocess_review
-label: Preprocess Review v1
+label: Preprocess Review v1 — packaging aware
 version: 1
 status: active
-mode: PAIR
+modes: PAIR, GROUP
+default_mode: GROUP
 response_format: json_object
-output_schema: {"decision": "ACCEPT" | "REJECT" | "PENDING", "confidence": 0-100, "reason": "<one sentence>"}
 best_for: Product identity and packaging judged together — same product, different packaging is a different item.
 ---
 
@@ -35,6 +35,10 @@ Good fit:
 
 Poor fit:
 
+- Runs where packaging is checked by a separate step and the LLM should judge
+  product identity alone. Use [[preprocess-review-v2]] (`preprocess_review_v2`)
+  there — this prompt would reject packaging variants that step is equipped to
+  handle.
 - Catalog or product discovery, where every packaging variant of one product
   should roll up under a single product identity. Use a prompt that separates
   product identity from sale unit instead — see the grouped discovery prompts
@@ -49,8 +53,18 @@ Poor fit:
 ```text
 You are an expert hospital supply-chain analyst reviewing potential duplicate
 items between a hospital's input item list and existing contract lines.
+{% if mode == 'GROUP' %}
+You are given ONE INPUT item and a numbered list of CANDIDATE contract lines.
+Judge every candidate against the input item separately and on its own merits.
+Candidates do not compete: several can all be ACCEPT, and finding a strong one
+does not make a weaker one REJECT. Never let one candidate change the verdict you
+would give another.
+
+For each candidate you will receive:
+{% else %}
 
 For each pair you will receive:
+{% endif %}
 - Pair type: A, B, C, or D. This is upstream scoring context. Do not use a
   different rulebook for different pair types, but remember that C/D pairs more
   often contain vendor catalog, UOM, or QOE data-entry errors.
@@ -226,33 +240,70 @@ General guardrails:
   for human second-pass correction.
 - Keep the reason to one sentence and name the decisive evidence.
 
+{% if mode == 'GROUP' %}
+Respond with a JSON object and nothing else. Return an entry for EVERY candidate,
+numbered with the same number the candidate was given, in the same order, and no
+extras:
+{"results": [
+   {"candidate": 1, "decision": "ACCEPT" | "REJECT" | "PENDING",
+    "confidence": 0-100, "reason": "<one sentence>"}
+]}
+{% else %}
 Respond with a JSON object:
 {"decision": "ACCEPT" | "REJECT" | "PENDING", "confidence": 0-100, "reason": "<one sentence>"}
+{% endif %}
 ```
 
 ## User Template
 
 ```text
-Pair Type: {pair_type}
+{% if mode == 'GROUP' %}
+INPUT item:
+  Vendor: {{ input_vendor }}
+  Description: {{ input_desc }}
+  Mfg Catalog #: {{ input_mfg }}
+  Vendor Catalog #: {{ input_vpn }}
+  UOM: {{ input_uom }}
+  QOE: {{ input_qoe }}
+  Contract Price: {{ input_price }}
+
+CANDIDATE contract lines ({{ candidate_count }}):
+{% for c in candidates %}
+[{{ c.index }}] source: {{ c.match_source }}, pair type: {{ c.pair_type }}
+  Vendor: {{ c.match_vendor }}
+  Description: {{ c.match_desc }}
+  Mfg Catalog #: {{ c.match_mfg }}
+  Vendor Catalog #: {{ c.match_vpn }}
+  UOM: {{ c.match_uom }}
+  QOE: {{ c.match_qoe }}
+  Contract Price: {{ c.match_price }}
+{% endfor %}
+
+For each of the {{ candidate_count }} candidate(s): is it a compatible
+same-product and same-effective-packaging match for ACCEPT, or a
+product/packaging mismatch for REJECT?
+{% else %}
+Pair Type: {{ pair_type }}
 
 INPUT item:
-  Vendor: {input_vendor}
-  Description: {input_desc}
-  Mfg Catalog #: {input_mfg}
-  Vendor Catalog #: {input_vpn}
-  UOM: {input_uom}
-  QOE: {input_qoe}
-  Contract Price: {input_price}
+  Vendor: {{ input_vendor }}
+  Description: {{ input_desc }}
+  Mfg Catalog #: {{ input_mfg }}
+  Vendor Catalog #: {{ input_vpn }}
+  UOM: {{ input_uom }}
+  QOE: {{ input_qoe }}
+  Contract Price: {{ input_price }}
 
-MATCH item (source: {match_source}):
-  Vendor: {match_vendor}
-  Description: {match_desc}
-  Mfg Catalog #: {match_mfg}
-  Vendor Catalog #: {match_vpn}
-  UOM: {match_uom}
-  QOE: {match_qoe}
-  Contract Price: {match_price}
+MATCH item (source: {{ match_source }}):
+  Vendor: {{ match_vendor }}
+  Description: {{ match_desc }}
+  Mfg Catalog #: {{ match_mfg }}
+  Vendor Catalog #: {{ match_vpn }}
+  UOM: {{ match_uom }}
+  QOE: {{ match_qoe }}
+  Contract Price: {{ match_price }}
 
 Is this a compatible same-product and same-effective-packaging match for ACCEPT,
 or a product/packaging mismatch for REJECT?
+{% endif %}
 ```

@@ -32,7 +32,8 @@ from .scoring import (
     bucket_score,
     resolve_threshold_config,
 )
-from .llm_review import PROMPT as LLM_REVIEW_PROMPT, review_match_pair
+from .llm_review import resolve_prompt as resolve_review_prompt, review_matches
+from .llm_review_prompts import resolve_mode as resolve_review_mode
 
 logger = logging.getLogger(__name__)
 
@@ -1010,12 +1011,67 @@ def _lookup_vendor_names(erp_vendor_ids: list[str]) -> dict[str, str]:
     return name_by_id
 
 
-def _llm_review_matches(matches: list, item_by_id: dict, task=None) -> int:
-    """Run review_match_pair against each match and persist the verdict.
+def _llm_input_dict(item, input_vendor: str) -> dict:
+    return {
+        "vendor": input_vendor,
+        "description": item.description or "",
+        "mfg_catalog_num": item.mfg_catalog_num or "",
+        "vendor_catalog_num": item.vendor_catalog_num or "",
+        "uom": item.uom or "",
+        "qoe": item.qoe,
+        "contract_price": float(item.unit_price) if item.unit_price is not None else None,
+    }
+
+
+def _llm_match_dict(match, match_vendor: str) -> dict:
+    return {
+        "matched_source": match.matched_source,
+        "vendor": match_vendor,
+        "description": match.item_desc_matched or "",
+        "mfg_catalog_num": match.manufacturer_number_matched or "",
+        "vendor_catalog_num": match.vendor_item_matched or "",
+        "uom": match.uom_matched or "",
+        "qoe": match.qoe_matched,
+        "contract_price": float(match.contract_price_matched) if match.contract_price_matched is not None else None,
+        "similarity_score": match.similarity_score,
+        "pair_type": match.pair_type or "",
+    }
+
+
+def _apply_llm_verdict(match, result: dict) -> None:
+    """Persist one LLM verdict against a match row."""
+    decision = result["decision"]
+    if decision == "ACCEPT":
+        new_status = "ACCEPTED"
+    elif decision == "REJECT":
+        new_status = "REJECTED"
+    else:
+        # PENDING (or unknown) — leave for human review.
+        new_status = "LLM_REVIEW"
+    task_repo.update_match_decision(
+        match.match_id,
+        new_status,
+        "LLM",
+        llm_confidence=result.get("confidence"),
+        llm_reason=result.get("reason"),
+    )
+
+
+def _llm_review_matches(
+    matches: list, item_by_id: dict, task=None, prompt=None, mode=None,
+) -> int:
+    """Review each match with the LLM and persist the verdict.
+
+    *prompt* selects the prompt version, *mode* the input mode: GROUP judges one
+    input row against all of its matches in a single call, PAIR judges one match
+    per call. Either way the verdicts land on the same rows, so the caller sees no
+    difference beyond the call count.
 
     Returns the number of matches actually reviewed (skips orphans whose input
     item is no longer present).
     """
+    prompt = prompt or resolve_review_prompt()
+    mode = resolve_review_mode(mode)
     task_vendor_name = (task.erp_vendor_name or "").strip() if task else ""
     task_vendor_id = (task.vendor_id or "").strip() if task else ""
 
@@ -1035,71 +1091,73 @@ def _llm_review_matches(matches: list, item_by_id: dict, task=None) -> int:
         or task_vendor_id
     )
 
+    def vendor_for(match) -> str:
+        erp_id = (match.erp_vendor_id_matched or "").strip()
+        name = vendor_name_by_id.get(erp_id, "")
+        if name:
+            return name
+        return f"ERPVendorID {erp_id}" if erp_id else ""
+
+    # Orphans (input row deleted since matching) are dropped up front so both
+    # modes agree on what counts as reviewed.
+    live = [(m, item_by_id[m.input_item_id]) for m in matches if m.input_item_id in item_by_id]
+
+    # Grouped by input row for both modes; the mode decides whether a row's
+    # matches cost one call or one each.
+    by_input: dict[int, list] = {}
+    for match, _item in live:
+        by_input.setdefault(match.input_item_id, []).append(match)
+
     reviewed = 0
-    for match in matches:
-        item = item_by_id.get(match.input_item_id)
-        if not item:
-            continue
-
-        match_erp_id = (match.erp_vendor_id_matched or "").strip()
-        match_vendor_name = vendor_name_by_id.get(match_erp_id, "")
-        if match_vendor_name:
-            match_vendor = match_vendor_name
-        elif match_erp_id:
-            match_vendor = f"ERPVendorID {match_erp_id}"
-        else:
-            match_vendor = ""
-
-        input_dict = {
-            "vendor": input_vendor,
-            "description": item.description or "",
-            "mfg_catalog_num": item.mfg_catalog_num or "",
-            "vendor_catalog_num": item.vendor_catalog_num or "",
-            "uom": item.uom or "",
-            "qoe": item.qoe,
-            "contract_price": float(item.unit_price) if item.unit_price is not None else None,
-        }
-        match_dict = {
-            "matched_source": match.matched_source,
-            "vendor": match_vendor,
-            "description": match.item_desc_matched or "",
-            "mfg_catalog_num": match.manufacturer_number_matched or "",
-            "vendor_catalog_num": match.vendor_item_matched or "",
-            "uom": match.uom_matched or "",
-            "qoe": match.qoe_matched,
-            "contract_price": float(match.contract_price_matched) if match.contract_price_matched is not None else None,
-            "similarity_score": match.similarity_score,
-            "pair_type": match.pair_type or "",
-        }
-        result = review_match_pair(input_dict, match_dict)
-        decision = result["decision"]
-        if decision == "ACCEPT":
-            new_status = "ACCEPTED"
-        elif decision == "REJECT":
-            new_status = "REJECTED"
-        else:
-            # PENDING (or unknown) — leave for human review.
-            new_status = "LLM_REVIEW"
-        task_repo.update_match_decision(
-            match.match_id,
-            new_status,
-            "LLM",
-            llm_confidence=result.get("confidence"),
-            llm_reason=result.get("reason"),
+    for input_item_id, group in by_input.items():
+        item = item_by_id[input_item_id]
+        results = review_matches(
+            _llm_input_dict(item, input_vendor),
+            [_llm_match_dict(m, vendor_for(m)) for m in group],
+            prompt,
+            mode,
         )
-        reviewed += 1
+        for match, result in zip(group, results):
+            _apply_llm_verdict(match, result)
+            reviewed += 1
 
-    # Record which prompt version produced these verdicts. Stamped only when a
-    # verdict was actually written, so a no-op pass never overwrites the version
-    # the stored verdicts were judged under.
+    # Record what produced these verdicts. Stamped only when a verdict was
+    # actually written, so a no-op pass never overwrites the settings the stored
+    # verdicts were judged under.
     if reviewed and task is not None:
         task_repo.update_task_fields(
-            task.task_id, llm_prompt_version=LLM_REVIEW_PROMPT.name,
+            task.task_id, llm_prompt_version=prompt.name, llm_review_mode=mode,
         )
     return reviewed
 
 
-def run_llm_review(task_id: str, state_machine: TaskStateMachine) -> dict:
+def _review_settings(task, prompt_version: str | None, review_mode: str | None):
+    """Resolve ``(prompt, mode)`` for a review pass.
+
+    An explicit selection wins; otherwise the task keeps whatever it last ran
+    under, and a task that has never been reviewed gets the defaults. A mode the
+    chosen prompt was not written for falls back to that prompt's own default
+    rather than rendering a template branch it does not have.
+    """
+    prompt = resolve_review_prompt(
+        prompt_version if prompt_version is not None
+        else getattr(task, "llm_prompt_version", None)
+    )
+    mode = resolve_review_mode(
+        review_mode if review_mode is not None
+        else getattr(task, "llm_review_mode", None)
+    )
+    if not prompt.supports(mode):
+        mode = prompt.default_mode
+    return prompt, mode
+
+
+def run_llm_review(
+    task_id: str,
+    state_machine: TaskStateMachine,
+    prompt_version: str | None = None,
+    review_mode: str | None = None,
+) -> dict:
     """Send MED/LOW CCX matches to the LLM for review.
 
     Updates match_status to ACCEPTED or REJECTED based on LLM verdict.
@@ -1120,9 +1178,12 @@ def run_llm_review(task_id: str, state_machine: TaskStateMachine) -> dict:
     input_items = task_repo.get_items_by_source(task_id, "INPUT")
     item_by_id = {it.item_id: it for it in input_items}
     task = task_repo.get_task(task_id)
+    prompt, mode = _review_settings(task, prompt_version, review_mode)
 
-    reviewed = _llm_review_matches(pending_matches, item_by_id, task=task)
-    return {"reviewed": reviewed}
+    reviewed = _llm_review_matches(
+        pending_matches, item_by_id, task=task, prompt=prompt, mode=mode,
+    )
+    return {"reviewed": reviewed, "prompt_version": prompt.name, "review_mode": mode}
 
 
 def get_ccx_data_freshness(task_id: str) -> dict:
@@ -1426,7 +1487,12 @@ def run_infor_residue(task_id: str, state_machine: TaskStateMachine) -> dict:
 # ---------------------------------------------------------------------------
 # Step 6 -- LLM review for Infor residue MED/LOW
 # ---------------------------------------------------------------------------
-def run_infor_residue_llm_review(task_id: str, state_machine: TaskStateMachine) -> dict:
+def run_infor_residue_llm_review(
+    task_id: str,
+    state_machine: TaskStateMachine,
+    prompt_version: str | None = None,
+    review_mode: str | None = None,
+) -> dict:
     """Send MED/LOW Infor residue matches to LLM, same pattern as CCX LLM review."""
     pending = [
         m for m in task_repo.get_match_results(task_id, matched_source="INFOR_CL")
@@ -1438,12 +1504,18 @@ def run_infor_residue_llm_review(task_id: str, state_machine: TaskStateMachine) 
     input_items = task_repo.get_items_by_source(task_id, "INPUT")
     item_by_id = {it.item_id: it for it in input_items}
     task = task_repo.get_task(task_id)
+    prompt, mode = _review_settings(task, prompt_version, review_mode)
 
-    reviewed = _llm_review_matches(pending, item_by_id, task=task)
-    return {"reviewed": reviewed}
+    reviewed = _llm_review_matches(pending, item_by_id, task=task, prompt=prompt, mode=mode)
+    return {"reviewed": reviewed, "prompt_version": prompt.name, "review_mode": mode}
 
 
-def run_llm_review_pending_all(task_id: str, state_machine: TaskStateMachine) -> dict:
+def run_llm_review_pending_all(
+    task_id: str,
+    state_machine: TaskStateMachine,
+    prompt_version: str | None = None,
+    review_mode: str | None = None,
+) -> dict:
     """Send every remaining PENDING match (any bucket, any source) to the LLM.
 
     Triggered by the user after manual review when leftover PENDING rows should
@@ -1454,6 +1526,7 @@ def run_llm_review_pending_all(task_id: str, state_machine: TaskStateMachine) ->
     input_items = task_repo.get_items_by_source(task_id, "INPUT")
     item_by_id = {it.item_id: it for it in input_items}
     task = task_repo.get_task(task_id)
+    prompt, mode = _review_settings(task, prompt_version, review_mode)
 
     reviewed = 0
     for source in ("CCX", "INFOR_CL"):
@@ -1463,9 +1536,11 @@ def run_llm_review_pending_all(task_id: str, state_machine: TaskStateMachine) ->
         ]
         if not pending:
             continue
-        reviewed += _llm_review_matches(pending, item_by_id, task=task)
+        reviewed += _llm_review_matches(
+            pending, item_by_id, task=task, prompt=prompt, mode=mode,
+        )
 
-    return {"reviewed": reviewed}
+    return {"reviewed": reviewed, "prompt_version": prompt.name, "review_mode": mode}
 
 
 # ---------------------------------------------------------------------------
@@ -1854,6 +1929,8 @@ def run_full_preprocess(
     state_machine: TaskStateMachine,
     enable_llm: bool = True,
     threshold_config: str | None = None,
+    prompt_version: str | None = None,
+    review_mode: str | None = None,
 ) -> dict:
     """Run the complete preprocess pipeline.
 
@@ -1867,8 +1944,9 @@ def run_full_preprocess(
 
     Returns aggregated results dict.
 
-    *threshold_config* overrides the HIGH/MED/LOW cut-offs for this run; omit it
-    to keep whatever the task last ran under.
+    *threshold_config* overrides the HIGH/MED/LOW cut-offs, *prompt_version* the
+    LLM review prompt, and *review_mode* whether that prompt is called per input
+    group or per pair; omit any of them to keep what the task last ran under.
 
     Gate-keeper: in ``explicit`` precheck mode we first reconcile dup state
     across all input rows. If any open ``DUPLICATE_ITEM_ERROR`` remains the
@@ -1896,12 +1974,18 @@ def run_full_preprocess(
     # Keep the initial INFOR_CL candidate set independent from the LLM toggle.
     results["infor_cascade"] = run_infor_cascade(task_id, state_machine)
     if enable_llm:
-        results["llm_review_ccx"] = run_llm_review(task_id, state_machine)
+        results["llm_review_ccx"] = run_llm_review(
+            task_id, state_machine,
+            prompt_version=prompt_version, review_mode=review_mode,
+        )
     else:
         results["llm_review_ccx"] = _llm_step_skipped()
     results["infor_residue"] = run_infor_residue(task_id, state_machine)
     if enable_llm:
-        results["llm_review_infor"] = run_infor_residue_llm_review(task_id, state_machine)
+        results["llm_review_infor"] = run_infor_residue_llm_review(
+            task_id, state_machine,
+            prompt_version=prompt_version, review_mode=review_mode,
+        )
     else:
         results["llm_review_infor"] = _llm_step_skipped()
     results["item_labeling"] = run_item_labeling(task_id, state_machine)

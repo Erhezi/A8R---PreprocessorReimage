@@ -99,6 +99,13 @@
     gap: 0.5rem;
   }
 
+  /* min-width:0 lets the select shrink inside the flex row instead of forcing
+     the mode toggle to wrap onto its own line on narrower screens. */
+  .review-prompt-select {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
   /* Highlight Input/Matched UOM cells when uom_nuance = 'Yes' (same contract,
      same QOE, but different UOM). */
   .uom-nuance-cell {
@@ -127,7 +134,7 @@
         <div class="small" id="stalenessDetail"></div>
       </div>
       <div class="row g-3 mb-3">
-        <div class="col-md-6">
+        <div class="col-lg-4">
           <label class="form-label mb-1" for="thresholdConfig">Similarity thresholds</label>
           <select class="form-select form-select-sm" id="thresholdConfig">
             {% for cfg in threshold_configs %}
@@ -140,11 +147,58 @@
           </select>
           <div class="form-text" id="thresholdConfigHelp"></div>
         </div>
-        <div class="col-md-6 d-flex align-items-end">
+        <div class="col-lg-8">
+          <label class="form-label mb-1 d-flex justify-content-between align-items-center" for="promptVersion">
+            <span>LLM review prompt</span>
+            <button type="button" class="btn btn-link btn-sm p-0" id="btnViewPrompt">View prompt</button>
+          </label>
+          <div class="d-flex gap-2">
+            <select class="form-select form-select-sm review-prompt-select" id="promptVersion">
+              {% for p in prompt_versions %}
+              <option value="{{ p.name }}"
+                      data-best-for="{{ p.best_for }}"
+                      data-modes="{{ p.modes | join(',') }}"
+                      data-default-mode="{{ p.default_mode }}"
+                      {% if p.name == selected_prompt_version %}selected{% endif %}>
+                {{ p.label }}
+              </option>
+              {% endfor %}
+            </select>
+            <!-- Input mode sits with the prompt because it changes how that prompt
+                 is rendered and how its reply is read, not just how work is batched. -->
+            <div class="btn-group btn-group-sm flex-shrink-0" role="group" aria-label="LLM review input mode">
+              {% for m in review_modes %}
+              <input type="radio" class="btn-check" name="reviewMode" autocomplete="off"
+                     id="reviewMode{{ m.key }}" value="{{ m.key }}"
+                     {% if m.key == selected_review_mode %}checked{% endif %}>
+              <label class="btn btn-outline-secondary" for="reviewMode{{ m.key }}"
+                     title="{{ m.label }}">{{ m.short_label }}</label>
+              {% endfor %}
+            </div>
+          </div>
+          <div class="form-text" id="promptVersionHelp"></div>
+        </div>
+        <div class="col-12">
           <div class="form-check form-switch">
             <input class="form-check-input" type="checkbox" role="switch" id="toggleLlm" checked>
             <label class="form-check-label" for="toggleLlm">Enable LLM review steps</label>
             <div class="form-text">When off, both LLM review phases are skipped and no LLM API calls are made.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Prompt viewer — read-only. Editing a prompt means adding a version
+           under preprocessorEC/services/llm_review_prompts/, not typing here. -->
+      <div class="modal fade" id="promptModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-xl modal-dialog-scrollable">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h5 class="modal-title" id="promptModalTitle">Review prompt</h5>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" id="promptModalBody">
+              <p class="text-muted mb-0">Loading…</p>
+            </div>
           </div>
         </div>
       </div>
@@ -216,6 +270,10 @@
         <div>
           <div class="task-meta-label">LLM Prompt Applied</div>
           <div class="task-meta-value">{{ task.llm_prompt_version or 'not yet run' }}</div>
+        </div>
+        <div>
+          <div class="task-meta-label">LLM Input Mode</div>
+          <div class="task-meta-value">{{ task.llm_review_mode or 'not yet run' }}</div>
         </div>
         <div>
           <div class="task-meta-label">Type</div>
@@ -330,6 +388,7 @@
               <th>Input ID</th><th>Input MFN</th><th>Matched MFN</th>
               <th>Input VPN</th><th>Matched VPN</th>
               <th>Input UOM</th><th>Matched UOM</th><th>Input QOE</th><th>Matched QOE</th>
+              <th title="Same Infor-mapped UOM AND same QOE on both sides">Same UOM/QOE</th>
               <th>Input Price</th><th>Matched Price</th>
               <th>Input EA Price</th><th>Matched EA Price</th>
               <th>Score</th><th>Bucket</th><th>Status</th><th>Source</th>
@@ -337,7 +396,7 @@
             </tr>
           </thead>
           <tbody id="matchBody">
-            <tr><td colspan="25" class="text-center text-muted">No results yet</td></tr>
+            <tr><td colspan="26" class="text-center text-muted">No results yet</td></tr>
           </tbody>
         </table>
       </div>
@@ -404,10 +463,14 @@ const STEPS = [
   { key: "sku-matching",    endpoint: `${PREFIX}/api/preprocess/${TASK_ID}/sku-matching`,
     body: () => ({ threshold_config: document.getElementById("thresholdConfig").value }) },
   { key: "contract-check",  endpoint: `${PREFIX}/api/preprocess/${TASK_ID}/contract-check` },
-  { key: "llm-review-ccx",  endpoint: `${PREFIX}/api/preprocess/${TASK_ID}/llm-review?source=CCX` },
+  // Both review passes carry the same prompt choice, so one run never mixes
+  // CCX verdicts from one prompt with Infor verdicts from another.
+  { key: "llm-review-ccx",  endpoint: `${PREFIX}/api/preprocess/${TASK_ID}/llm-review?source=CCX`,
+    body: () => ({ prompt_version: selectedPromptVersion(), review_mode: selectedReviewMode() }) },
   { key: "infor-cascade",   endpoint: `${PREFIX}/api/preprocess/${TASK_ID}/infor-cascade` },
   { key: "infor-residue",   endpoint: `${PREFIX}/api/preprocess/${TASK_ID}/infor-residue` },
-  { key: "llm-review-infor",endpoint: `${PREFIX}/api/preprocess/${TASK_ID}/llm-review?source=INFOR` },
+  { key: "llm-review-infor",endpoint: `${PREFIX}/api/preprocess/${TASK_ID}/llm-review?source=INFOR`,
+    body: () => ({ prompt_version: selectedPromptVersion(), review_mode: selectedReviewMode() }) },
   { key: "item-labeling",   endpoint: `${PREFIX}/api/preprocess/${TASK_ID}/item-labeling` },
   { key: "buy-uom-check",   endpoint: `${PREFIX}/api/preprocess/${TASK_ID}/buy-uom` },
 ];
@@ -506,7 +569,8 @@ function summariseResult(key, data) {
       return `${(data.contracts || []).length} contracts grouped`;
     case "llm-review-ccx":
     case "llm-review-infor":
-      return `${data.reviewed || 0} items reviewed`;
+      return `${data.reviewed || 0} items reviewed`
+        + (data.prompt_version ? ` (${data.prompt_version}, ${data.review_mode})` : "");
     case "infor-cascade":
       return `${data.infor_lines || 0} lines cascaded`;
     case "infor-residue":
@@ -546,13 +610,101 @@ function renderThresholdHelp() {
 document.getElementById("thresholdConfig").addEventListener("change", renderThresholdHelp);
 renderThresholdHelp();
 
+/* LLM review prompt. Same contract as the thresholds: a choice for the NEXT run,
+   sent with the review steps and recorded by them, never saved on its own. */
+function selectedPromptVersion() {
+  return document.getElementById("promptVersion").value;
+}
+
+function reviewModeInputs() {
+  return [...document.querySelectorAll('input[name="reviewMode"]')];
+}
+
+function selectedReviewMode() {
+  const checked = reviewModeInputs().find(input => input.checked);
+  return checked ? checked.value : "GROUP";
+}
+
+function selectedPromptOption() {
+  const select = document.getElementById("promptVersion");
+  return select.options[select.selectedIndex] || null;
+}
+
+/* One help line for the pair, since the mode changes what the chosen prompt does
+   rather than being an independent setting. */
+function renderPromptHelp() {
+  const option = selectedPromptOption();
+  const mode = selectedReviewMode() === "GROUP"
+    ? "One call per input row: the row is described once and all of its matches are judged against that one reading."
+    : "One call per match: the input row is re-described for every match.";
+  document.getElementById("promptVersionHelp").textContent =
+    `${option ? (option.dataset.bestFor || "") : ""} ${mode}`.trim();
+}
+
+/* A prompt only offers the modes its text is written for. Keep the toggle showing
+   exactly those, so a run can never ask for a branch the prompt lacks. */
+function syncModeOptions() {
+  const option = selectedPromptOption();
+  if (!option) return;
+  const allowed = (option.dataset.modes || "").split(",").filter(Boolean);
+  if (allowed.length) {
+    reviewModeInputs().forEach(input => { input.disabled = !allowed.includes(input.value); });
+    if (!allowed.includes(selectedReviewMode())) {
+      const fallback = option.dataset.defaultMode || allowed[0];
+      reviewModeInputs().forEach(input => { input.checked = input.value === fallback; });
+    }
+  }
+  renderPromptHelp();
+}
+
+document.getElementById("promptVersion").addEventListener("change", syncModeOptions);
+reviewModeInputs().forEach(input => input.addEventListener("change", renderPromptHelp));
+syncModeOptions();
+
+document.getElementById("btnViewPrompt").addEventListener("click", async () => {
+  const name = selectedPromptVersion();
+  const body = document.getElementById("promptModalBody");
+  document.getElementById("promptModalTitle").textContent = "Review prompt";
+  body.innerHTML = '<p class="text-muted mb-0">Loading…</p>';
+  new bootstrap.Modal(document.getElementById("promptModal")).show();
+
+  const url = `${PREFIX}/api/preprocess/llm-review-prompts/${encodeURIComponent(name)}`
+    + `?mode=${encodeURIComponent(selectedReviewMode())}`;
+  const resp = await fetch(url);
+  const data = await readResponsePayload(resp);
+  if (!resp.ok) {
+    body.innerHTML = `<div class="alert alert-danger mb-0">${esc(data.error || `HTTP ${resp.status}`)}</div>`;
+    return;
+  }
+  document.getElementById("promptModalTitle").textContent = data.label || name;
+  const block = text =>
+    `<pre class="bg-light border rounded p-3 small" style="white-space:pre-wrap">${esc(text || "")}</pre>`;
+  body.innerHTML = `
+    <div class="mb-3">
+      <span class="badge bg-secondary me-1">${esc(data.name)}</span>
+      <span class="badge bg-info">${esc(data.mode)} mode</span>
+      <div class="form-text mt-1">Rendered for the selected input mode — this is what gets sent.</div>
+    </div>
+    <h6>When to use it</h6>
+    ${block(data.use_scenarios)}
+    <h6>System prompt</h6>
+    ${block(data.system_prompt)}
+    <h6>User template</h6>
+    ${block(data.user_template)}
+  `;
+});
+
 document.getElementById("btnRun").addEventListener("click", async () => {
   const btn = document.getElementById("btnRun");
   const llmToggle = document.getElementById("toggleLlm");
   const thresholdSelect = document.getElementById("thresholdConfig");
+  const promptSelect = document.getElementById("promptVersion");
+  const modeInputs = reviewModeInputs();
   btn.disabled = true; btn.textContent = "Running…";
   llmToggle.disabled = true;
   thresholdSelect.disabled = true;
+  promptSelect.disabled = true;
+  modeInputs.forEach(input => { input.disabled = true; });
   document.getElementById("progressArea").classList.add("d-none");
   document.getElementById("stepsList").classList.remove("d-none");
   document.getElementById("runSummary").classList.add("d-none");
@@ -598,6 +750,11 @@ document.getElementById("btnRun").addEventListener("click", async () => {
   btn.disabled = false; btn.textContent = "Rerun Full Preprocess";
   llmToggle.disabled = false;
   thresholdSelect.disabled = false;
+  promptSelect.disabled = false;
+  // Re-enable through syncModeOptions so a mode the selected prompt does not
+  // support stays disabled rather than coming back on.
+  modeInputs.forEach(input => { input.disabled = false; });
+  syncModeOptions();
 });
 
 let contractSummaryData = [];
@@ -894,10 +1051,25 @@ async function loadMatches() {
   renderMatchesPage();
 }
 
+/* Same UOM/QOE — both sides read on the Infor-mapped UOM, since that is the unit
+   these rows are compared on downstream. Null means one side had no value, which
+   is unknown rather than a mismatch, so it shows as a dash. */
+function sameUomQoeCell(m) {
+  if (m.same_uom_qoe === "Yes") return '<span class="badge bg-success">Yes</span>';
+  if (m.same_uom_qoe === "No") return '<span class="badge bg-secondary">No</span>';
+  return '-';
+}
+
+function sameUomQoeTitle(m) {
+  const input = `${m.input_uom_to_match_infor || '?'} ${m.input_qoe ?? '?'}`;
+  const matched = `${m.uom_to_match_infor_matched || '?'} ${m.qoe_matched ?? '?'}`;
+  return esc(`Infor UOM/QOE: ${input} vs ${matched}`);
+}
+
 function renderMatchesPage() {
   const tbody = document.getElementById("matchBody");
   if (!matchResultsData.length) {
-    tbody.innerHTML = '<tr><td colspan="25" class="text-center text-muted">No matches</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="26" class="text-center text-muted">No matches</td></tr>';
     document.getElementById("matchPageInfo").textContent = "Page 0 of 0";
     document.getElementById("btnMatchPrevPage").disabled = true;
     document.getElementById("btnMatchNextPage").disabled = true;
@@ -931,6 +1103,7 @@ function renderMatchesPage() {
       <td class="${uomCellClass}" title="${uomCellTitle}">${esc(m.uom_matched || '-')}</td>
       <td>${esc(m.input_qoe || '-')}</td>
       <td>${esc(m.qoe_matched || '-')}</td>
+      <td title="${sameUomQoeTitle(m)}">${sameUomQoeCell(m)}</td>
       <td title="${currencyTitle(m.input_unit_price)}">${currency(m.input_unit_price)}</td>
       <td title="${currencyTitle(m.contract_price_matched)}">${currency(m.contract_price_matched)}</td>
       <td title="${currencyTitle(m.input_ea_price)}">${currency(m.input_ea_price)}</td>
