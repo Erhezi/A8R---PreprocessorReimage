@@ -87,7 +87,9 @@
       <div id="statusBox" class="alert py-2 d-none"></div>
 
       <div class="card d-none" id="previewCard">
-        <div class="card-header py-2 fw-semibold small">Rendered preview (sample pair)</div>
+        <div class="card-header py-2 fw-semibold small" id="previewTitle">
+          Rendered preview (sample pair)
+        </div>
         <div class="card-body">
           <pre class="mb-0 small" id="previewOut" style="white-space:pre-wrap;"></pre>
         </div>
@@ -148,10 +150,13 @@
 {% block scripts %}
 <script>
 const PREFIX = "{{ url_prefix }}";
-const CAN_EDIT = {{ 'true' if is_preprocessor else 'false' }};
+const CAN_EDIT = "{{ 'true' if is_preprocessor else 'false' }}" === "true";
 
 let versions = [];
 let activeVersion = null;
+// Read-only users do not have a prompt-mode <select>, so keep the mode of the
+// version currently shown in the editor separately from the form control.
+let editorMode = "PAIR";
 
 function esc(value) {
   return String(value == null ? "" : value)
@@ -170,18 +175,43 @@ function fmtDate(iso) {
   return iso ? iso.replace("T", " ").slice(0, 16) : "";
 }
 
+async function fetchJson(url, options, fallbackMessage) {
+  const resp = await fetch(url, options);
+  const contentType = resp.headers.get("content-type") || "";
+  if (!contentType.includes("application/json")) {
+    throw new Error(
+      resp.redirected
+        ? "Your session may have expired. Refresh the page and sign in again."
+        : fallbackMessage
+    );
+  }
+
+  const data = await resp.json();
+  if (!resp.ok) throw new Error(data.error || fallbackMessage);
+  return data;
+}
+
+function hidePreview() {
+  document.getElementById("previewCard").classList.add("d-none");
+  document.getElementById("previewOut").textContent = "";
+}
+
 /** The mode currently in the editor — what a save would be validated against. */
 function currentMode() {
   const select = document.getElementById("promptMode");
-  return select ? select.value : "PAIR";
+  return select ? select.value : editorMode;
 }
 
 /** Keep the sidebar and the hints describing the shape actually selected. */
 function renderMode() {
-  const grouped = currentMode() === "GROUP";
+  editorMode = currentMode() === "GROUP" ? "GROUP" : "PAIR";
+  const grouped = editorMode === "GROUP";
   document.getElementById("templateHint").textContent = grouped
     ? "Jinja — one render per input line, looping over its candidates."
     : "Jinja — one render per compared pair.";
+  document.getElementById("previewTitle").textContent = grouped
+    ? "Rendered preview (sample input and candidates)"
+    : "Rendered preview (sample pair)";
   document.getElementById("varsPair").classList.toggle("d-none", grouped);
   document.getElementById("varsGroup").classList.toggle("d-none", !grouped);
   const help = document.getElementById("modeHelp");
@@ -198,12 +228,14 @@ function renderMode() {
 function loadIntoEditor(version) {
   document.getElementById("systemPrompt").value = version.system_prompt || "";
   document.getElementById("userTemplate").value = version.user_template || "";
+  editorMode = version.prompt_mode === "GROUP" ? "GROUP" : "PAIR";
   if (CAN_EDIT) {
     document.getElementById("model").value = version.model || "";
     document.getElementById("temperature").value =
       version.temperature == null ? "" : version.temperature;
-    document.getElementById("promptMode").value = version.prompt_mode || "PAIR";
+    document.getElementById("promptMode").value = editorMode;
   }
+  hidePreview();
   renderMode();
 }
 
@@ -259,41 +291,81 @@ function renderVersions() {
   list.querySelectorAll("[data-activate]").forEach(btn => {
     btn.addEventListener("click", async () => {
       const id = btn.getAttribute("data-activate");
-      const resp = await fetch(`${PREFIX}/api/discovery/prompts/${id}/activate`, { method: "POST" });
-      const data = await resp.json();
-      if (!resp.ok) { showStatus(data.error || "Could not activate", "danger"); return; }
-      showStatus(`Version activated. New LLM runs will use it.`, "success");
-      load();
+      btn.disabled = true;
+      try {
+        await fetchJson(
+          `${PREFIX}/api/discovery/prompts/${id}/activate`,
+          { method: "POST" },
+          "Could not activate this prompt version."
+        );
+        if (await load()) {
+          showStatus("Version activated. New LLM runs will use it.", "success");
+        }
+      } catch (err) {
+        showStatus(err.message || "Could not activate this prompt version.", "danger");
+      } finally {
+        btn.disabled = false;
+      }
     });
   });
 }
 
 async function load() {
-  const resp = await fetch(`${PREFIX}/api/discovery/prompts`);
-  const data = await resp.json();
-  versions = data.versions || [];
-  activeVersion = versions.find(v => v.is_active) || versions[0] || null;
-  renderVersions();
-  if (activeVersion) loadIntoEditor(activeVersion);
+  try {
+    const data = await fetchJson(
+      `${PREFIX}/api/discovery/prompts`,
+      undefined,
+      "Could not load prompt versions."
+    );
+    versions = data.versions || [];
+    activeVersion = versions.find(v => v.is_active) || versions[0] || null;
+    renderVersions();
+    if (activeVersion) loadIntoEditor(activeVersion);
+    return true;
+  } catch (err) {
+    versions = [];
+    activeVersion = null;
+    document.getElementById("versionList").innerHTML =
+      `<div class="list-group-item small text-danger">${esc(err.message)}</div>`;
+    showStatus(err.message || "Could not load prompt versions.", "danger");
+    return false;
+  }
 }
 
 if (CAN_EDIT) {
-  document.getElementById("promptMode").addEventListener("change", renderMode);
+  document.getElementById("promptMode").addEventListener("change", () => {
+    hidePreview();
+    renderMode();
+  });
+  document.getElementById("userTemplate").addEventListener("input", hidePreview);
 
   document.getElementById("previewBtn").addEventListener("click", async () => {
+    const btn = document.getElementById("previewBtn");
+    btn.disabled = true;
+    btn.textContent = "Previewing…";
     showStatus("", "info");
-    const resp = await fetch(`${PREFIX}/api/discovery/prompts/preview`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        user_template: document.getElementById("userTemplate").value,
-        prompt_mode: currentMode(),
-      }),
-    });
-    const data = await resp.json();
-    if (!resp.ok) { showStatus(data.error || "Preview failed", "danger"); return; }
-    document.getElementById("previewCard").classList.remove("d-none");
-    document.getElementById("previewOut").textContent = data.rendered;
+    try {
+      const data = await fetchJson(
+        `${PREFIX}/api/discovery/prompts/preview`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            user_template: document.getElementById("userTemplate").value,
+            prompt_mode: currentMode(),
+          }),
+        },
+        "Preview failed."
+      );
+      document.getElementById("previewCard").classList.remove("d-none");
+      document.getElementById("previewOut").textContent = data.rendered;
+    } catch (err) {
+      hidePreview();
+      showStatus(err.message || "Preview failed.", "danger");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Preview";
+    }
   });
 
   document.getElementById("saveBtn").addEventListener("click", async () => {
@@ -302,27 +374,23 @@ if (CAN_EDIT) {
     btn.textContent = "Saving…";
     showStatus("", "info");
     try {
-      const resp = await fetch(`${PREFIX}/api/discovery/prompts`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          system_prompt: document.getElementById("systemPrompt").value,
-          user_template: document.getElementById("userTemplate").value,
-          prompt_mode: currentMode(),
-          model: document.getElementById("model").value.trim(),
-          temperature: document.getElementById("temperature").value,
-          notes: document.getElementById("notes").value.trim(),
-          activate: true,
-        }),
-      });
-      // role_required redirects to an HTML page rather than returning JSON, so
-      // check the content type before parsing or the real cause is masked by a
-      // JSON syntax error.
-      if (!(resp.headers.get("content-type") || "").includes("application/json")) {
-        throw new Error("Not authorised to save prompts — the preprocessor role is required.");
-      }
-      const data = await resp.json();
-      if (!resp.ok) throw new Error(data.error || "Save failed");
+      const data = await fetchJson(
+        `${PREFIX}/api/discovery/prompts`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            system_prompt: document.getElementById("systemPrompt").value,
+            user_template: document.getElementById("userTemplate").value,
+            prompt_mode: currentMode(),
+            model: document.getElementById("model").value.trim(),
+            temperature: document.getElementById("temperature").value,
+            notes: document.getElementById("notes").value.trim(),
+            activate: true,
+          }),
+        },
+        "Could not save the prompt. The preprocessor role is required."
+      );
       document.getElementById("notes").value = "";
       showStatus(
         `Saved as v${data.version_no} and made active. Existing verdicts keep their original version.`,

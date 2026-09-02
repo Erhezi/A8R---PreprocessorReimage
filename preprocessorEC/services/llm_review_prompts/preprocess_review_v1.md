@@ -1,12 +1,12 @@
 ---
 key: preprocess_review
-label: Preprocess Review v1 — packaging aware
+label: Preprocess Review v1 — supplier-role-aware, packaging aware
 version: 1
 status: active
 modes: PAIR, GROUP
 default_mode: GROUP
 response_format: json_object
-best_for: Product identity and packaging judged together — same product, different packaging is a different item.
+best_for: Supplier-aware product identity and packaging judged together — same product, different packaging is a different item.
 ---
 
 ## Use Scenarios
@@ -32,6 +32,8 @@ Good fit:
   number + UOM, where picking the wrong sale unit is a load error.
 - Cases where both sides are expected to be complete records, since the prompt
   opens with a missing-data gate that REJECTs blank core fields outright.
+- Data where explicit manufacturer/distributor roles are needed to interpret
+  supplier names and catalog-number matches safely.
 
 Poor fit:
 
@@ -67,11 +69,18 @@ For each pair you will receive:
 {% endif %}
 - Pair type: A, B, C, or D. This is upstream scoring context. Do not use a
   different rulebook for different pair types, but remember that C/D pairs more
-  often contain vendor catalog, UOM, or QOE data-entry errors.
-- INPUT item: vendor, description, manufacturer number, vendor catalog number,
-  UOM, QOE, contract price.
-- MATCH item: vendor, description, manufacturer number, vendor catalog number,
-  UOM, QOE, contract price, source system.
+  often contain supplier catalog, UOM, or QOE data-entry errors.
+- INPUT item: supplier, supplier type, description, manufacturer number,
+  supplier catalog number, UOM, QOE, contract price.
+- MATCH item: supplier, supplier type, description, manufacturer number,
+  supplier catalog number, UOM, QOE, contract price, source system.
+
+"Supplier" is the company named on the row. "Supplier Type" is the contract
+process type and is MANUFACTURER, DISTRIBUTOR, or UNKNOWN. For DISTRIBUTOR rows,
+Supplier is mainly the seller; different distributors can carry the same
+manufacturer's product. For MANUFACTURER rows, Supplier also identifies the
+catalog namespace; unrelated manufacturers can use the same raw catalog number
+for different products.
 
 Goal: decide whether the pair is a compatible match for review/export. A
 compatible match means the same physical product in the same effective packaging,
@@ -82,11 +91,10 @@ REJECT, even when both lines look mostly correct.
 Output exactly one of three decisions:
 - ACCEPT: the pair is the same physical product and same effective packaging,
   OR it is very likely the same product/packaging with one side containing a
-  UOM, QOE, price, or vendor-catalog data-entry error that a human should fix.
-- REJECT: the descriptions identify different products, the vendors indicate
-  competing products rather than the same item, the packaging/price evidence
-  cleanly shows a true different package or sale unit, or required fields are
-  missing.
+  UOM, QOE, price, or supplier-catalog data-entry error that a human should fix.
+- REJECT: the descriptions identify different products, supplier-role context
+  establishes a catalog collision, packaging/price evidence cleanly shows a true
+  different package or sale unit, or required fields are missing.
 - PENDING: only when the evidence is genuinely deadlocked after applying all
   rules. If the evidence leans either way, choose ACCEPT or REJECT and explain
   the uncertainty in the reason.
@@ -96,46 +104,57 @@ Decision process:
 0. Missing-data gate.
 - If any core comparison field is blank, null, "None", or "(not provided)",
   REJECT because incomplete records are not expected at this stage. Core fields
-  are description, manufacturer catalog number, vendor catalog number, UOM, QOE,
-  and contract price on both sides, plus vendor on at least the input side.
+  are description, manufacturer catalog number, supplier catalog number, UOM,
+  QOE, and contract price on both sides, plus Supplier on at least the input
+  side. UNKNOWN Supplier Type is allowed and is not missing data.
 
 1. Description gate.
 - First ask whether the descriptions identify the same physical item: product
   type, size, formulation/material, sterile/non-sterile status, count/pack, and
   intended use.
 - If the descriptions clearly describe different products or incompatible
-  specs, REJECT.
+  specs, REJECT even when the raw catalog numbers are identical. A physical
+  item-type conflict always overrides a number match: implant vs instrument or
+  marker, implant vs trial/sizer, device vs replacement part, catheter vs
+  guidewire, syringe vs glove, or medication vs administration set.
 - If descriptions are the same, closely similar, or plausibly the same product
   written differently, continue. Do not require exact wording.
+- Do not invent a kit/component/accessory relationship to reconcile descriptions
+  of different products. Shared dimensions, terminology, or number text are not
+  enough.
 
-2. Product identity and vendor relationship.
+2. Product identity and supplier relationship.
 - Normalize catalog numbers by ignoring case, punctuation, spaces, and common
-  vendor prefixes/suffixes.
-- Exact or near-exact manufacturer catalog number is a very strong same-product
-  signal when the descriptions also agree.
+  supplier prefixes/suffixes.
+- A manufacturer catalog number is not globally unique. Its weight depends on
+  Supplier Type and catalog namespace, and descriptions must still identify a
+  compatible physical product.
+- DISTRIBUTOR vs DISTRIBUTOR: different Supplier names are expected and neutral;
+  an exact Mfg Catalog # match is strong evidence when descriptions agree.
+- DISTRIBUTOR vs MANUFACTURER: an exact Mfg Catalog # match is strong evidence
+  that the distributor carries the manufacturer's product when descriptions
+  agree; the Supplier names do not need to match.
+- MANUFACTURER vs MANUFACTURER, same Supplier: an exact Mfg Catalog # match is
+  very strong evidence when descriptions agree.
+- MANUFACTURER vs MANUFACTURER, different Suppliers: raw Mfg Catalog # equality
+  is NOT sufficient. First assess physical identity and whether the Suppliers
+  have a well-known old/new name, acquisition, rebrand, or inherited catalog
+  lineage. If the Suppliers are unrelated, the number can be a catalog collision.
+- UNKNOWN on either side: do not force a manufacturer/distributor relationship.
+  Use the other evidence and choose PENDING when catalog namespace is unresolved.
 - Very short, generic, or low-information catalog numbers are weak evidence
   even when they match. Examples include values like 10, 100, 0001, ABC, N/A,
-  UNKNOWN, or a single common word. These require strong description and vendor
+  UNKNOWN, or a single common word. These require strong description and Supplier
   evidence before ACCEPT.
-- Vendor catalog numbers are useful, but they may differ when the same product
-  is sold by different distributors.
+- Supplier catalog numbers are seller-specific and may differ when the same
+  product is sold by different distributors.
 - Use normalized catalog numbers for product identity only. Do not erase raw
-  vendor-catalog suffixes/prefixes when they line up with UOM/QOE/price evidence
+  supplier-catalog suffixes/prefixes when they line up with UOM/QOE/price evidence
   of different packaging; suffixes often identify packaging variants.
-- The vendor field is the seller/supplier, not definitive manufacturer identity.
-  Do not infer competing manufacturers from vendor names alone when manufacturer
-  part numbers and descriptions point to the same item.
-- Treat vendor names as compatible when they are the same company,
-  parent/subsidiary, merged/acquired entities, manufacturer/distributor for the
-  same item, or two distributors selling the same manufacturer-numbered product.
-  Use parent/subsidiary or M&A knowledge only when it is widely known and you are
-  highly confident. Do not invent corporate relationships. If the relationship
-  is unknown, treat it as neutral, not negative, when manufacturer numbers and
-  descriptions point to the same product.
-- If both vendors are well-known manufacturers that directly compete in this
-  product category, and there is no shared manufacturer identity/part-number
-  evidence, REJECT as competing equivalent products even if descriptions are
-  broadly similar.
+- Use corporate lineage only when it is widely known and you are highly
+  confident. Common ownership alone does not prove shared catalogs. Never invent
+  an acquisition, rebrand, distributor relationship, or shared catalog merely to
+  explain equal numbers; choose PENDING when lineage is plausible but uncertain.
 - If identity is plausible after these checks, continue to packaging/price.
 
 3. UOM normalization.
@@ -182,11 +201,11 @@ Apply these rules in order:
 - Different UOM/QOE with prices that cleanly scale like per-each versus
   per-pack/per-case-of-N:
   REJECT as true different packaging. Do this even when manufacturer numbers,
-  descriptions, or normalized vendor catalog numbers show it is the same item.
+  descriptions, or normalized supplier catalog numbers show it is the same item.
 
 Special ACCEPT rule for likely QOE or UOM data-entry errors:
 - If manufacturer catalog numbers match exactly, descriptions identify the same
-  product and pack count, vendors are compatible suppliers/distributors, UOMs
+  product and pack count, Supplier Types and names are compatible, UOMs
   are aliases or plausibly mislabeled, and contract prices are equal or very
   close, ACCEPT even when one side has QOE=1 and the other side has QOE matching
   the description pack count. In the reason, say the QOE/UOM is likely a
@@ -213,19 +232,28 @@ Example ACCEPT:
   10/CA, Mfg 3120032, CA, QOE 10, price 15.92.
 - Decision: ACCEPT because the manufacturer number is exact, descriptions
   identify the same sterile size-10 disposable item and 10-count pack, CS/CA are
-  case aliases, vendors are compatible distributors, prices are equal, and
+  case aliases, the suppliers are compatible distributors, prices are equal, and
   input QOE=1 is likely a data-entry error.
 
 Example REJECT:
-- INPUT: BD, REGULAR BEVEL NEEDLE, HYPODERMIC, 18G X 1, Mfg# 305195, Vendor# 305195, CS, QOE 1000, price 55.
-- MATCH: Medline, NEEDLE, 18GX1, HYPODER, REG WALL & BEV, Mfg# 305195, Vendor# B-D305195Z, BX, QOE 100, price 5. 
+- INPUT: BD, REGULAR BEVEL NEEDLE, HYPODERMIC, 18G X 1, Mfg# 305195, Supplier# 305195, CS, QOE 1000, price 55.
+- MATCH: Medline, NEEDLE, 18GX1, HYPODER, REG WALL & BEV, Mfg# 305195, Supplier# B-D305195Z, BX, QOE 100, price 5.
 - Decision: REJECT because the descriptions indicate different pack sizes (100 vs 1000), the price scale differs 
   by ~10x, and there is no strong evidence of a data-entry error that would explain that large of a discrepancy.
 
 Example REJECT:
-- INPUT: Same Vendor, ITEM ABCD, Mfg# ABCD, Vendor# ABCD, PK, QOE 500, price 50.
-- MATCH: Same Vendor, ITEM ABCD, Mfg# ABCD, Vendor# ABCDH, EA, QOE 1, price 0.11.
-- Decision: REJECT because identity is strong, but PK 500 at $50 is about $0.10 per EA and aligns with the EA line at $0.11, so both lines look correct and represent different sale packaging; the vendor-number suffix also supports a packaging variant.
+- INPUT: Same Supplier, ITEM ABCD, Mfg# ABCD, Supplier# ABCD, PK, QOE 500, price 50.
+- MATCH: Same Supplier, ITEM ABCD, Mfg# ABCD, Supplier# ABCDH, EA, QOE 1, price 0.11.
+- Decision: REJECT because identity is strong, but PK 500 at $50 is about $0.10 per EA and aligns with the EA line at $0.11, so both lines look correct and represent different sale packaging; the supplier-number suffix also supports a packaging variant.
+
+Example REJECT — manufacturer catalog collision:
+- INPUT Supplier Globus, Supplier Type MANUFACTURER: lumbar interbody spacer,
+  Mfg Catalog # 304.121.
+- MATCH Supplier J&J, Supplier Type MANUFACTURER: screw-length marker,
+  Mfg Catalog # 304.121.
+- Decision: REJECT because the two manufacturer suppliers have distinct catalog
+  namespaces and the descriptions identify different physical item types; the
+  identical raw number does not make them the same product.
 
 General guardrails:
 - Do not ACCEPT based only on broad description similarity.
@@ -259,10 +287,11 @@ Respond with a JSON object:
 ```text
 {% if mode == 'GROUP' %}
 INPUT item:
-  Vendor: {{ input_vendor }}
+  Supplier: {{ input_vendor }}
+  Supplier Type: {{ input_supplier_type }}
   Description: {{ input_desc }}
   Mfg Catalog #: {{ input_mfg }}
-  Vendor Catalog #: {{ input_vpn }}
+  Supplier Catalog #: {{ input_vpn }}
   UOM: {{ input_uom }}
   QOE: {{ input_qoe }}
   Contract Price: {{ input_price }}
@@ -270,10 +299,11 @@ INPUT item:
 CANDIDATE contract lines ({{ candidate_count }}):
 {% for c in candidates %}
 [{{ c.index }}] source: {{ c.match_source }}, pair type: {{ c.pair_type }}
-  Vendor: {{ c.match_vendor }}
+  Supplier: {{ c.match_vendor }}
+  Supplier Type: {{ c.match_supplier_type }}
   Description: {{ c.match_desc }}
   Mfg Catalog #: {{ c.match_mfg }}
-  Vendor Catalog #: {{ c.match_vpn }}
+  Supplier Catalog #: {{ c.match_vpn }}
   UOM: {{ c.match_uom }}
   QOE: {{ c.match_qoe }}
   Contract Price: {{ c.match_price }}
@@ -286,19 +316,21 @@ product/packaging mismatch for REJECT?
 Pair Type: {{ pair_type }}
 
 INPUT item:
-  Vendor: {{ input_vendor }}
+  Supplier: {{ input_vendor }}
+  Supplier Type: {{ input_supplier_type }}
   Description: {{ input_desc }}
   Mfg Catalog #: {{ input_mfg }}
-  Vendor Catalog #: {{ input_vpn }}
+  Supplier Catalog #: {{ input_vpn }}
   UOM: {{ input_uom }}
   QOE: {{ input_qoe }}
   Contract Price: {{ input_price }}
 
 MATCH item (source: {{ match_source }}):
-  Vendor: {{ match_vendor }}
+  Supplier: {{ match_vendor }}
+  Supplier Type: {{ match_supplier_type }}
   Description: {{ match_desc }}
   Mfg Catalog #: {{ match_mfg }}
-  Vendor Catalog #: {{ match_vpn }}
+  Supplier Catalog #: {{ match_vpn }}
   UOM: {{ match_uom }}
   QOE: {{ match_qoe }}
   Contract Price: {{ match_price }}

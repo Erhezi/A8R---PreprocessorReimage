@@ -1011,9 +1011,46 @@ def _lookup_vendor_names(erp_vendor_ids: list[str]) -> dict[str, str]:
     return name_by_id
 
 
-def _llm_input_dict(item, input_vendor: str) -> dict:
+def _lookup_match_supplier_types(matches: list) -> dict[tuple[str, str], str]:
+    """Load contract process types for the matched contract scopes.
+
+    MatchResult intentionally stores the stable contract scope rather than a
+    duplicate header snapshot.  Resolve the role immediately before review so
+    both newly-created and already-persisted matches receive Supplier Type.
+    """
+    contract_ids = sorted({
+        str(match.contract_id_matched or "").strip()
+        for match in matches
+        if str(match.contract_id_matched or "").strip()
+    })
+    if not contract_ids:
+        return {}
+
+    from sqlalchemy import bindparam
+
+    stmt = load_query(
+        "dedup", "dedup", query="contract_headers_by_org_contract",
+    ).bindparams(bindparam("contract_ids", expanding=True))
+    supplier_type_by_scope: dict[tuple[str, str], str] = {}
+    with _sql_session() as sess:
+        rows = _execute_expanding_batches(
+            sess, stmt, "contract_ids", contract_ids,
+        )
+        for row in rows:
+            key = (
+                _normalize_match_key(row.get("Organization")),
+                _normalize_match_key(row.get("ContractID")),
+            )
+            supplier_type_by_scope.setdefault(
+                key, str(row.get("ContractProcessType") or "").strip(),
+            )
+    return supplier_type_by_scope
+
+
+def _llm_input_dict(item, input_vendor: str, supplier_type: str = "") -> dict:
     return {
         "vendor": input_vendor,
+        "supplier_type": supplier_type,
         "description": item.description or "",
         "mfg_catalog_num": item.mfg_catalog_num or "",
         "vendor_catalog_num": item.vendor_catalog_num or "",
@@ -1023,10 +1060,11 @@ def _llm_input_dict(item, input_vendor: str) -> dict:
     }
 
 
-def _llm_match_dict(match, match_vendor: str) -> dict:
+def _llm_match_dict(match, match_vendor: str, supplier_type: str = "") -> dict:
     return {
         "matched_source": match.matched_source,
         "vendor": match_vendor,
+        "supplier_type": supplier_type,
         "description": match.item_desc_matched or "",
         "mfg_catalog_num": match.manufacturer_number_matched or "",
         "vendor_catalog_num": match.vendor_item_matched or "",
@@ -1083,6 +1121,7 @@ def _llm_review_matches(
         if mid:
             erp_ids_needed.add(mid)
     vendor_name_by_id = _lookup_vendor_names(sorted(erp_ids_needed))
+    supplier_type_by_scope = _lookup_match_supplier_types(matches)
 
     # Resolve the input-side vendor name once for the whole task.
     input_vendor = (
@@ -1098,6 +1137,13 @@ def _llm_review_matches(
             return name
         return f"ERPVendorID {erp_id}" if erp_id else ""
 
+    def supplier_type_for(match) -> str:
+        key = (
+            _normalize_match_key(match.organization_matched),
+            _normalize_match_key(match.contract_id_matched),
+        )
+        return supplier_type_by_scope.get(key, "")
+
     # Orphans (input row deleted since matching) are dropped up front so both
     # modes agree on what counts as reviewed.
     live = [(m, item_by_id[m.input_item_id]) for m in matches if m.input_item_id in item_by_id]
@@ -1112,8 +1158,13 @@ def _llm_review_matches(
     for input_item_id, group in by_input.items():
         item = item_by_id[input_item_id]
         results = review_matches(
-            _llm_input_dict(item, input_vendor),
-            [_llm_match_dict(m, vendor_for(m)) for m in group],
+            _llm_input_dict(
+                item, input_vendor, task.process_type if task is not None else "",
+            ),
+            [
+                _llm_match_dict(m, vendor_for(m), supplier_type_for(m))
+                for m in group
+            ],
             prompt,
             mode,
         )

@@ -17,8 +17,8 @@ a change here, not in the calling code.
 
 | File | Label | Modes | Status | Best for |
 | --- | --- | --- | --- | --- |
-| `preprocess_review_v1.md` | Preprocess Review v1 — packaging aware | PAIR, GROUP | active | Product identity and packaging judged together — same product, different packaging is a different item. |
-| `preprocess_review_v2.md` | Preprocess Review v2 — ignore packaging | PAIR, GROUP | active | Product identity alone — packaging variants of one product count as the same item. Default. |
+| `preprocess_review_v1.md` | Preprocess Review v1 — supplier-role-aware, packaging aware | PAIR, GROUP | active | Supplier-aware product identity and packaging judged together — same product, different packaging is a different item. |
+| `preprocess_review_v2.md` | Preprocess Review v2 — supplier-role-aware, ignore packaging | PAIR, GROUP | active | Product identity alone — packaging variants count as the same item; supplier role determines how catalog-number matches are weighed. Default. |
 
 ## Input modes
 
@@ -84,7 +84,10 @@ declares no `modes`. Variables in the user template come from
 `llm_review._pair_context`, plus `mode`, `candidate_count`, and `candidates`
 (each entry carrying the same `match_*` fields and an `index`). Under PAIR the
 flat `match_*` variables describe the single match being judged; under GROUP loop
-`candidates`.
+`candidates`. Source records continue to use the existing `vendor` and
+`vendor_catalog_num` fields; the prompt labels them `Supplier` and
+`Supplier Catalog #`. `input_supplier_type` and `match_supplier_type` are normalized to
+`MANUFACTURER`, `DISTRIBUTOR`, or `UNKNOWN`.
 
 ## Adding a version
 

@@ -55,10 +55,21 @@ def _pending(reason: str) -> dict:
 # ---------------------------------------------------------------------------
 # Prompt rendering
 # ---------------------------------------------------------------------------
+def _normalize_supplier_type(value) -> str:
+    """Return the supplier-role vocabulary understood by the prompts."""
+    normalized = str(value or "").strip().upper()
+    if "DISTRIBUTOR" in normalized:
+        return "DISTRIBUTOR"
+    if "MANUFACTURER" in normalized:
+        return "MANUFACTURER"
+    return "UNKNOWN"
+
+
 def _pair_context(input_item: dict, match_item: dict) -> dict:
     return {
         "pair_type": match_item.get("pair_type", ""),
         "input_vendor": input_item.get("vendor", "") or "(not provided)",
+        "input_supplier_type": _normalize_supplier_type(input_item.get("supplier_type")),
         "input_desc": input_item.get("description", ""),
         "input_mfg": input_item.get("mfg_catalog_num", ""),
         "input_vpn": input_item.get("vendor_catalog_num", ""),
@@ -67,6 +78,7 @@ def _pair_context(input_item: dict, match_item: dict) -> dict:
         "input_price": input_item.get("contract_price", ""),
         "match_source": match_item.get("matched_source", ""),
         "match_vendor": match_item.get("vendor", "") or "(not provided)",
+        "match_supplier_type": _normalize_supplier_type(match_item.get("supplier_type")),
         "match_desc": match_item.get("description", ""),
         "match_mfg": match_item.get("mfg_catalog_num", ""),
         "match_vpn": match_item.get("vendor_catalog_num", ""),
