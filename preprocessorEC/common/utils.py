@@ -162,6 +162,29 @@ def same_uom_qoe(
     return left_uom == right_uom and left_qoe == right_qoe
 
 
+def same_vendor_catalog_num(input_vpn, matched_vpn) -> Optional[bool]:
+    """True when an input row and a matched line carry the identical vendor part number.
+
+    An exact comparison. Only surrounding whitespace is trimmed -- it is
+    invisible in the table and never part of a part number. Everything else is
+    significant: case, punctuation and leading zeros all count, so "ABC-123",
+    "abc123" and "ABC123" are three different VPNs here.
+
+    Deliberately stricter than the matcher's own VPN key, which reduces both
+    sides through `reduce_catalog_number`. A pair the pipeline matched on a
+    reduced VPN can therefore read "No" in this column -- that gap is the point,
+    since it is what makes near-miss part numbers visible for review.
+
+    Returns None when either side is blank, since that is unknown rather than a
+    mismatch. Callers render that as a dash, never as "different".
+    """
+    left = str(input_vpn or "").strip()
+    right = str(matched_vpn or "").strip()
+    if not left or not right:
+        return None
+    return left == right
+
+
 def role_required(*allowed_roles: str):
     """Restrict a route to one or more user roles."""
     allowed = {role.strip().lower() for role in allowed_roles if role and role.strip()}

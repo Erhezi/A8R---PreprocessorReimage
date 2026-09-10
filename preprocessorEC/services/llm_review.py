@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+from decimal import Decimal, DecimalException
 
 from flask import current_app
 
@@ -65,8 +66,53 @@ def _normalize_supplier_type(value) -> str:
     return "UNKNOWN"
 
 
+def _packaging_context(input_item: dict, match_item: dict) -> dict:
+    """Calculate prompt evidence from the current raw fields, not scoring snapshots.
+
+    Ratios always run matched/input. Zero prices are valid numerators, but
+    quantities must be positive and a zero price cannot be a denominator.
+    Keep full precision until display; these values do not decide a verdict.
+    """
+    def number(value, *, positive=False):
+        try:
+            parsed = Decimal(str(value))
+        except (DecimalException, ValueError, TypeError):
+            return None
+        if not parsed.is_finite() or parsed < 0 or (positive and parsed == 0):
+            return None
+        return parsed
+
+    def divide(numerator, denominator):
+        if numerator is None or denominator is None or denominator == 0:
+            return None
+        try:
+            result = numerator / denominator
+        except DecimalException:
+            return None
+        return result if result.is_finite() else None
+
+    input_price = number(input_item.get("contract_price"))
+    match_price = number(match_item.get("contract_price"))
+    input_qoe = number(input_item.get("qoe"), positive=True)
+    match_qoe = number(match_item.get("qoe"), positive=True)
+    input_ea = divide(input_price, input_qoe)
+    match_ea = divide(match_price, match_qoe)
+    values = {
+        "input_ea_price": input_ea,
+        "match_ea_price": match_ea,
+        "qoe_ratio": divide(match_qoe, input_qoe),
+        "contract_price_ratio": divide(match_price, input_price),
+        "ea_price_ratio": divide(match_ea, input_ea),
+    }
+    return {
+        key: format(value, ".8g") if value is not None else "unavailable"
+        for key, value in values.items()
+    }
+
+
 def _pair_context(input_item: dict, match_item: dict) -> dict:
     return {
+        **_packaging_context(input_item, match_item),
         "pair_type": match_item.get("pair_type", ""),
         "input_vendor": input_item.get("vendor", "") or "(not provided)",
         "input_supplier_type": _normalize_supplier_type(input_item.get("supplier_type")),

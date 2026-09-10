@@ -338,7 +338,9 @@ class MatchResult(Base):
     similarity_score = Column(Float, nullable=True)
     similarity_bucket = Column(String(10), nullable=True)  # HIGH | MED | LOW
 
-    match_status = Column(String(20), nullable=False, default="PENDING")  # PENDING | ACCEPTED | REJECTED | LLM_REVIEW
+    # LLM_REVIEW was a fourth value meaning "LLM declined to decide"; migration
+    # 039 collapsed it into PENDING, with reviewed_by='LLM' carrying that fact.
+    match_status = Column(String(20), nullable=False, default="PENDING")  # PENDING | ACCEPTED | REJECTED
     reviewed_by = Column(String(120), nullable=True)
     reviewed_at = Column(DateTime, nullable=True)
     llm_confidence = Column(Integer, nullable=True)

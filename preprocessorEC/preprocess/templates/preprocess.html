@@ -355,6 +355,18 @@
           <option value="REJECTED">Rejected</option>
           <option value="PENDING">Pending</option>
         </select>
+        <select class="form-select form-select-sm" id="filterSameVpn" style="width:auto" title="Identical vendor part number on both sides — exact match, so case, punctuation and leading zeros all count">
+          <option value="">All Same VPN</option>
+          <option value="Yes">Same VPN: Yes</option>
+          <option value="No">Same VPN: No</option>
+          <option value="unknown" title="One side has no VPN to compare — shows as a dash in the table">Same VPN: Unknown</option>
+        </select>
+        <select class="form-select form-select-sm" id="filterSameUomQoe" style="width:auto" title="Same Infor-mapped UOM AND same QOE on both sides">
+          <option value="">All UOM/QOE</option>
+          <option value="Yes">UOM/QOE: Yes</option>
+          <option value="No">UOM/QOE: No</option>
+          <option value="unknown" title="One side has no Infor UOM/QOE to compare — shows as a dash in the table">UOM/QOE: Unknown</option>
+        </select>
         <select class="form-select form-select-sm" id="filterUomNuance" style="width:auto" title="Same-contract matches with identical QOE but different UOM">
           <option value="">All UOM Nuance</option>
           <option value="Yes">Nuance: Yes</option>
@@ -387,6 +399,7 @@
               <th><input type="checkbox" id="selectAll"></th>
               <th>Input ID</th><th>Input MFN</th><th>Matched MFN</th>
               <th>Input VPN</th><th>Matched VPN</th>
+              <th title="Identical vendor part number on both sides — exact match, so case, punctuation and leading zeros all count">Same VPN</th>
               <th>Input UOM</th><th>Matched UOM</th><th>Input QOE</th><th>Matched QOE</th>
               <th title="Same Infor-mapped UOM AND same QOE on both sides">Same UOM/QOE</th>
               <th>Input Price</th><th>Matched Price</th>
@@ -396,7 +409,7 @@
             </tr>
           </thead>
           <tbody id="matchBody">
-            <tr><td colspan="26" class="text-center text-muted">No results yet</td></tr>
+            <tr><td colspan="27" class="text-center text-muted">No results yet</td></tr>
           </tbody>
         </table>
       </div>
@@ -985,6 +998,8 @@ async function loadMatches() {
   const source   = document.getElementById("filterSource").value;
   const status   = document.getElementById("filterStatus").value;
   const uomNuance = document.getElementById("filterUomNuance").value;
+  const sameUomQoe = document.getElementById("filterSameUomQoe").value;
+  const sameVpn = document.getElementById("filterSameVpn").value;
   const contracts = getSelectedContractFilters();
   const contractScope = getActiveContractScope();
 
@@ -993,6 +1008,8 @@ async function loadMatches() {
   if (source)   params.set("source", source);
   if (status)   params.set("status", status);
   if (uomNuance) params.set("uom_nuance", uomNuance);
+  if (sameUomQoe) params.set("same_uom_qoe", sameUomQoe);
+  if (sameVpn) params.set("same_vpn", sameVpn);
   contracts.forEach(contract => params.append("contract", contract));
   if (contractScope) {
     params.set("organization_eid", contractScope.organizationEid);
@@ -1060,6 +1077,18 @@ function sameUomQoeCell(m) {
   return '-';
 }
 
+function sameVpnCell(m) {
+  if (m.same_vpn === "Yes") return '<span class="badge bg-success">Yes</span>';
+  if (m.same_vpn === "No") return '<span class="badge bg-secondary">No</span>';
+  return '-';
+}
+
+function sameVpnTitle(m) {
+  const input = m.input_vendor_catalog_num || '?';
+  const matched = m.vendor_item_matched || '?';
+  return esc(`VPN: ${input} vs ${matched}`);
+}
+
 function sameUomQoeTitle(m) {
   const input = `${m.input_uom_to_match_infor || '?'} ${m.input_qoe ?? '?'}`;
   const matched = `${m.uom_to_match_infor_matched || '?'} ${m.qoe_matched ?? '?'}`;
@@ -1069,7 +1098,7 @@ function sameUomQoeTitle(m) {
 function renderMatchesPage() {
   const tbody = document.getElementById("matchBody");
   if (!matchResultsData.length) {
-    tbody.innerHTML = '<tr><td colspan="26" class="text-center text-muted">No matches</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="27" class="text-center text-muted">No matches</td></tr>';
     document.getElementById("matchPageInfo").textContent = "Page 0 of 0";
     document.getElementById("btnMatchPrevPage").disabled = true;
     document.getElementById("btnMatchNextPage").disabled = true;
@@ -1099,6 +1128,7 @@ function renderMatchesPage() {
       <td class="text-truncate" style="max-width:120px" title="${esc(m.manufacturer_number_matched)}">${esc(m.manufacturer_number_matched || '-')}</td>
       <td class="text-truncate" style="max-width:120px" title="${esc(m.input_vendor_catalog_num)}">${esc(m.input_vendor_catalog_num || '-')}</td>
       <td class="text-truncate" style="max-width:120px" title="${esc(m.vendor_item_matched)}">${esc(m.vendor_item_matched || '-')}</td>
+      <td title="${sameVpnTitle(m)}">${sameVpnCell(m)}</td>
       <td class="${uomCellClass}" title="${uomCellTitle}">${esc(m.input_uom || '-')}</td>
       <td class="${uomCellClass}" title="${uomCellTitle}">${esc(m.uom_matched || '-')}</td>
       <td>${esc(m.input_qoe || '-')}</td>
@@ -1162,6 +1192,8 @@ function clearMatchFilters() {
   document.getElementById("filterSource").value = "";
   document.getElementById("filterStatus").value = "";
   document.getElementById("filterUomNuance").value = "";
+  document.getElementById("filterSameUomQoe").value = "";
+  document.getElementById("filterSameVpn").value = "";
   setSelectedContractFilters([]);
   setSelectedContractScope(null);
   loadMatches();

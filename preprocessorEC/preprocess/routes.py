@@ -24,7 +24,7 @@ from sqlalchemy import inspect, text
 from . import preprocess_bp
 from ..db import task_repo, workstate_repo
 from ..db.engine import get_sqlserver_engine
-from ..common.utils import same_uom_qoe
+from ..common.utils import same_uom_qoe, same_vendor_catalog_num
 from ..services import preprocess_service, scoring
 from ..services import llm_review_prompts
 from ..state import TaskStateMachine
@@ -309,7 +309,7 @@ def api_item_decision(task_id: str):
     data = request.get_json(force=True)
     match_id = data.get("match_id")
     decision = data.get("decision")
-    if not match_id or decision not in ("ACCEPTED", "REJECTED", "LLM_REVIEW"):
+    if not match_id or decision not in ("ACCEPTED", "REJECTED", "PENDING"):
         return jsonify({"error": "match_id and valid decision required"}), 400
     user = current_user.username if current_user.is_authenticated else "system"
     result = preprocess_service.submit_item_decision(
@@ -570,6 +570,24 @@ def _same_uom_qoe(input_item, match) -> str | None:
     return "Yes" if result else "No"
 
 
+def _same_vpn(input_item, match) -> str | None:
+    """"Yes"/"No" for the Same VPN column, or None when either side is blank.
+
+    Thin wrapper over the shared comparison, mirroring `_same_uom_qoe`. The
+    comparison is exact, so this column is stricter than the matcher's reduced
+    VPN key and will flag near-miss part numbers the pipeline still paired.
+    """
+    if input_item is None:
+        return None
+    result = same_vendor_catalog_num(
+        input_item.vendor_catalog_num,
+        match.vendor_item_matched,
+    )
+    if result is None:
+        return None
+    return "Yes" if result else "No"
+
+
 @preprocess_bp.route("/api/preprocess/<task_id>/matches", methods=["GET"])
 @login_required
 def api_get_matches(task_id: str):
@@ -582,6 +600,11 @@ def api_get_matches(task_id: str):
         erp_vendor_id — ERP vendor ID filter
         source  — CCX | INFOR_CL
         status  — ACCEPTED | REJECTED | PENDING
+        uom_nuance — Yes | No
+        same_uom_qoe — Yes | No | unknown ("unknown" is the dash the column
+            shows when one side has no Infor UOM/QOE to compare)
+        same_vpn — Yes | No | unknown (same dash convention, for a blank VPN
+            on either side)
     """
     source = request.args.get("source")
     matches = task_repo.get_match_results(task_id, matched_source=source)
@@ -594,6 +617,8 @@ def api_get_matches(task_id: str):
     }
     status_filter = request.args.get("status", "").upper()
     uom_nuance_filter = request.args.get("uom_nuance", "").strip().lower()
+    same_uom_qoe_filter = request.args.get("same_uom_qoe", "").strip().lower()
+    same_vpn_filter = request.args.get("same_vpn", "").strip().lower()
     has_organization_filter = "organization_eid" in request.args
     has_vendor_filter = "erp_vendor_id" in request.args
     organization_filter = _normalize_scope_value(request.args.get("organization_eid"))
@@ -618,9 +643,21 @@ def api_get_matches(task_id: str):
         if uom_nuance_filter and (m.uom_nuance or "").strip().lower() != uom_nuance_filter:
             continue
 
+        inp = item_by_id.get(m.input_item_id)
+        # Computed, not stored — so this filter runs on the value the column
+        # renders. None is the dash state (one side had no Infor UOM/QOE), which
+        # is unknown rather than a mismatch; "unknown" is how the dropdown
+        # reaches those rows instead of leaving them unfilterable.
+        same_uom_qoe_value = _same_uom_qoe(inp, m)
+        if same_uom_qoe_filter and (same_uom_qoe_value or "unknown").lower() != same_uom_qoe_filter:
+            continue
+
+        same_vpn_value = _same_vpn(inp, m)
+        if same_vpn_filter and (same_vpn_value or "unknown").lower() != same_vpn_filter:
+            continue
+
         md = m.to_dict()
         # Enrich with input item fields
-        inp = item_by_id.get(m.input_item_id)
         if inp:
             md["input_mfg_catalog_num"] = inp.mfg_catalog_num
             md["input_vendor_catalog_num"] = inp.vendor_catalog_num
@@ -629,7 +666,8 @@ def api_get_matches(task_id: str):
             md["input_uom_to_match_infor"] = inp.uom_to_match_infor
             md["input_qoe"] = inp.qoe
             md["input_unit_price"] = float(inp.unit_price) if inp.unit_price is not None else None
-        md["same_uom_qoe"] = _same_uom_qoe(inp, m)
+        md["same_uom_qoe"] = same_uom_qoe_value
+        md["same_vpn"] = same_vpn_value
         results.append(md)
 
     return jsonify(results)

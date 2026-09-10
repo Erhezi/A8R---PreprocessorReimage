@@ -1076,6 +1076,25 @@ def _llm_match_dict(match, match_vendor: str, supplier_type: str = "") -> dict:
     }
 
 
+def _awaiting_llm_review(match) -> bool:
+    """True when *match* is undecided and the LLM has not already judged it.
+
+    An undecided LLM verdict writes ``PENDING`` back (see `_apply_llm_verdict`)
+    so the status column stays a plain three-value vocabulary the UI can filter
+    on. That means the status alone can no longer keep a row out of the next
+    batch — without the ``reviewed_by`` test, every "Send PENDING to LLM" would
+    re-send the exact rows the LLM already declined to decide, burning a billed
+    call per click for the same answer.
+
+    Resetting a row via "Mark Selected as Pending" stamps the *user* as
+    ``reviewed_by``, which re-qualifies it for the LLM on purpose.
+    """
+    return (
+        match.match_status == "PENDING"
+        and (match.reviewed_by or "").upper() != "LLM"
+    )
+
+
 def _apply_llm_verdict(match, result: dict) -> None:
     """Persist one LLM verdict against a match row."""
     decision = result["decision"]
@@ -1084,8 +1103,11 @@ def _apply_llm_verdict(match, result: dict) -> None:
     elif decision == "REJECT":
         new_status = "REJECTED"
     else:
-        # PENDING (or unknown) — leave for human review.
-        new_status = "LLM_REVIEW"
+        # PENDING (or unknown) — leave for human review. Stays PENDING so the
+        # match table filters and the finalize gate see it like any other
+        # undecided row; `reviewed_by="LLM"` below is what stops it being
+        # re-sent. The verdict itself survives in llm_confidence/llm_reason.
+        new_status = "PENDING"
     task_repo.update_match_decision(
         match.match_id,
         new_status,
@@ -1220,7 +1242,7 @@ def run_llm_review(
 
     pending_matches = [
         m for m in task_repo.get_match_results(task_id, matched_source="CCX")
-        if m.match_status == "PENDING" and m.similarity_bucket in ("MED", "LOW")
+        if _awaiting_llm_review(m) and m.similarity_bucket in ("MED", "LOW")
     ]
 
     if not pending_matches:
@@ -1547,7 +1569,7 @@ def run_infor_residue_llm_review(
     """Send MED/LOW Infor residue matches to LLM, same pattern as CCX LLM review."""
     pending = [
         m for m in task_repo.get_match_results(task_id, matched_source="INFOR_CL")
-        if m.match_status == "PENDING" and m.similarity_bucket in ("MED", "LOW")
+        if _awaiting_llm_review(m) and m.similarity_bucket in ("MED", "LOW")
     ]
     if not pending:
         return {"reviewed": 0}
@@ -1570,7 +1592,9 @@ def run_llm_review_pending_all(
     """Send every remaining PENDING match (any bucket, any source) to the LLM.
 
     Triggered by the user after manual review when leftover PENDING rows should
-    be auto-decided. CCX is processed first so the cascade in
+    be auto-decided. Rows the LLM already reviewed and left undecided are
+    skipped (see `_awaiting_llm_review`), so repeat clicks make progress instead
+    of re-asking the same question. CCX is processed first so the cascade in
     update_match_decision settles linked INFOR_CL CASCADE rows before the
     INFOR_CL pass re-reads PENDING from the DB.
     """
@@ -1583,7 +1607,7 @@ def run_llm_review_pending_all(
     for source in ("CCX", "INFOR_CL"):
         pending = [
             m for m in task_repo.get_match_results(task_id, matched_source=source)
-            if m.match_status == "PENDING"
+            if _awaiting_llm_review(m)
         ]
         if not pending:
             continue
@@ -2110,7 +2134,7 @@ def submit_item_decision(
     decided_by: str,
     state_machine: TaskStateMachine,
 ) -> dict:
-    """Accept, reject, or send-to-LLM for an individual match."""
+    """Accept, reject, or reset to pending for an individual match."""
     task_repo.update_match_decision(match_id, decision, decided_by)
 
     state = state_machine.get_state(task_id)

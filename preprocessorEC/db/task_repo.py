@@ -919,13 +919,21 @@ def count_pending_matches(task_id: str) -> int:
 
     Single COUNT(*) — use instead of loading every MatchResult ORM row
     just to test for PENDING (which is ~53k wide rows on a large task).
+
+    ``LLM_REVIEW`` is the retired sentinel an undecided LLM verdict used to
+    write; migration 039 backfills it to PENDING. It is still matched here so a
+    row that predates the backfill blocks finalize instead of slipping through
+    undecided — the contract-summary count behind the UI's finalize button has
+    always counted it as pending, and the two gates must not disagree.
     """
     with _session() as s:
         count = (
             s.query(func.count(MatchResult.match_id))
             .filter(
                 MatchResult.task_id == task_id,
-                func.upper(func.coalesce(MatchResult.match_status, "")) == "PENDING",
+                func.upper(func.coalesce(MatchResult.match_status, "")).in_(
+                    ("PENDING", "LLM_REVIEW")
+                ),
             )
             .scalar()
         )
@@ -1101,6 +1109,9 @@ def _aggregate_cascade_status(source_matches: list) -> str:
     - any source still PENDING → cascade is PENDING (review still needed)
     - any source ACCEPTED       → cascade is ACCEPTED (link confirmed)
     - all sources REJECTED      → cascade is REJECTED
+
+    ``LLM_REVIEW`` is the retired sentinel for "LLM declined to decide" and
+    counts as PENDING; migration 039 backfills it, the read stays tolerant.
     """
     if not source_matches:
         return "PENDING"

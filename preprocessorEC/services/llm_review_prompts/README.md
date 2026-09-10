@@ -89,6 +89,56 @@ flat `match_*` variables describe the single match being judged; under GROUP loo
 `Supplier Catalog #`. `input_supplier_type` and `match_supplier_type` are normalized to
 `MANUFACTURER`, `DISTRIBUTOR`, or `UNKNOWN`.
 
+V1 also sends application-calculated `input_ea_price` and `match_ea_price`
+(raw Contract Price / QOE), plus `qoe_ratio`, `contract_price_ratio`, and
+`ea_price_ratio`. Every ratio is matched/input and is computed separately for
+each candidate from current raw fields, using decimal arithmetic before display
+to eight significant digits. Invalid operands or zero denominators render as
+`unavailable`; zero prices remain valid numerators, while QOE must be positive.
+These are arithmetic evidence, not automatic decisions. V2 omits all packaging
+fields, including these derived values.
+
+V2 starts with supplier context and both raw SKUs, then uses descriptions for
+support and clear conflicts. It tolerates ordinary formatting/leading-zero and
+description variants; packaging-only suffixes do not change product identity.
+Known unrelated manufacturer catalogs are REJECT even with matching reduced
+numbers. Possible equivalents or uncertain lineage are PENDING, without
+inventing M&A history. Material differences matter only when they clearly
+conflict on a product-defining attribute. Exception: confirmed same supplier
+plus both exact, non-placeholder SKUs routes description-only size/material/type
+conflicts to PENDING for catalog verification. Reduced-SKU equality does not
+qualify, and packaging-only differences remain ACCEPT. Its examples cover these
+boundaries.
+
+V1 weighs raw contract prices above EA prices derived from potentially incorrect
+QOE. For the same distributor catalog, an exact complete supplier number and
+equal/close positive raw prices support ACCEPT despite UOM/QOE inconsistencies.
+Clear proportional quantity/price scaling or explicit different sale-unit pack
+counts still support REJECT. The prompt flags suspect metadata without inventing
+the correct count; it does not change the source fields.
+The roughly +/-30% close-price guideline is not an ACCEPT cutoff. Across
+suppliers (including manufacturer/distributor comparisons), price gaps alone
+do not block ACCEPT when product and packaging are established. Unresolved
+packaging still requires review; actual packaging variants still REJECT.
+
+## V1 packaging regression reference
+
+The compact V1 system prompt keeps five contrasting examples for GPT-5.6 Luna.
+The reported cases below remain evaluation references instead of repeated prompt
+examples. These are expected outcomes, not results of a live model evaluation.
+Each row describes a Medline distributor comparison with established physical
+product identity; prices are raw contract prices, not calculated EA prices.
+For a live evaluation, include the full source descriptions and supplier roles
+and check both PAIR and GROUP modes without changing the saved match decisions.
+
+| Match ID | Mfg # (both) | Input supplier #; UOM/QOE/price | Matched supplier #; UOM/QOE/price | Expected | Decisive evidence |
+| --- | --- | --- | --- | --- | --- |
+| 649412 | 309695 | B-D309695; CS/100/108.68 | B-D309695Z; BX/25/27.17 | REJECT | Quantity and price scale 4x; supplier suffix differs. |
+| 649534 | 2B7127 | BHL2B7127; CS/4/41.95 | BHL2B7127H; BG/1/10.49 | REJECT | Case/bag quantity and price scale about 4x. |
+| 653620 | 2C8419 | BHL2C8419H; EA/1/3.59 | BHL2C8419; CA/48/172.21 | REJECT | Each/case quantity and price scale about 48x. |
+| 654205 | 30416-025 | BXT30416025Z; BX/10/8.66 | BXT30416025; CA/100/86.64 | REJECT | Quantity and price scale about 10x, not a decimal error. |
+| 657083 | 22853 | KDL22853; CS/600/53.00 | KDL22853; CA/200/53.00 | ACCEPT | Identical full supplier number and raw price; likely QOE error. |
+
 ## Adding a version
 
 1. Copy the closest existing file to `<key>_v<n+1>.md`; bump `version` and `label`.
