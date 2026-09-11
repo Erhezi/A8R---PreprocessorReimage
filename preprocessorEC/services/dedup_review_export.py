@@ -29,7 +29,7 @@ from openpyxl.utils import get_column_letter
 
 from ..common.utils import ny_now, same_uom_qoe
 from ..db import task_repo
-from ..db.engine import get_sqlserver_engine
+from ..db.engine import get_sqlserver_engine, with_disconnect_retry
 from ..db.sql_loader import load_query
 from . import dedup_review_rules
 
@@ -578,15 +578,22 @@ def get_review_data(task_id: str) -> dict:
     if not task:
         raise ValueError(f"Task {task_id} not found.")
 
-    with _session() as session:
-        rows = _fetch_review_rows(session, task_id)
-        groups = _build_sheet_groups(rows)
-        unmatched_repl_raw = _fetch_replacement_unmatched_rows(session, task_id)
-        groups = _augment_groups_with_replacements(groups, unmatched_repl_raw)
-        contract_meta = _fetch_contract_meta(
-            session, [g["key"]["contract_id"] for g in groups.values()]
-        )
-        view_by_input_raw = _fetch_view_by_input_rows(session, task_id)
+    # All four reads share one session, and the whole block is retried as a
+    # unit if the link drops: these are read-only, so re-running them is free,
+    # and a half-filled set of results would silently under-report the export.
+    def _read():
+        with _session() as session:
+            rows = _fetch_review_rows(session, task_id)
+            groups = _build_sheet_groups(rows)
+            unmatched_repl_raw = _fetch_replacement_unmatched_rows(session, task_id)
+            groups = _augment_groups_with_replacements(groups, unmatched_repl_raw)
+            contract_meta = _fetch_contract_meta(
+                session, [g["key"]["contract_id"] for g in groups.values()]
+            )
+            view_by_input_raw = _fetch_view_by_input_rows(session, task_id)
+        return groups, contract_meta, view_by_input_raw
+
+    groups, contract_meta, view_by_input_raw = with_disconnect_retry(_read)
 
     view_by_input_rows = [_view_by_input_row_dict(r) for r in view_by_input_raw]
 

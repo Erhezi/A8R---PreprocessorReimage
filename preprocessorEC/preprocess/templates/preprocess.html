@@ -1292,46 +1292,57 @@ document.getElementById("btnMatchNextPage").addEventListener("click", () => {
   renderMatchesPage();
 });
 
+async function postMatchDecision(endpoint, ids) {
+  // The selection is only cleared once the write actually lands. A failed
+  // batch changes nothing server-side, so leaving the rows selected lets the
+  // user just click again rather than work out what did and did not apply.
+  let resp;
+  try {
+    resp = await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/${endpoint}`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({match_ids: ids})
+    });
+  } catch (err) {
+    alert(`Could not update ${ids.length} match(es): ${err}`);
+    return false;
+  }
+  if (!resp.ok) {
+    let detail = "See server logs for details.";
+    try {
+      const data = await resp.json();
+      if (data && data.error) detail = data.error;
+    } catch (err) {
+      // Error body was not JSON — keep the generic detail.
+    }
+    alert(`Could not update ${ids.length} match(es). ${detail}`);
+    return false;
+  }
+  selectedMatchIds = new Set();
+  await loadContracts();
+  await loadMatches();
+  return true;
+}
+
 document.getElementById("btnRejectSelected").addEventListener("click", async () => {
   const ids = [...selectedMatchIds];
   if (!ids.length) return;
   if (!confirm(`Mark ${ids.length} match(es) as false positive?`)) return;
-  await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/update-false-positives`, {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({match_ids: ids})
-  });
-  selectedMatchIds = new Set();
-  loadContracts();
-  loadMatches();
+  await postMatchDecision("update-false-positives", ids);
 });
 
 document.getElementById("btnAcceptSelected").addEventListener("click", async () => {
   const ids = [...selectedMatchIds];
   if (!ids.length) return;
   if (!confirm(`Mark ${ids.length} match(es) as true match?`)) return;
-  await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/update-true-matches`, {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({match_ids: ids})
-  });
-  selectedMatchIds = new Set();
-  loadContracts();
-  loadMatches();
+  await postMatchDecision("update-true-matches", ids);
 });
 
 document.getElementById("btnPendingSelected").addEventListener("click", async () => {
   const ids = [...selectedMatchIds];
   if (!ids.length) return;
   if (!confirm(`Mark ${ids.length} match(es) as pending?`)) return;
-  await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/update-pending`, {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({match_ids: ids})
-  });
-  selectedMatchIds = new Set();
-  loadContracts();
-  loadMatches();
+  await postMatchDecision("update-pending", ids);
 });
 
 document.getElementById("btnLlmPending").addEventListener("click", async () => {

@@ -10,9 +10,17 @@ Then anywhere:
 
 from __future__ import annotations
 
+import logging
 import os
+import time
 from sqlalchemy import create_engine, event
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.pool import QueuePool, StaticPool
+
+logger = logging.getLogger(__name__)
+
+_DISCONNECT_ATTEMPTS = 3
+_DISCONNECT_BACKOFF_SECONDS = 0.5
 
 # Module-level engine singletons — set by init_engines()
 _sqlserver_engine = None
@@ -38,6 +46,10 @@ def init_engines(app) -> None:
         pool_size=app.config.get("DB_POOL_SIZE", 10),
         max_overflow=app.config.get("DB_MAX_OVERFLOW", 20),
         pool_pre_ping=app.config.get("DB_POOL_PRE_PING", True),
+        # Retire connections before a network device silently drops an idle
+        # one. pool_pre_ping catches a corpse at checkout; recycling keeps us
+        # from handing out one that is about to die mid-statement.
+        pool_recycle=app.config.get("DB_POOL_RECYCLE", 1800),
         fast_executemany=app.config.get("DB_FAST_EXECUTEMANY", True),
     )
     # Keep backward compat: old code reads app.config['DB_ENGINE']
@@ -84,6 +96,37 @@ def get_sqlite_engine():
     if _sqlite_workstate_engine is None:
         raise RuntimeError("SQLite engine not initialised. Call init_engines() first.")
     return _sqlite_workstate_engine
+
+
+def with_disconnect_retry(operation, *, attempts: int = _DISCONNECT_ATTEMPTS):
+    """Run ``operation`` again if the SQL Server connection drops under it.
+
+    A reset link surfaces as ODBC 08S01 ("Communication link failure",
+    WinSock 10054) and can land mid-statement — while rows are still being
+    fetched — which ``pool_pre_ping`` cannot prevent because it only
+    validates at checkout. SQLAlchemy invalidates the whole pool generation
+    on such an error, so the retry opens a genuinely new connection.
+
+    ``operation`` must open its own session: the one it was running on is
+    dead. Only safe for read-only or otherwise idempotent work — a write
+    that died mid-flight may or may not have committed.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            return operation()
+        except DBAPIError as exc:
+            if attempt >= attempts or not exc.connection_invalidated:
+                raise
+            delay = _DISCONNECT_BACKOFF_SECONDS * (2 ** (attempt - 1))
+            logger.warning(
+                "SQL Server connection dropped on attempt %d/%d; "
+                "retrying in %.1fs. (%s)",
+                attempt,
+                attempts,
+                delay,
+                exc.orig,
+            )
+            time.sleep(delay)
 
 
 def get_sqlserver_connection():

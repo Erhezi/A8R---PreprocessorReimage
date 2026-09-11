@@ -16,10 +16,12 @@ Jinja:
 from __future__ import annotations
 
 from functools import lru_cache
+import logging
 
 from flask import jsonify, request, render_template, abort
 from flask_login import login_required, current_user
 from sqlalchemy import inspect, text
+from sqlalchemy.exc import DBAPIError
 
 from . import preprocess_bp
 from ..db import task_repo, workstate_repo
@@ -28,6 +30,9 @@ from ..common.utils import same_uom_qoe, same_vendor_catalog_num
 from ..services import preprocess_service, scoring
 from ..services import llm_review_prompts
 from ..state import TaskStateMachine
+
+
+logger = logging.getLogger(__name__)
 
 
 def _sm() -> TaskStateMachine:
@@ -39,10 +44,6 @@ def _with_auto_advance(task_id: str, result: dict, user: str) -> dict:
     if task_state:
         result["task_state"] = task_state
     return result
-
-
-def _normalize_scope_value(value: str | None) -> str:
-    return (value or "").strip().upper()
 
 
 @lru_cache(maxsize=1)
@@ -606,43 +607,37 @@ def api_get_matches(task_id: str):
         same_vpn — Yes | No | unknown (same dash convention, for a blank VPN
             on either side)
     """
-    source = request.args.get("source")
-    matches = task_repo.get_match_results(task_id, matched_source=source)
-
-    bucket_filter = request.args.get("bucket", "").upper()
-    contract_filters = {
-        value.upper()
-        for value in request.args.getlist("contract")
-        if value and value.strip()
-    }
-    status_filter = request.args.get("status", "").upper()
-    uom_nuance_filter = request.args.get("uom_nuance", "").strip().lower()
     same_uom_qoe_filter = request.args.get("same_uom_qoe", "").strip().lower()
     same_vpn_filter = request.args.get("same_vpn", "").strip().lower()
-    has_organization_filter = "organization_eid" in request.args
-    has_vendor_filter = "erp_vendor_id" in request.args
-    organization_filter = _normalize_scope_value(request.args.get("organization_eid"))
-    vendor_filter = _normalize_scope_value(request.args.get("erp_vendor_id"))
 
-    # Build input item lookup for enrichment
-    input_items = task_repo.get_items_by_source(task_id, "INPUT")
+    # Everything that is a stored column goes to the database. Only the two
+    # computed columns below are left for Python, because they compare the match
+    # against its input item and so cannot be expressed as a WHERE clause here.
+    #
+    # The values go down as the UI sent them rather than case-folded: every
+    # dropdown option already carries the stored spelling, and the contract and
+    # scope values were read back out of this same table, so an exact compare
+    # keeps the filter index-seekable without depending on the collation.
+    matches = task_repo.get_match_results(
+        task_id,
+        matched_source=request.args.get("source"),
+        contract_numbers=request.args.getlist("contract"),
+        organization_eid=request.args.get("organization_eid"),
+        erp_vendor_id=request.args.get("erp_vendor_id"),
+        similarity_bucket=request.args.get("bucket"),
+        match_status=request.args.get("status"),
+        uom_nuance=request.args.get("uom_nuance"),
+    )
+
+    # Input item lookup for enrichment — only the rows the surviving matches
+    # point at, not every INPUT item in the task.
+    input_items = task_repo.get_items_by_source(
+        task_id, "INPUT", item_ids={m.input_item_id for m in matches}
+    )
     item_by_id = {it.item_id: it for it in input_items}
 
     results = []
     for m in matches:
-        if bucket_filter and (m.similarity_bucket or "").upper() != bucket_filter:
-            continue
-        if contract_filters and (m.contract_number or "").upper() not in contract_filters:
-            continue
-        if has_organization_filter and _normalize_scope_value(m.organization_eid_matched) != organization_filter:
-            continue
-        if has_vendor_filter and _normalize_scope_value(m.erp_vendor_id_matched) != vendor_filter:
-            continue
-        if status_filter and (m.match_status or "").upper() != status_filter:
-            continue
-        if uom_nuance_filter and (m.uom_nuance or "").strip().lower() != uom_nuance_filter:
-            continue
-
         inp = item_by_id.get(m.input_item_id)
         # Computed, not stored — so this filter runs on the value the column
         # renders. None is the dash state (one side had no Infor UOM/QOE), which
@@ -712,6 +707,39 @@ def api_get_item_matches(task_id: str):
     return jsonify(rows)
 
 
+def _apply_match_decision(match_ids, match_status: str):
+    """Apply one decision to a batch of match_ids and build the JSON response.
+
+    The batch is one transaction, so it either all lands or none of it does —
+    a mid-batch failure used to leave some rows decided and some not, with the
+    selection already cleared client-side and no way to tell which.
+    """
+    if not match_ids or not isinstance(match_ids, list):
+        return jsonify({"error": "match_ids list required"}), 400
+
+    ids = []
+    for mid in match_ids:
+        try:
+            ids.append(int(mid))
+        except (ValueError, TypeError):
+            continue
+
+    user = current_user.username if current_user.is_authenticated else "system"
+    try:
+        updated = task_repo.update_match_decisions(ids, match_status, user)
+    except DBAPIError:
+        logger.exception(
+            "Match decision batch failed (%s, %d id(s)); nothing was committed.",
+            match_status,
+            len(ids),
+        )
+        return jsonify(
+            {"error": "The database was busy and nothing was changed. Please try again."}
+        ), 503
+
+    return jsonify({"updated": updated})
+
+
 @preprocess_bp.route("/api/preprocess/<task_id>/update-false-positives", methods=["POST"])
 @login_required
 def api_update_false_positives(task_id: str):
@@ -719,21 +747,7 @@ def api_update_false_positives(task_id: str):
 
     Body: {"match_ids": [1, 2, 3]}
     """
-    data = request.get_json(force=True)
-    match_ids = data.get("match_ids", [])
-    if not match_ids or not isinstance(match_ids, list):
-        return jsonify({"error": "match_ids list required"}), 400
-
-    user = current_user.username if current_user.is_authenticated else "system"
-    updated = 0
-    for mid in match_ids:
-        try:
-            task_repo.update_match_decision(int(mid), "REJECTED", user)
-            updated += 1
-        except (ValueError, TypeError):
-            continue
-
-    return jsonify({"updated": updated})
+    return _apply_match_decision(request.get_json(force=True).get("match_ids", []), "REJECTED")
 
 
 @preprocess_bp.route("/api/preprocess/<task_id>/update-true-matches", methods=["POST"])
@@ -743,21 +757,7 @@ def api_update_true_matches(task_id: str):
 
     Body: {"match_ids": [1, 2, 3]}
     """
-    data = request.get_json(force=True)
-    match_ids = data.get("match_ids", [])
-    if not match_ids or not isinstance(match_ids, list):
-        return jsonify({"error": "match_ids list required"}), 400
-
-    user = current_user.username if current_user.is_authenticated else "system"
-    updated = 0
-    for mid in match_ids:
-        try:
-            task_repo.update_match_decision(int(mid), "ACCEPTED", user)
-            updated += 1
-        except (ValueError, TypeError):
-            continue
-
-    return jsonify({"updated": updated})
+    return _apply_match_decision(request.get_json(force=True).get("match_ids", []), "ACCEPTED")
 
 
 @preprocess_bp.route("/api/preprocess/<task_id>/update-pending", methods=["POST"])
@@ -767,21 +767,7 @@ def api_update_pending(task_id: str):
 
     Body: {"match_ids": [1, 2, 3]}
     """
-    data = request.get_json(force=True)
-    match_ids = data.get("match_ids", [])
-    if not match_ids or not isinstance(match_ids, list):
-        return jsonify({"error": "match_ids list required"}), 400
-
-    user = current_user.username if current_user.is_authenticated else "system"
-    updated = 0
-    for mid in match_ids:
-        try:
-            task_repo.update_match_decision(int(mid), "PENDING", user)
-            updated += 1
-        except (ValueError, TypeError):
-            continue
-
-    return jsonify({"updated": updated})
+    return _apply_match_decision(request.get_json(force=True).get("match_ids", []), "PENDING")
 
 
 @preprocess_bp.route("/api/preprocess/<task_id>/toggle-contract", methods=["POST"])

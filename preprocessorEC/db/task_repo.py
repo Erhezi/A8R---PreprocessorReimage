@@ -6,10 +6,13 @@ Uses the SQL Server engine. Framework-agnostic (no Flask imports).
 from __future__ import annotations
 
 from functools import lru_cache
+import logging
+import time
 import uuid
 from typing import Optional
 
-from sqlalchemy import MetaData, Table, func, inspect, text
+from sqlalchemy import MetaData, Table, func, inspect, or_, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from ..models import (
@@ -27,15 +30,74 @@ from ..state import Status
 from ..common.utils import ny_now, SQLSERVER_IN_CHUNK as _IN_CLAUSE_CHUNK
 from .engine import get_sqlserver_engine
 
+logger = logging.getLogger(__name__)
+
+# SQL Server reports a deadlock victim as SQLSTATE 40001 / native error 1205.
+# That is not a bug report: the engine found a lock cycle, killed the cheaper
+# side, and told it to rerun. Retrying is only safe for a caller that owns its
+# whole transaction, so the helper below wraps an operation, never a statement.
+_DEADLOCK_SQLSTATE = "40001"
+_DEADLOCK_NATIVE_ERROR = "1205"
+_DEADLOCK_ATTEMPTS = 3
+_DEADLOCK_BACKOFF_SECONDS = 0.2
+
 
 def _session() -> Session:
     return Session(get_sqlserver_engine())
+
+
+def _is_deadlock(exc: BaseException) -> bool:
+    orig = getattr(exc, "orig", None) or exc
+    args = getattr(orig, "args", ()) or ()
+    if args and str(args[0]) == _DEADLOCK_SQLSTATE:
+        return True
+    return any(_DEADLOCK_NATIVE_ERROR in str(arg) for arg in args)
+
+
+def _with_deadlock_retry(operation, *, attempts: int = _DEADLOCK_ATTEMPTS):
+    """Run ``operation`` again if SQL Server picks it as the deadlock victim.
+
+    ``operation`` must open and commit its own session: a victimised
+    transaction has already been rolled back, so the retry has to start from a
+    clean one. Backs off between attempts so the two sides of a cycle do not
+    collide again in lockstep.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            return operation()
+        except DBAPIError as exc:
+            if attempt >= attempts or not _is_deadlock(exc):
+                raise
+            delay = _DEADLOCK_BACKOFF_SECONDS * (2 ** (attempt - 1))
+            logger.warning(
+                "Chosen as deadlock victim on attempt %d/%d; retrying in %.1fs.",
+                attempt,
+                attempts,
+                delay,
+            )
+            time.sleep(delay)
 
 
 def _chunked(items: list, size: int = _IN_CLAUSE_CHUNK):
     """Yield successive ``size``-length slices of ``items``."""
     for start in range(0, len(items), size):
         yield items[start : start + size]
+
+
+def _scope_equals(column, value: Optional[str]):
+    """Predicate for a scope column where NULL and '' mean the same empty value.
+
+    A non-empty target compares directly so an index can still seek on it — a
+    NULL or blank column can never equal a non-empty string, so spelling out the
+    empty case there would only cost sargability. Returns ``None`` when there is
+    no filter at all.
+    """
+    if value is None:
+        return None
+    target = value.strip()
+    if not target:
+        return or_(column.is_(None), column == "")
+    return column == target
 
 
 @lru_cache(maxsize=1)
@@ -844,15 +906,67 @@ def add_match_results_bulk(task_id: str, matches: list[dict]) -> list[MatchResul
     return []
 
 
-def get_match_results(task_id: str, matched_source: Optional[str] = None) -> list[MatchResult]:
+def get_match_results(
+    task_id: str,
+    matched_source: Optional[str] = None,
+    *,
+    contract_numbers: Optional[list[str]] = None,
+    organization_eid: Optional[str] = None,
+    erp_vendor_id: Optional[str] = None,
+    similarity_bucket: Optional[str] = None,
+    match_status: Optional[str] = None,
+    uom_nuance: Optional[str] = None,
+) -> list[MatchResult]:
+    """Fetch match rows for a task, narrowed in SQL by any filter given.
+
+    Every filter is a WHERE clause rather than something the caller drops rows
+    on afterwards: this table holds one wide row per candidate pair — tens of
+    thousands on a large task — and hydrating all of them to keep the few
+    hundred under one contract is what made the review table slow to open. The
+    contract/organization/vendor trio lines up with ``ix_match_contract_scope``.
+
+    ``organization_eid`` and ``erp_vendor_id`` treat NULL and '' as the same
+    empty value (see ``_scope_equals``); pass ``None`` to not filter on them at
+    all. ``contract_numbers`` ignores blank entries, and an empty or all-blank
+    list means "every contract", matching how the UI sends no selection. Every
+    string compares exactly, so pass the value as it is stored — whether a
+    differently-cased one still matches is the server collation's business.
+    """
+    filters = [MatchResult.task_id == task_id]
+    if matched_source:
+        filters.append(MatchResult.matched_source == matched_source)
+    if similarity_bucket:
+        filters.append(MatchResult.similarity_bucket == similarity_bucket)
+    if match_status:
+        filters.append(MatchResult.match_status == match_status)
+    if uom_nuance:
+        filters.append(MatchResult.uom_nuance == uom_nuance)
+    for column, value in (
+        (MatchResult.organization_eid_matched, organization_eid),
+        (MatchResult.erp_vendor_id_matched, erp_vendor_id),
+    ):
+        predicate = _scope_equals(column, value)
+        if predicate is not None:
+            filters.append(predicate)
+
+    contract_chunks: list[Optional[list[str]]] = [None]
+    if contract_numbers:
+        cleaned = sorted(
+            {value.strip() for value in contract_numbers if value and value.strip()}
+        )
+        if cleaned:
+            contract_chunks = list(_chunked(cleaned))
+
+    results: list[MatchResult] = []
     with _session() as s:
-        q = s.query(MatchResult).filter(MatchResult.task_id == task_id)
-        if matched_source:
-            q = q.filter(MatchResult.matched_source == matched_source)
-        results = q.all()
+        for chunk in contract_chunks:
+            q = s.query(MatchResult).filter(*filters)
+            if chunk is not None:
+                q = q.filter(MatchResult.contract_number.in_(chunk))
+            results.extend(q.all())
         for r in results:
             s.expunge(r)
-        return results
+    return results
 
 
 def count_live_input_items(task_id: str) -> int:
@@ -1219,18 +1333,41 @@ def _aggregate_cascade_bucket(source_matches: list) -> Optional[str]:
 _UNSET = object()
 
 
-def get_items_by_source(task_id: str, source_dataset: str) -> list[TaskItem]:
-    """Fetch items for a task filtered by source_dataset (INPUT | CCX | INFOR)."""
+def get_items_by_source(
+    task_id: str,
+    source_dataset: str,
+    *,
+    item_ids: Optional[set[int]] = None,
+) -> list[TaskItem]:
+    """Fetch items for a task filtered by source_dataset (INPUT | CCX | INFOR).
+
+    ``item_ids`` narrows to those rows, for callers that only need the items
+    behind an already-filtered result set instead of the whole task's worth.
+    An empty collection returns nothing; ``None`` means "no id filter".
+    """
+    if item_ids is None:
+        id_chunks: list[Optional[list[int]]] = [None]
+    else:
+        ordered_ids = sorted(item_ids)
+        if not ordered_ids:
+            return []
+        id_chunks = list(_chunked(ordered_ids))
+
+    items: list[TaskItem] = []
     with _session() as s:
-        items = (
-            s.query(TaskItem)
-            .filter(TaskItem.task_id == task_id, TaskItem.source_dataset == source_dataset)
-            .order_by(TaskItem.file_row)
-            .all()
-        )
+        for id_chunk in id_chunks:
+            q = s.query(TaskItem).filter(
+                TaskItem.task_id == task_id, TaskItem.source_dataset == source_dataset
+            )
+            if id_chunk is not None:
+                q = q.filter(TaskItem.item_id.in_(id_chunk))
+            items.extend(q.order_by(TaskItem.file_row).all())
         for it in items:
             s.expunge(it)
-        return items
+    if len(id_chunks) > 1:
+        # Each chunk came back ordered on its own; restore the whole-query order.
+        items.sort(key=lambda it: (it.file_row is None, it.file_row))
+    return items
 
 
 def bulk_update_match_decision_by_contract(
@@ -1245,8 +1382,8 @@ def bulk_update_match_decision_by_contract(
     re-aggregate INFOR_CL/CASCADE rows whose lineage spans the affected
     input items — all in one session.
 
-    Scope match treats NULL and '' as equivalent, mirroring the Python
-    ``_normalize_scope_value`` rule used elsewhere.
+    Scope match treats NULL and '' as equivalent, the same rule
+    ``_scope_equals`` applies on the read side.
 
     Returns ``{"primary": <int>, "cascade": <int>}``.
     """
@@ -1311,12 +1448,20 @@ def _reaggregate_cascade_for_input_items(
     input_item_ids: set[int],
     reviewed_by: Optional[str] = None,
     reviewed_at=None,
+    stamp_pkids_by_item: Optional[dict[int, set[int]]] = None,
 ) -> int:
     """Re-aggregate INFOR_CL/CASCADE rows for the given input items in one pass.
 
     Loads all relevant cascade rows + their CCX source rows with two queries,
     then computes the new (status, bucket) for each cascade row in Python.
     Returns the number of rows whose aggregate changed.
+
+    ``reviewed_by``/``reviewed_at`` are stamped on every row whose aggregate
+    changed. ``stamp_pkids_by_item`` additionally stamps rows whose lineage
+    includes one of the given CCX pkids even when the aggregate came out the
+    same — deciding a source counts as reviewing the cascade rows hanging off
+    it, which is what keeps a settled cascade row out of the next LLM batch
+    (see ``_awaiting_llm_review``).
     """
     if not input_item_ids:
         return 0
@@ -1380,19 +1525,106 @@ def _reaggregate_cascade_for_input_items(
         ]
         new_status = _aggregate_cascade_status(source_rows)
         new_bucket = _aggregate_cascade_bucket(source_rows)
-        if (
+        changed = (
             cascade.match_status != new_status
             or cascade.similarity_bucket != new_bucket
-        ):
+        )
+        if changed:
             cascade.match_status = new_status
             cascade.similarity_bucket = new_bucket
+            cascade_count += 1
+
+        stamp = changed
+        if not stamp and stamp_pkids_by_item is not None:
+            stamp = bool(
+                effective_pkids
+                & stamp_pkids_by_item.get(cascade.input_item_id, set())
+            )
+        if stamp:
             if reviewed_by is not None:
                 cascade.reviewed_by = reviewed_by
             if reviewed_at is not None:
                 cascade.reviewed_at = reviewed_at
-            cascade_count += 1
 
     return cascade_count
+
+
+def update_match_decisions(
+    match_ids: list[int],
+    match_status: str,
+    reviewed_by: str,
+    llm_confidence: Optional[int] | object = _UNSET,
+    llm_reason: Optional[str] | object = _UNSET,
+) -> int:
+    """Apply one decision to many matches in a single transaction.
+
+    Returns the number of primary match rows updated (rows that no longer
+    exist are skipped, not an error).
+
+    One transaction for the whole batch, and one cascade re-aggregation at the
+    end scoped to the affected input items. The per-match version of this used
+    to hold an X lock on the row it was updating while scanning every
+    ``INFOR_CL``/``CASCADE`` row in the task to find the ones hanging off it —
+    a full-task lock footprint per decision, repeated once per selected match,
+    which deadlocked against any concurrent decision on the same task. Cascade
+    lineage never crosses ``input_item_id`` (see the CASCADE rows built in
+    ``preprocess_service``), so scoping the re-aggregation to the input items
+    actually touched is both cheaper and equivalent.
+    """
+    if not match_ids:
+        return 0
+
+    # Ascending match_id: two concurrent batches over overlapping rows then
+    # queue behind each other instead of grabbing locks in opposite orders.
+    ordered_ids = sorted({int(mid) for mid in match_ids})
+
+    def _apply() -> int:
+        with _session() as s:
+            rows: list[MatchResult] = []
+            for id_chunk in _chunked(ordered_ids):
+                rows.extend(
+                    s.query(MatchResult)
+                    .filter(MatchResult.match_id.in_(id_chunk))
+                    .order_by(MatchResult.match_id)
+                    .all()
+                )
+            if not rows:
+                return 0
+
+            now = ny_now()
+            # CCX rows are the only ones cascade rows aggregate from, so they
+            # are the only ones that make a re-aggregation necessary.
+            items_by_task: dict[str, set[int]] = {}
+            stamp_pkids_by_item: dict[int, set[int]] = {}
+            for mr in rows:
+                mr.match_status = match_status
+                mr.reviewed_by = reviewed_by
+                mr.reviewed_at = now
+                if llm_confidence is not _UNSET:
+                    mr.llm_confidence = llm_confidence
+                if llm_reason is not _UNSET:
+                    mr.llm_reason = llm_reason
+
+                if mr.matched_source == "CCX" and mr.ccx_pkid is not None:
+                    items_by_task.setdefault(mr.task_id, set()).add(mr.input_item_id)
+                    stamp_pkids_by_item.setdefault(mr.input_item_id, set()).add(
+                        mr.ccx_pkid
+                    )
+
+            for task_id, input_item_ids in sorted(items_by_task.items()):
+                _reaggregate_cascade_for_input_items(
+                    s,
+                    task_id=task_id,
+                    input_item_ids=input_item_ids,
+                    reviewed_by=reviewed_by,
+                    reviewed_at=now,
+                    stamp_pkids_by_item=stamp_pkids_by_item,
+                )
+
+            s.commit()
+            return len(rows)
+
+    return _with_deadlock_retry(_apply)
 
 
 def update_match_decision(
@@ -1402,47 +1634,14 @@ def update_match_decision(
     llm_confidence: Optional[int] | object = _UNSET,
     llm_reason: Optional[str] | object = _UNSET,
 ) -> None:
-    with _session() as s:
-        mr = s.get(MatchResult, match_id)
-        if mr:
-            mr.match_status = match_status
-            mr.reviewed_by = reviewed_by
-            mr.reviewed_at = ny_now()
-            if llm_confidence is not _UNSET:
-                mr.llm_confidence = llm_confidence
-            if llm_reason is not _UNSET:
-                mr.llm_reason = llm_reason
-
-            if mr.matched_source == "CCX" and mr.ccx_pkid is not None:
-                linked_rows = (
-                    s.query(MatchResult)
-                    .filter(
-                        MatchResult.task_id == mr.task_id,
-                        MatchResult.matched_source == "INFOR_CL",
-                        MatchResult.match_type == "CASCADE",
-                    )
-                    .all()
-                )
-                for linked in linked_rows:
-                    lineage_pkids = _parse_ccx_pkid_list(linked.ccx_pkids_matched)
-                    effective_pkids = set(lineage_pkids or ([] if linked.ccx_pkid is None else [linked.ccx_pkid]))
-                    if mr.ccx_pkid not in effective_pkids:
-                        continue
-                    source_rows = (
-                        s.query(MatchResult)
-                        .filter(
-                            MatchResult.task_id == mr.task_id,
-                            MatchResult.input_item_id == linked.input_item_id,
-                            MatchResult.matched_source == "CCX",
-                            MatchResult.ccx_pkid.in_(sorted(effective_pkids)),
-                        )
-                        .all()
-                    )
-                    linked.match_status = _aggregate_cascade_status(source_rows)
-                    linked.similarity_bucket = _aggregate_cascade_bucket(source_rows)
-                    linked.reviewed_by = reviewed_by
-                    linked.reviewed_at = mr.reviewed_at
-            s.commit()
+    """Single-match form of :func:`update_match_decisions`."""
+    update_match_decisions(
+        [match_id],
+        match_status,
+        reviewed_by,
+        llm_confidence=llm_confidence,
+        llm_reason=llm_reason,
+    )
 
 
 def update_match_input_ea_price(task_id: str, input_item_id: int, input_ea_price: Optional[float]) -> int:
