@@ -1,9 +1,3 @@
--- name: get_nuvia_descriptions
--- Placeholder for Nuvia lookup
-SELECT item_id, standardized_description
-FROM [DM_MONTYNT\dli2].PreprocessorTaskItem
-WHERE task_id = :task_id AND standardized_description IS NOT NULL;
-
 -- name: get_contract_header_manufacturer
 -- Fetch manufacturer info from CCXInforSyncedContractHeader for UPDATE contracts
 SELECT ContractManufacturer_Infor, ManufacturerName_Infor
