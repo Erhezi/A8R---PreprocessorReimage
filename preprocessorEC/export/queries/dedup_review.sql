@@ -48,7 +48,7 @@ INNER JOIN [Preprocessor].[PreprocessorTaskItem] ti
 -- UOM_CCX) is globally unique in CCXSyncedContractLine, so this stays 1:1 (no
 -- fan-out). Seeks the UX_CCXSyncedCL_ItemPerRN index whose leading columns are
 -- exactly these five.
-LEFT JOIN [Preprocessor].[CCXSyncedContractLine] ccx
+LEFT JOIN PLMPreprocessorShared.Preprocessor.[CCXSyncedContractLine] ccx
     ON ccx.OrganizationEID        = tid.organization_eid_matched
    AND ccx.ContractID             = tid.contract_id_matched
    AND ccx.ERPVendorID            = tid.erp_vendor_id_matched
@@ -95,7 +95,7 @@ SELECT
 -- 270s vs 0.1s on a 24k-line contract). cd.* are NOT NULL with real scope
 -- values, so direct equality is result-equivalent here.
 FROM [Preprocessor].[PreprocessorContractDecision] cd
-INNER JOIN [Preprocessor].[CCXSyncedContractLine] ccx
+INNER JOIN PLMPreprocessorShared.Preprocessor.[CCXSyncedContractLine] ccx
     ON ccx.OrganizationEID = cd.organization_eid
    AND ccx.ContractID      = cd.contract_id
    AND ccx.ERPVendorID     = cd.erp_vendor_id
@@ -138,7 +138,7 @@ SELECT
     cnt.Vendor,
     cnt.ERPVendorID,
     cnt.LineCnt_CCX
-FROM [Preprocessor].[CCXSyncedContractLineCnt] cnt
+FROM PLMPreprocessorShared.Preprocessor.[CCXSyncedContractLineCnt] cnt
 WHERE cnt.ContractID IN :contract_ids;
 
 
@@ -199,7 +199,7 @@ LEFT JOIN [Preprocessor].[PreprocessorTaskItemForDecision] tid
 -- CCX dates via the stable business key, not mr.ccx_pkid (re-issued daily by
 -- the source sync). (Org, Contract, ERPVendor, MPN, UOM_CCX) is unique, so the
 -- join is 1:1 and cannot fan out / inflate the total_matched_lines window.
-LEFT JOIN [Preprocessor].[CCXSyncedContractLine] ccx
+LEFT JOIN PLMPreprocessorShared.Preprocessor.[CCXSyncedContractLine] ccx
     ON ccx.OrganizationEID        = tid.organization_eid_matched
    AND ccx.ContractID             = tid.contract_id_matched
    AND ccx.ERPVendorID            = tid.erp_vendor_id_matched

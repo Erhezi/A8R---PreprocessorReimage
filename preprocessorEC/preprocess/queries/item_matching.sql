@@ -18,7 +18,7 @@ SELECT
     ccx.ManufacturerNumber_CCX,
     ccx.UOM_CCX,
     ccx.UOMtoMatchInfor_CCX
-FROM [Preprocessor].[CCXSyncedContractLine] ccx
+FROM PLMPreprocessorShared.Preprocessor.[CCXSyncedContractLine] ccx
 WHERE ccx.ContractID      IN :contract_ids
   AND ccx.OrganizationEID IN :org_eids
   AND ccx.ERPVendorID     IN :erp_vendor_ids;
@@ -57,7 +57,7 @@ SELECT DISTINCT
     icl.reduced_vendor_num_infor,
     icl.ItemDescription_Infor,
     icl.ContractLineManufacturer_Infor AS contract_line_manufacturer
-FROM [Preprocessor].[InforActiveCLRefCCXSyncedCL] icl
+FROM PLMPreprocessorShared.Preprocessor.[InforActiveCLRefCCXSyncedCL] icl
 WHERE icl.Infor_pkid IN :infor_pkids
   AND (
       :org_eid = '105188574'
@@ -91,7 +91,7 @@ SELECT
     icl.matched_ccx_line_seq,
     icl.ItemDescription_Infor,
     icl.ContractLineManufacturer_Infor AS contract_line_manufacturer
-FROM [Preprocessor].[InforActiveCLRefCCXSyncedCL] icl
+FROM PLMPreprocessorShared.Preprocessor.[InforActiveCLRefCCXSyncedCL] icl
 WHERE icl.CCX_pkid IN :ccx_pkids
   AND (
       :org_eid = '105188574'
@@ -104,7 +104,7 @@ WHERE icl.CCX_pkid IN :ccx_pkids
 SELECT DISTINCT
     link.CCX_pkid,
     link.Infor_pkid
-FROM [Preprocessor].[CCXInforMatchedLink] link
+FROM PLMPreprocessorShared.Preprocessor.[CCXInforMatchedLink] link
 WHERE link.CCX_pkid IN :ccx_pkids
   AND link.Infor_pkid IS NOT NULL;
 
@@ -137,7 +137,7 @@ SELECT
         WHEN icl.reduced_vendor_num_infor = :reduced_vendor_num THEN 'REDUCED_VPN'
         ELSE 'CROSS_MATCH'
     END AS match_type
-FROM [Preprocessor].[InforActiveCLRefCCXSyncedCL] icl
+FROM PLMPreprocessorShared.Preprocessor.[InforActiveCLRefCCXSyncedCL] icl
 WHERE icl.CCX_pkid IS NULL
   AND (
         icl.reduced_mfg_num_infor = :reduced_mfg_num
@@ -171,7 +171,7 @@ SELECT
     icl.JoinSyncType,
     icl.ItemDescription_Infor,
     icl.ContractLineManufacturer_Infor AS contract_line_manufacturer
-FROM [Preprocessor].[InforActiveCLRefCCXSyncedCL] icl
+FROM PLMPreprocessorShared.Preprocessor.[InforActiveCLRefCCXSyncedCL] icl
 WHERE icl.CCX_pkid IS NULL
   AND icl.reduced_mfg_num_infor IN :reduced_mfg_nums
   AND (
@@ -202,7 +202,7 @@ SELECT
     icl.JoinSyncType,
     icl.ItemDescription_Infor,
     icl.ContractLineManufacturer_Infor AS contract_line_manufacturer
-FROM [Preprocessor].[InforActiveCLRefCCXSyncedCL] icl
+FROM PLMPreprocessorShared.Preprocessor.[InforActiveCLRefCCXSyncedCL] icl
 WHERE icl.CCX_pkid IS NULL
   AND icl.reduced_vendor_num_infor IN :reduced_vendor_nums
   AND (
@@ -219,7 +219,7 @@ SELECT DISTINCT
     mi.DefaultBuyUOM,
     mi.DefaultBuyUOMMultiplier,
     mi.Description                AS mdm_description
-FROM [DM_MONTYNT\dli2].[MDM_ITEM] mi
+FROM PLMPreprocessorShared.infor.[MDM_ITEM] mi
 WHERE mi.Manufacturer = :manufacturer
   AND mi.ManufacturerNumber = :mfg_catalog_num
   AND mi.Active = 'Yes';
@@ -234,7 +234,7 @@ SELECT DISTINCT
     mi.DefaultBuyUOM,
     mi.DefaultBuyUOMMultiplier,
     mi.Description                AS mdm_description
-FROM [DM_MONTYNT\dli2].[MDM_ITEM] mi
+FROM PLMPreprocessorShared.infor.[MDM_ITEM] mi
 WHERE mi.Manufacturer = :manufacturer
   AND mi.ManufacturerNumber IN :mfg_catalog_nums
   AND mi.Active = 'Yes';
@@ -249,7 +249,7 @@ SELECT DISTINCT
     mvi.ManufacturerNumber,
     mvi.VendorBuyUOM,
   CAST(mvi.[VendorBuyUOM.UOMConversion] AS INT) AS vendor_uom_conversion
-FROM [DM_MONTYNT\dli2].[MDM_VENDORITEM] mvi
+FROM PLMPreprocessorShared.infor.[MDM_VENDORITEM] mvi
 WHERE mvi.Vendor = :vendor_id
   AND mvi.VendorItem = :vendor_catalog_num
   AND mvi.Active = 'Yes';
@@ -266,7 +266,7 @@ SELECT DISTINCT
     mvi.ManufacturerNumber,
     mvi.VendorBuyUOM,
     CAST(mvi.[VendorBuyUOM.UOMConversion] AS INT) AS vendor_uom_conversion
-FROM [DM_MONTYNT\dli2].[MDM_VENDORITEM] mvi
+FROM PLMPreprocessorShared.infor.[MDM_VENDORITEM] mvi
 WHERE mvi.Vendor IN :vendor_ids
   AND mvi.VendorItem IN :vendor_catalog_nums
   AND mvi.Active = 'Yes';
@@ -276,7 +276,7 @@ WHERE mvi.Vendor IN :vendor_ids
 SELECT DISTINCT
     icl.Item,
     icl.Infor_pkid
-FROM [Preprocessor].[InforActiveCLRefCCXSyncedCL] icl
+FROM PLMPreprocessorShared.Preprocessor.[InforActiveCLRefCCXSyncedCL] icl
 WHERE icl.Infor_pkid = :infor_pkid
   AND icl.Item IS NOT NULL
   AND LTRIM(RTRIM(CONVERT(VARCHAR(50), icl.Item))) <> '';
@@ -286,7 +286,7 @@ WHERE icl.Infor_pkid = :infor_pkid
 SELECT DISTINCT
     icl.Infor_pkid,
     icl.Item
-FROM [Preprocessor].[InforActiveCLRefCCXSyncedCL] icl
+FROM PLMPreprocessorShared.Preprocessor.[InforActiveCLRefCCXSyncedCL] icl
 WHERE icl.Infor_pkid IN :infor_pkids
   AND icl.Item IS NOT NULL
   AND LTRIM(RTRIM(CONVERT(VARCHAR(50), icl.Item))) <> '';
@@ -295,7 +295,7 @@ WHERE icl.Infor_pkid IN :infor_pkids
 -- Find item master description for an individual Infor Item.
 SELECT TOP 1
     mi.Description AS item_description
-FROM [DM_MONTYNT\dli2].[MDM_ITEM] mi
+FROM PLMPreprocessorShared.infor.[MDM_ITEM] mi
 WHERE mi.Item = :item_number;
 
 -- name: item_descriptions_by_item_numbers
@@ -303,7 +303,7 @@ WHERE mi.Item = :item_number;
 SELECT
     mi.Item,
     mi.Description AS item_description
-FROM [DM_MONTYNT\dli2].[MDM_ITEM] mi
+FROM PLMPreprocessorShared.infor.[MDM_ITEM] mi
 WHERE mi.Item IN :item_numbers;
 
 -- name: item_uom_options
@@ -312,7 +312,7 @@ SELECT
     iu.UOM,
     CAST(iu.UOMConversion AS INT) AS UOMConversion,
     iu.ValidForBuying
-FROM [DM_MONTYNT\dli2].[MDM_ITEMUOM] iu
+FROM PLMPreprocessorShared.infor.[MDM_ITEMUOM] iu
 WHERE iu.Item = :item_number
   AND iu.ValidForBuying IN ('Valid', 'Default')
 ORDER BY CAST(iu.UOMConversion AS INT), iu.UOMConversion;
@@ -323,5 +323,5 @@ SELECT
     gtin.Item,
     gtin.UOM,
     gtin.Active AS ActiveGTIN
-FROM [DM_MONTYNT\dli2].[MDM_ITEMGTIN] gtin
+FROM PLMPreprocessorShared.infor.[MDM_ITEMGTIN] gtin
 WHERE gtin.Active = 'No';

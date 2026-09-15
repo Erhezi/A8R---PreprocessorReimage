@@ -15,7 +15,7 @@ WHERE ContractID IN :contract_ids;
 SELECT
     Infor_pkid,
     Item
-FROM [Preprocessor].[InforActiveCLRefCCXSyncedCL]
+FROM PLMPreprocessorShared.Preprocessor.[InforActiveCLRefCCXSyncedCL]
 WHERE Infor_pkid IN :infor_pkids;
 
 -- name: workspace_exists

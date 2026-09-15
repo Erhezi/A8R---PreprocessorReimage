@@ -25,8 +25,14 @@ Base = declarative_base()
 # ---------------------------------------------------------------------------
 # Schema prefix — matches the existing SQL Server schema owner.
 # Change this if deploying under a different schema.
+#
+# INFOR_SCHEMA holds raw replicas of Infor ERP tables. It sits in the same
+# database as SCHEMA, so a bare schema name is enough; the bulk ETL tables,
+# which moved to a different database entirely, are reached by three-part name
+# from raw SQL rather than through the ORM.
 # ---------------------------------------------------------------------------
 SCHEMA = r"Preprocessor"
+INFOR_SCHEMA = r"infor"
 
 
 # ---------------------------------------------------------------------------
@@ -813,11 +819,16 @@ VALID_ROLES = {"sourcing", "mdm", "preprocessor"}
 
 
 # ---------------------------------------------------------------------------
-# InforVendorLocation — read-only reference table
+# VendorLocation — read-only reference table
+#
+# Lives in the [infor] schema, not [Preprocessor]: that schema holds raw
+# replicas of Infor ERP tables, and the redundant "Infor" prefix was dropped
+# from the table name when it moved. The Python class keeps its old name so
+# call sites are unchanged.
 # ---------------------------------------------------------------------------
 class InforVendorLocation(Base):
-    __tablename__ = "InforVendorLocation"
-    __table_args__ = {"schema": SCHEMA}
+    __tablename__ = "VendorLocation"
+    __table_args__ = {"schema": INFOR_SCHEMA}
 
     Vendor = Column("Vendor", String(10), primary_key=True)
     VendorName = Column("VendorName", String(255), nullable=False)

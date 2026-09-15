@@ -48,11 +48,16 @@ def _with_auto_advance(task_id: str, result: dict, user: str) -> dict:
 
 @lru_cache(maxsize=1)
 def _get_ccx_line_count_column() -> str | None:
+    # CCXSyncedContractLineCnt moved to PLMPreprocessorShared in the 2026-09-14
+    # server move. The MSSQL dialect reads a dotted schema as database.schema,
+    # which is how the inspector reaches across databases — the table and schema
+    # are separate arguments here, so a three-part name in the string would not
+    # have worked.
     columns = {
         column["name"]
         for column in inspect(get_sqlserver_engine()).get_columns(
             "CCXSyncedContractLineCnt",
-            schema="Preprocessor",
+            schema="PLMPreprocessorShared.Preprocessor",
         )
     }
     if "LineCnt_CCX" in columns:
@@ -77,7 +82,7 @@ def _fetch_contract_lookup(conn, matched_source: str, organization_eid: str, con
                 [Manufacturer] AS mf_name,
                 [Vendor] AS vendor_name,
                 [ContractDescription] AS contract_description
-            FROM [Preprocessor].[CCXSyncedContractLineCnt]
+            FROM PLMPreprocessorShared.Preprocessor.[CCXSyncedContractLineCnt]
             WHERE OrganizationEID = :organization_eid
               AND ContractID = :contract_id
               AND ERPVendorID = :erp_vendor_id
@@ -91,7 +96,7 @@ def _fetch_contract_lookup(conn, matched_source: str, organization_eid: str, con
                 [ManufacturerName_Infor] AS mf_name,
                 [VendorName_Infor] AS vendor_name,
                 [ContractDescription_Infor] AS contract_description
-            FROM [Preprocessor].[InforActiveContractLineCnt]
+            FROM PLMPreprocessorShared.Preprocessor.[InforActiveContractLineCnt]
             WHERE OrganizationEID = :organization_eid
               AND ContractID = :contract_id
               AND ERPVendorID_Infor = :erp_vendor_id

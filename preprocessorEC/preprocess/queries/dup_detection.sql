@@ -35,8 +35,8 @@ SELECT
     cnt.Vendor                       AS vendor_name,
     cnt.ContractDescription,
     hdr.ContractProcessType          AS match_process_type
-FROM [Preprocessor].[CCXSyncedContractLine] ccx
-JOIN [Preprocessor].[CCXSyncedContractLineCnt] cnt
+FROM PLMPreprocessorShared.Preprocessor.[CCXSyncedContractLine] ccx
+JOIN PLMPreprocessorShared.Preprocessor.[CCXSyncedContractLineCnt] cnt
     ON ccx.OrganizationEID = cnt.OrganizationEID
    AND ccx.ContractID      = cnt.ContractID
    AND ccx.ERPVendorID     = cnt.ERPVendorID
@@ -74,8 +74,8 @@ SELECT
     cnt.Vendor                       AS vendor_name,
     cnt.ContractDescription,
     hdr.ContractProcessType          AS match_process_type
-FROM [Preprocessor].[CCXSyncedContractLine] ccx
-JOIN [Preprocessor].[CCXSyncedContractLineCnt] cnt
+FROM PLMPreprocessorShared.Preprocessor.[CCXSyncedContractLine] ccx
+JOIN PLMPreprocessorShared.Preprocessor.[CCXSyncedContractLineCnt] cnt
     ON ccx.OrganizationEID = cnt.OrganizationEID
    AND ccx.ContractID      = cnt.ContractID
    AND ccx.ERPVendorID     = cnt.ERPVendorID

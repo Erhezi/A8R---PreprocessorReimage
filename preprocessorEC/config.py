@@ -30,13 +30,20 @@ class Config:
     DB_MAX_OVERFLOW = 20
     DB_POOL_PRE_PING = True
 
+    # Server move 2026-09-14: schema Preprocessor left MISCPrdAdhocDB\PRIME.
+    # The bulk ETL tables now live in PLMPreprocessorShared and the Infor feeds
+    # in PLMPreprocessorShared.infor, so queries reach across databases by
+    # three-part name — the connection itself only needs the app database.
     @property
     def DB_CONN_STRING(self):
+        driver = os.environ.get("DB_DRIVER", "ODBC Driver 17 for SQL Server")
+        server = os.environ.get("DB_SERVER", r"YNBBSTVWP02\PROCDATASRVPROD")
+        database = os.environ.get("DB_NAME", "Preprocessor")
         return (
             "mssql+pyodbc:///?odbc_connect="
-            "DRIVER={ODBC Driver 17 for SQL Server};"
-            "SERVER=MISCPrdAdhocDB;"
-            "DATABASE=PRIME;"
+            f"DRIVER={{{driver}}};"
+            f"SERVER={server};"
+            f"DATABASE={database};"
             "Trusted_Connection=yes;"
         )
 
@@ -114,18 +121,10 @@ class ProductionConfig(Config):
     def URL_PREFIX(self):
         return os.environ.get("URL_PREFIX", "/preprocessor")
 
-    @property
-    def DB_CONN_STRING(self):
-        driver = os.environ.get("DB_DRIVER", "ODBC Driver 17 for SQL Server")
-        server = os.environ.get("DB_SERVER", "MISCPrdAdhocDB")
-        database = os.environ.get("DB_NAME", "PRIME")
-        return (
-            "mssql+pyodbc:///?odbc_connect="
-            f"DRIVER={{{driver}}};"
-            f"SERVER={server};"
-            f"DATABASE={database};"
-            "Trusted_Connection=yes;"
-        )
+    # DB_CONN_STRING is inherited from Config: it already reads DB_DRIVER,
+    # DB_SERVER and DB_NAME from the environment. This class used to carry a
+    # byte-identical copy, which meant every connection change had to be made
+    # twice or the two would drift.
 
 
 def get_config(config_name="default"):

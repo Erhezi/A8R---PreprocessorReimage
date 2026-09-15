@@ -64,7 +64,7 @@ WHERE ContractID = :cid;
 -- OrganizationEID + ContractID + ERPVendorID). Descriptions are contract-level,
 -- so any non-null row for the contract id serves; TOP 1 keeps it deterministic.
 SELECT TOP 1 ContractDescription
-FROM [Preprocessor].[CCXSyncedContractLineCnt]
+FROM PLMPreprocessorShared.Preprocessor.[CCXSyncedContractLineCnt]
 WHERE ContractID = :cid
   AND ContractDescription IS NOT NULL
 ORDER BY ContractDescription;

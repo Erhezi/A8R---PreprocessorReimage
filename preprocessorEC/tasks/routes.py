@@ -368,7 +368,7 @@ def _fetch_contract_rows(contract_id: str):
 def _fetch_contract_description(contract_id: str) -> Optional[str]:
     """Look up the CCX contract description for a contract id.
 
-    Sourced from [Preprocessor].[CCXSyncedContractLineCnt]; returns None when
+    Sourced from PLMPreprocessorShared.Preprocessor.[CCXSyncedContractLineCnt]; returns None when
     the contract has no synced-CCX row or no description recorded.
     """
     engine = get_sqlserver_engine()

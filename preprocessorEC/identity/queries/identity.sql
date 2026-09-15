@@ -7,6 +7,6 @@ WHERE Organization = :organization AND ContractID = :contract_id;
 -- name: search_manufacturers
 -- Search available manufacturers from MDM_MANUFACTURER_NAME_INFOR
 SELECT Manufacturer, ManufacturerName, Active
-FROM [DM_MONTYNT\dli2].MDM_MANUFACTURER_NAME_INFOR
+FROM PLMPreprocessorShared.infor.[MDM_MANUFACTURER_NAME]
 WHERE (Manufacturer LIKE :search_term OR ManufacturerName LIKE :search_term)
 ORDER BY ManufacturerName;

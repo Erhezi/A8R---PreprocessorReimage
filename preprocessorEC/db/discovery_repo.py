@@ -466,8 +466,8 @@ SELECT ccx.OrganizationEID, ccx.ContractID, ccx.ERPVendorID,
        ccx.ManufacturerNumber_CCX, ccx.UOM_CCX, ccx.UOMtoMatchInfor_CCX,
        ccx.EffectiveDate_CCX, ccx.ExpirationDate_CCX,
        icl.Item AS infor_item
-FROM [Preprocessor].[CCXSyncedContractLine] ccx
-LEFT JOIN [Preprocessor].[InforActiveCLRefCCXSyncedCL] icl
+FROM PLMPreprocessorShared.Preprocessor.[CCXSyncedContractLine] ccx
+LEFT JOIN PLMPreprocessorShared.Preprocessor.[InforActiveCLRefCCXSyncedCL] icl
        ON icl.CCX_pkid = ccx.CCX_pkid
 WHERE ccx.ManufacturerNumber_CCX IN :mfg_nums
 """)

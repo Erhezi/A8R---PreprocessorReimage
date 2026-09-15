@@ -8,14 +8,14 @@ FROM [Preprocessor].ValidUOM;
 SELECT DISTINCT
     UPPER(LTRIM(RTRIM(externalValue))) AS external_value,
     UPPER(LTRIM(RTRIM(LawsonValue))) AS lawson_value
-FROM [DM_MONTYNT\dli2].MDM_EDI_SUB_UOM
+FROM PLMPreprocessorShared.infor.[MDM_EDI_SUB_UOM]
 WHERE NULLIF(LTRIM(RTRIM(externalValue)), '') IS NOT NULL
   AND NULLIF(LTRIM(RTRIM(LawsonValue)), '') IS NOT NULL;
 
 -- name: get_valid_vendors
 -- Active vendor codes from MDM supplier master
 SELECT DISTINCT LTRIM(RTRIM(Vendor))
-FROM [DM_MONTYNT\dli2].MDM_SUPPLIER_NAME_INFOR
+FROM PLMPreprocessorShared.infor.[MDM_SUPPLIER_NAME]
 WHERE active = 'Yes'
   AND Vendor <> '';
 
