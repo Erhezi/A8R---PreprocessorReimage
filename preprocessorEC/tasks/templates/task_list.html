@@ -839,6 +839,9 @@ document.getElementById("btnCreateBatchTask").addEventListener("click", async ()
    ================================================================ */
 const PAGE_SIZE = 20;
 let allTasks = [];   // full set fetched from the server
+/* Tasks with a DELETE in flight. render() reads this so a filter change or
+   refresh mid-delete doesn't swap the spinner back for a live button. */
+const deletingTasks = new Set();
 let currentPage = 1;
 
 async function fetchTasks() {
@@ -967,8 +970,12 @@ function renderRows(tasks) {
                 title="Sub-task of ${t.parent_task_id} — delete the root task to remove this whole family.">
               <small>Delete</small>
             </button>`
+          : deletingTasks.has(t.task_id)
+          ? `<button class="btn btn-outline-danger btn-sm py-0 px-1" disabled>
+              <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span><small>Deleting…</small>
+            </button>`
           : `<button class="btn btn-outline-danger btn-sm py-0 px-1"
-                onclick="deleteTask('${t.task_id}')" title="Delete task and any spawned sub-tasks">
+                onclick="deleteTask('${t.task_id}', this)" title="Delete task and any spawned sub-tasks">
               <small>Delete</small>
             </button>`}
       </td>
@@ -1027,14 +1034,25 @@ function renderPagination(pageCount) {
 /* Filters / search reset to page 1 and re-render without re-fetching. */
 function applyFilters() { currentPage = 1; render(); }
 
-async function deleteTask(taskId) {
+async function deleteTask(taskId, btn) {
+  if (deletingTasks.has(taskId)) return;
   if (!confirm(`Delete task ${taskId}? Any sub-tasks spawned from it will also be removed. This cannot be undone.`)) return;
-  const resp = await fetch(`${PREFIX}/api/tasks/${taskId}`, {method: "DELETE"});
-  if (resp.ok) {
+  deletingTasks.add(taskId);
+  setButtonLoading(btn, "<small>Deleting…</small>");
+  try {
+    const resp = await fetch(`${PREFIX}/api/tasks/${taskId}`, {method: "DELETE"});
+    if (!resp.ok) {
+      // A 500 comes back as an HTML error page, not JSON.
+      const err = await resp.json().catch(() => ({}));
+      alert("Delete failed: " + (err.error || `HTTP ${resp.status}`));
+    }
+  } catch (e) {
+    alert("Delete failed: " + e.message);
+  } finally {
+    deletingTasks.delete(taskId);
+    // Re-render from the server either way: the row disappears on success,
+    // and on failure the button comes back enabled.
     fetchTasks();
-  } else {
-    const err = await resp.json();
-    alert("Delete failed: " + (err.error || "Unknown error"));
   }
 }
 

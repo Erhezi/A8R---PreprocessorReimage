@@ -285,6 +285,7 @@ class PreCheckError(Base):
     __tablename__ = "PreprocessorPreCheckError"
     __table_args__ = (
         Index("ix_pcerror_task_id", "task_id"),
+        Index("ix_precheck_item", "item_id"),
         {"schema": SCHEMA},
     )
 
@@ -332,6 +333,7 @@ class MatchResult(Base):
             "organization_eid_matched",
             "erp_vendor_id_matched",
         ),
+        Index("ix_match_input_item", "input_item_id"),
         {"schema": SCHEMA},
     )
 
@@ -460,6 +462,7 @@ class TaskItemForDecision(Base):
     __table_args__ = (
         Index("ix_taskitemfordecision_task_id", "task_id"),
         Index("ix_taskitemfordecision_task_input", "task_id", "input_item_id"),
+        Index("IX_TaskItemForDecision_InputItem", "input_item_id"),
         {"schema": SCHEMA},
     )
 

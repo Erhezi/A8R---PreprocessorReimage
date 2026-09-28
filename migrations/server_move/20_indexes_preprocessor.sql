@@ -169,3 +169,24 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name=N'ix_statuslog_task'
                AND object_id=OBJECT_ID(N'[Preprocessor].[PreprocessorTaskStatusLog]'))
 CREATE NONCLUSTERED INDEX [ix_statuslog_task] ON [Preprocessor].[PreprocessorTaskStatusLog] ([task_id]);
 GO
+
+-- ------------------------------------------------------------
+-- Added 2026-09-28 (migration 041), not part of the PRIME snapshot:
+-- single-column indexes on the FK columns referencing TaskItem.item_id,
+-- so FK checks on TaskItem deletes seek instead of scanning.
+-- ------------------------------------------------------------
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name=N'ix_match_input_item'
+               AND object_id=OBJECT_ID(N'[Preprocessor].[PreprocessorMatchResult]'))
+CREATE NONCLUSTERED INDEX [ix_match_input_item] ON [Preprocessor].[PreprocessorMatchResult] ([input_item_id]);
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name=N'IX_TaskItemForDecision_InputItem'
+               AND object_id=OBJECT_ID(N'[Preprocessor].[PreprocessorTaskItemForDecision]'))
+CREATE NONCLUSTERED INDEX [IX_TaskItemForDecision_InputItem] ON [Preprocessor].[PreprocessorTaskItemForDecision] ([input_item_id]);
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name=N'ix_precheck_item'
+               AND object_id=OBJECT_ID(N'[Preprocessor].[PreprocessorPreCheckError]'))
+CREATE NONCLUSTERED INDEX [ix_precheck_item] ON [Preprocessor].[PreprocessorPreCheckError] ([item_id]);
+GO

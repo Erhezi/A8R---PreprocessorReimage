@@ -30,7 +30,7 @@ instead. No foreign key crosses the boundary — all 22 stay inside
 | `11_tables_shared_bulk.sql` | PLMPreprocessorShared | 8 tables |
 | `procs/*.sql` | Preprocessor | 14 procedures, `CREATE OR ALTER` |
 | *(bulk load)* | — | App state from PRIME, identity preserved |
-| `20_indexes_preprocessor.sql` | Preprocessor | 32 indexes — after the load |
+| `20_indexes_preprocessor.sql` | Preprocessor | 35 indexes (32 from PRIME + 3 from migration 041) — after the load |
 | `21_indexes_shared_bulk.sql` | PLMPreprocessorShared | 4 indexes — after the first batch |
 | `30_foreign_keys.sql` | Preprocessor | 22 FKs — after the load |
 
