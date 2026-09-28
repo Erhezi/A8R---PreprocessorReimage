@@ -962,7 +962,18 @@ function updateFinalizeGate() {
     btn.disabled = false;
     btn.title = "";
   }
-  updateLlmPendingButton(pendingTotal);
+  updateLlmPendingButton(countLlmPending());
+}
+
+// PENDING rows the next LLM batch would actually pick up — a row the LLM already
+// left undecided stays PENDING but is skipped server-side, so counting plain
+// `pending` here would promise work that never happens.
+function countLlmPending() {
+  let total = 0;
+  for (const c of contractSummaryData) {
+    total += Number(c.pending_llm || 0);
+  }
+  return total;
 }
 
 function updateLlmPendingButton(pendingTotal) {
@@ -971,11 +982,11 @@ function updateLlmPendingButton(pendingTotal) {
   if (pendingTotal > 0) {
     btn.disabled = false;
     btn.textContent = `Send ${pendingTotal} PENDING to LLM`;
-    btn.title = `Send ${pendingTotal} PENDING match(es) to the LLM for ACCEPT/REJECT review.`;
+    btn.title = `Send ${pendingTotal} PENDING match(es) the LLM has not reviewed yet for ACCEPT/REJECT review.`;
   } else {
     btn.disabled = true;
     btn.textContent = "Send PENDING to LLM";
-    btn.title = "No PENDING matches";
+    btn.title = "No PENDING matches awaiting LLM review";
   }
 }
 
@@ -1348,10 +1359,7 @@ document.getElementById("btnPendingSelected").addEventListener("click", async ()
 document.getElementById("btnLlmPending").addEventListener("click", async () => {
   const btn = document.getElementById("btnLlmPending");
   if (btn.disabled) return;
-  let pendingTotal = 0;
-  for (const c of contractSummaryData) {
-    pendingTotal += Number(c.pending || 0);
-  }
+  const pendingTotal = countLlmPending();
   if (pendingTotal === 0) return;
   if (!confirm(`Send ${pendingTotal} PENDING match(es) to the LLM? The LLM will set each to ACCEPTED or REJECTED.`)) return;
 

@@ -1461,7 +1461,7 @@ def _reaggregate_cascade_for_input_items(
     includes one of the given CCX pkids even when the aggregate came out the
     same — deciding a source counts as reviewing the cascade rows hanging off
     it, which is what keeps a settled cascade row out of the next LLM batch
-    (see ``_awaiting_llm_review``).
+    (see ``awaiting_llm_review``).
     """
     if not input_item_ids:
         return 0

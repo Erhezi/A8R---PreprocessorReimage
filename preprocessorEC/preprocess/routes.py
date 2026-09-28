@@ -517,6 +517,7 @@ def _build_contract_summary_rows(
                     "accepted": 0,
                     "rejected": 0,
                     "pending": 0,
+                    "pending_llm": 0,
                     "included": True,
                     "decision": decisions.get(
                         (organization_eid, cid, erp_vendor_id),
@@ -540,6 +541,14 @@ def _build_contract_summary_rows(
                 c["rejected"] += 1
             else:
                 c["pending"] += 1
+                # `pending` gates finalize (every undecided row blocks it);
+                # `pending_llm` is the subset the next LLM batch would actually
+                # pick up, i.e. rows the LLM has not already declined to decide.
+                # The two differ once a batch has run, and the "Send PENDING to
+                # LLM" button counts the second so it never promises work the
+                # backend will skip.
+                if preprocess_service.awaiting_llm_review(m):
+                    c["pending_llm"] += 1
 
     for contract in contracts.values():
         contract["included"] = not (

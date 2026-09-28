@@ -24,12 +24,19 @@ different-sale-unit pair even when the manufacturer catalog number is an exact
 hit, and only ACCEPTs a UOM/QOE difference when the evidence says it is a
 data-entry error rather than a real packaging variant.
 
-Proportional changes in quantity and sale-unit price are positive evidence of
-different packaging, including box versus case. Matching calculated per-each
-prices does not make those contract lines interchangeable. For Medline, retain
-the complete supplier catalog number: suffix differences can corroborate the
-packaging distinction. A data-entry ACCEPT requires evidence of the same
-intended packaging, not just the same underlying product. Within the same
+Proportional changes in quantity and raw sale-unit price are the key confirmation
+of real packaging differences versus UOM/QOE entry errors. For the same distributor,
+different complete supplier catalog numbers + different normalized UOMs + raw
+prices scaling reasonably with the package quantities strongly support REJECT.
+Exact proportionality is unnecessary, but a merely higher price is insufficient:
+the price factor must reasonably track the quantity factor. Matching calculated
+per-each prices supports this packaging relationship, not interchangeable contract
+lines. For Medline, retain complete supplier numbers, including suffixes.
+PENDING is only for genuinely unresolved evidence after checking for a packaging
+mismatch. Do not ask whether an EA/1 line might mean a full pack when its raw
+price already scales with one each; low unit prices can involve cent rounding.
+A data-entry ACCEPT requires evidence of the same intended packaging, not just
+the same underlying product. Within the same
 distributor catalog, an identical complete supplier number and equal or close
 raw contract prices normally provide that evidence despite conflicting UOM/QOE.
 Raw contract price is generally more reliable than entered packaging metadata;
@@ -72,6 +79,8 @@ likely data-entry errors; a genuine packaging variant is a different item.
 {% if mode == 'GROUP' %}
 Compare every numbered CANDIDATE independently against the INPUT. Candidates do
 not compete; several may be accepted. Return one result for every candidate.
+Keep the INPUT's stated packaging fixed for every comparison; do not copy a
+candidate's pack count or infer an input correction from another candidate.
 {% else %}
 Compare the INPUT with the MATCH.
 {% endif %}
@@ -81,8 +90,12 @@ Decisions:
 - ACCEPT: same product and packaging, possibly with metadata a human should fix.
 - REJECT: missing core fields, different products/catalog collision, or clearly
   different packaging.
-- PENDING: supplied evidence cannot establish product identity or packaging.
+- PENDING: supplied evidence establishes neither a compatible match nor a
+  product/packaging mismatch. Failure to prove sameness is not itself uncertainty
+  when the evidence establishes a difference.
 Use the following rules in order. Product conflicts cannot be rescued by price.
+Same product is only the first gate: a packaging REJECT must remain REJECT even
+when each-price normalization shows the products cost the same per physical item.
 
 1. Completeness and physical identity.
 - REJECT blank, null, "None", or "(not provided)" in any core field: description,
@@ -117,16 +130,42 @@ Supplier Type is the contract process type: MANUFACTURER, DISTRIBUTOR, or UNKNOW
   but have no assumed universal meaning and do not alone justify REJECT.
 
 3. Interpret packaging evidence.
+- Effective packaging means the quantity purchased for ONE raw Contract Price,
+  allowing an evidence-supported metadata correction. It does NOT mean a common
+  each or inner-pack basis obtained by dividing a case/pack. A case containing
+  five 100-count packs is not the same sale unit as one 100-count pack.
 - Compare ONE sale unit per row. CS=CA; BX=BOX. Box, case, bag, and each are
   distinct levels; BX is not a case alias. PK/PACK/CT require supporting quantity
   and description evidence before equating them to another unit. Combining boxes
   into a case proves a packaging relationship, not interchangeable contract lines.
+  BO/BOTTLE is also distinct from EA; a bottle of 100 tests is not one test.
 - Contract Price is raw price per stated sale unit; QOE is its each-count.
   Calculated Price per EA = Contract Price / QOE. Use supplied calculations and
   ratios, all MATCHED/INPUT: QOE, raw Contract Price, and Price per EA.
+  Compare raw price with raw price and EA price with EA price, never one row's
+  raw price with the other's EA price. Close EA prices plus materially different
+  QOE and proportional raw prices support different sale units, NOT a UOM/QOE
+  entry-error ACCEPT.
+- Proportional pricing is the key check for a real pack difference versus a
+  UOM/QOE entry error: compare the raw Contract Price ratio with the QOE ratio.
+  Their quotient is the supplied Price per EA ratio; near 1 is strong confirmation.
+  Exact equality is unnecessary when distinct supplier numbers and UOMs corroborate
+  the pack difference. For example, 100x quantity with about 50-73x raw price is
+  reasonably scaled for each versus bottle in the same distributor catalog;
+  100x quantity with only 1-2x raw price is not. Assess the magnitude as well as
+  direction; do not invent a discount or correction to force proportionality.
+  The close-raw-price guideline below is for same-pack entry-error evidence,
+  not a strict tolerance for proportional packaging prices.
+  Apply the same comparison when the MATCH is smaller: QOE ratio 0.01 and raw
+  price ratio near 0.01 mean pack-to-each scaling, not weak evidence because the
+  ratios are below 1. Allow cent rounding on inexpensive eaches: $3.27/100 =
+  $0.0327 is consistent with an EA price of $0.03.
 - Raw contract prices are generally more reliable than entered UOM/QOE, but are
   not infallible. EA prices inherit QOE errors: QOE disagreement and the resulting
   EA-price disagreement are one signal, not independent proof of different packs.
+  QOE is not suspect merely because it differs. Coherent UOM/count differences
+  and proportional raw prices support the stated quantities; do not hypothesize
+  that EA/1 means a whole pack without supplied evidence contradicting that scale.
 - "Close" positive raw prices means roughly +/-30% (price ratio 0.70-1.30),
   subject to item context; this is useful within the same supplier catalog,
   not a universal ACCEPT cutoff. Equal prices are stronger evidence. Allow rounding.
@@ -143,13 +182,26 @@ Supplier Type is the contract process type: MANUFACTURER, DISTRIBUTOR, or UNKNOW
   PENDING if packaging cannot be established.
 
 4. Decide packaging after establishing physical identity.
-A. REJECT clear packaging differences first: explicit descriptions establish
-   different sale-unit pack counts, OR quantity and raw price both scale by
-   approximately the same clearly different packaging factor, yielding close
-   EA prices. This includes different quantities within the same UOM and applies
-   even with identical manufacturer or complete supplier numbers. Equal raw prices
-   or small ordinary price changes do not establish proportional scaling merely
-   because QOE differs. This rule overrides the ACCEPT exceptions below.
+A. REJECT real packaging differences first, using proportional pricing as the
+   key confirmation: quantity and raw price scale by a reasonably similar,
+   clearly different packaging factor. Close EA prices are strong evidence;
+   exact proportionality is unnecessary. This includes different quantities
+   within the same UOM and applies in either direction (EA to pack or case to EA),
+   even with identical manufacturer or complete supplier numbers.
+   Within the same distributor catalog, different complete supplier numbers +
+   different normalized UOMs + reasonably proportional quantity/raw-price scaling
+   strongly establish different packaging: REJECT, rather than inventing entry
+   errors. Judge the scale as in rule 3, not only whether the larger pack costs more.
+   Equal raw prices or small ordinary price changes do not establish proportional
+   scaling merely because QOE differs. If scaling does not support the stated
+   pack difference, SKU/UOM differences alone do not confirm REJECT; assess the
+   entry-error rules or use PENDING if unresolved. Explicit descriptions that
+   independently establish different sale-unit pack counts can also confirm REJECT.
+   When these conditions hold, decide REJECT and stop the packaging review;
+   do not fall through to PENDING to verify whether the sale units might be equal.
+   No description spelling out the pack count, supplier lookup, or universal
+   meaning of H/Z is required when UOM/QOE and proportional prices establish it.
+   These REJECT rules override ALL entry-error ACCEPT exceptions.
 B. ACCEPT same normalized UOM and QOE, unless other supplied evidence conflicts
    with the packaging.
 C. For DISTRIBUTOR vs DISTRIBUTOR in the same known supplier catalog, ACCEPT an
@@ -158,12 +210,25 @@ C. For DISTRIBUTOR vs DISTRIBUTOR in the same known supplier catalog, ACCEPT an
    error. No explicit pack count or independently verified correction is required;
    differing calculated EA prices do not overturn this evidence. A wrong BX/CS
    entry may qualify, but those UOMs do not become aliases.
+   Both conditions must hold and A must be false: a shared catalog family/base
+   number is not an exact complete number, and close EA prices are not close raw
+   prices. Do not label a meaningful suffix difference a catalog-entry error to
+   make this exception apply.
 D. Outside C, close raw prices alone do not resolve conflicting UOM/QOE. ACCEPT
    when other supplied evidence establishes the same intended packaging, such as
-   an explicit matching pack count supported by product identity, even if
-   cross-supplier prices differ. Different Medline supplier numbers with the same
-   UOM AND QOE can suggest a catalog-field error, but are not enough alone.
-E. Otherwise use PENDING if intended packaging is unresolved. A large EA-price
+   an explicit matching sale-unit pack count on BOTH rows supported by product
+   identity, even if cross-supplier prices differ. Different Medline supplier
+   numbers with the same UOM AND QOE can suggest a catalog-field error, but are
+   not enough alone.
+   A pack count in only the candidate's description does not establish the input's
+   pack count. "DNU/USE <catalog number>" is a replacement reference, not evidence
+   that the input has the replacement's packaging. Do not invent multiple field
+   errors to turn an EA/1 line into the candidate's multipack.
+E. Only use PENDING after excluding the packaging REJECT conditions in A and
+   the supported ACCEPT conditions above. Name the specific missing or conflicting
+   evidence; "PK/100 vs EA/1 with different suffixes; verify packaging" is not a
+   valid PENDING reason when proportional raw pricing already confirms the difference.
+   A merely possible data-entry error does not override that evidence. A large EA-price
    difference can flag entry error or real pricing variation; it alone proves
    neither same nor different packaging. When raw prices are close and QOE
    conflicts, assess QOE before alleging a price error.
@@ -182,6 +247,34 @@ physical identity; suppliers are DISTRIBUTOR unless labeled otherwise):
 - REJECT, Medline box/case: Mfg# 30416-025; Supplier# BXT30416025Z, BX/10/$8.66
   vs BXT30416025, CA/100/$86.64. Quantity and raw price scale about 10x;
   EA prices 0.866/0.8664 and the suffix support genuinely different packaging.
+- REJECT, Medline each/pack: Mfg# 3MA029; Supplier# ADX3MA029H,
+  EA/1/$15.01 vs ADX3MA029, PK/10/$150.13. QOE and raw price scale about
+  10x; close EA prices ($15.01/$15.013) confirm different sale units, not an
+  input UOM error. A candidate description saying "Pkg 10" cannot establish
+  that the input also sells ten ampules.
+- REJECT, Medline each/bottle: Mfg# 2161; Supplier# AMV2161H,
+  description "DBF-DNU-USE AMV2161Z", EA/1/$0.73 vs AMVMON2161Z,
+  description "STRIP UA MLSTX 10SG 10 PRMTR 100 TST NS LF DISP", BO/100/$53.23
+  (also REJECT at $36.29). QOE scales 100x and raw price about 73x (or 50x);
+  EA-price ratios are about 0.73 (or 0.50). This is reasonably proportional
+  pricing with different complete supplier numbers and EA vs BO in the same
+  distributor catalog: different packaging. The price need not be exactly 100x;
+  the replacement reference does not prove the input's EA/1 or SKU is wrong.
+- REJECT, Medline case/each: Mfg# 302995; Supplier# B-D302995,
+  CA/400/$43.48 vs B-D302995H, EA/1/$0.11. QOE ratio 0.0025, raw-price
+  ratio about 0.00253, EA prices $0.1087/$0.11: a case versus one syringe.
+  $43.48 and $0.11 are NOT close raw prices; same product and close EA prices
+  cannot justify correcting the UOM, QOE, or supplier suffix.
+- REJECT, Medline specimen bags, pack/each: Mfg# DYND30261; Supplier#
+  DYND30261Z, PK/100/$3.27 vs DYND30261H, EA/1/$0.03. QOE ratio 0.01,
+  raw-price ratio about 0.00917; EA prices $0.0327/$0.03 are close with cent
+  rounding. Likewise, Mfg# DYND30281; DYND30281Z, PK/100/$10.99 vs
+  DYND30281H, EA/1/$0.11 has ratios 0.01/about 0.01001 and EA prices
+  $0.1099/$0.11. Both REJECT: same distributor, different full supplier numbers,
+  different UOMs, and proportional prices confirm pack versus each. Do not use
+  PENDING to ask whether EA/1 secretly represents 100 bags.
+  For the latter input, DYND30281, CA/500/$54.93 is also REJECT: about 5x
+  quantity and price means five packs versus one, not the same effective package.
 - ACCEPT, Medline QOE error: ECG electrode, Mfg# 22853 and Supplier# KDL22853
   on both rows; CS/600/$53 vs CA/200/$53. Raw-price ratio 1, QOE ratio 1/3,
   EA-price ratio 3. Same complete catalog and raw price support same packaging;
@@ -200,6 +293,10 @@ Output JSON only. Confidence is 0-100. Keep reason to one sentence naming decisi
 evidence: product conflict; UOM/QOE and price scaling for packaging REJECT;
 suspect field and same-packaging evidence for entry-error ACCEPT; or what a human
 should verify for PENDING.
+Before returning ACCEPT or PENDING, check rule A; if it holds, return REJECT.
+ACCEPT requires the same sale unit, not merely the same product or comparable
+per-each cost. PENDING requires unresolved evidence, not an unsupported possibility
+that an otherwise consistent pack/each comparison has an entry error.
 {% if mode == 'GROUP' %}
 Return every candidate once, using its supplied number, in the same order:
 {"results": [

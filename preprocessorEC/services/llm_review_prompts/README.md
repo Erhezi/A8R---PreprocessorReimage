@@ -113,19 +113,34 @@ boundaries.
 V1 weighs raw contract prices above EA prices derived from potentially incorrect
 QOE. For the same distributor catalog, an exact complete supplier number and
 equal/close positive raw prices support ACCEPT despite UOM/QOE inconsistencies.
-Clear proportional quantity/price scaling or explicit different sale-unit pack
-counts still support REJECT. The prompt flags suspect metadata without inventing
+Proportional quantity/raw-price scaling is the key confirmation of real packaging
+differences versus entry errors. Within the same distributor catalog, different
+complete supplier numbers + different normalized UOMs + reasonably proportional
+pricing strongly support REJECT. Compare the price factor with the quantity
+factor; a merely higher price for a larger pack is insufficient. Exact equality
+is unnecessary: 100x quantity with about 50-73x price supports the reported
+each/bottle cases, whereas 100x quantity with only 1-2x price does not confirm
+that packaging difference. Independently explicit different sale-unit pack
+counts can also confirm REJECT. Matching EA prices never satisfy the close-raw-price
+exception; a candidate-only pack count or DNU/USE reference does not establish
+the input's packaging. The prompt flags suspect metadata without inventing
 the correct count; it does not change the source fields.
 The roughly +/-30% close-price guideline is not an ACCEPT cutoff. Across
 suppliers (including manufacturer/distributor comparisons), price gaps alone
 do not block ACCEPT when product and packaging are established. Unresolved
 packaging still requires review; actual packaging variants still REJECT.
+PENDING is evaluated only after excluding a supported packaging REJECT. Effective
+packaging refers to the quantity purchased at the raw price; converting both
+rows to a common each or inner pack does not make their sale units the same.
+Pack-to-each ratios below 1 and cent rounding on inexpensive eaches remain valid
+proportional evidence. Do not request verification of a hypothetical QOE error
+when the supplied quantities, UOMs, and raw-price scaling are already coherent.
 
 ## V1 packaging regression reference
 
-The compact V1 system prompt keeps five contrasting examples for GPT-5.6 Luna.
-The reported cases below remain evaluation references instead of repeated prompt
-examples. These are expected outcomes, not results of a live model evaluation.
+The V1 system prompt includes contrasting packaging and entry-error examples,
+including the reported ACCEPT and PENDING failure patterns from task 4524 below.
+These are expected outcomes, not results of a live model evaluation.
 Each row describes a Medline distributor comparison with established physical
 product identity; prices are raw contract prices, not calculated EA prices.
 For a live evaluation, include the full source descriptions and supplier roles
@@ -138,6 +153,34 @@ and check both PAIR and GROUP modes without changing the saved match decisions.
 | 653620 | 2C8419 | BHL2C8419H; EA/1/3.59 | BHL2C8419; CA/48/172.21 | REJECT | Each/case quantity and price scale about 48x. |
 | 654205 | 30416-025 | BXT30416025Z; BX/10/8.66 | BXT30416025; CA/100/86.64 | REJECT | Quantity and price scale about 10x, not a decimal error. |
 | 657083 | 22853 | KDL22853; CS/600/53.00 | KDL22853; CA/200/53.00 | ACCEPT | Identical full supplier number and raw price; likely QOE error. |
+| 686534 (4524 input 511478) | 3MA029 | ADX3MA029H; EA/1/15.01 | ADX3MA029; PK/10/150.13 | REJECT | 10x quantity/raw price; equal EA prices confirm each versus pack. |
+| 686552 / 686554 (4524 input 511495) | 2161 | AMV2161H; EA/1/0.73 | AMVMON2161Z; BO/100/53.23 or 36.29 | REJECT | Same distributor, distinct complete SKUs and EA/BO, 100x quantity with about 73x/50x raw price: reasonably proportional packaging prices. |
+| 686595 / 686599 / 686601 / 686604 (4524 input 511531) | 302995 | B-D302995; CA/400/43.48 | B-D302995H; EA/1/0.11 | REJECT | About 400x quantity/raw-price difference; 0.1087 and 0.11 are EA prices, not both raw prices. |
+| 686792 (4524 input 511674) | DYND30261 | DYND30261Z; PK/100/3.27 | DYND30261H; EA/1/0.03 | REJECT | QOE ratio 0.01 and raw-price ratio 0.00917; 0.0327 per bag rounds to 0.03. |
+| 686810 / 687514 (4524 input 511681) | DYND30281 | DYND30281Z; PK/100/10.99 | DYND30281H; EA/1/0.11 | REJECT | QOE ratio 0.01 and raw-price ratio 0.01001; pack versus each is established, not unresolved. |
+| 686811 / 686813 (4524 input 511681) | DYND30281 | DYND30281Z; PK/100/10.99 | DYND30281; CA/500/54.93 | REJECT | About 5x quantity and raw price; five inner packs are not the same sale unit as one pack. |
+
+Task 4524 was saved with V1/GROUP. The reported matches for inputs 511478,
+511495, and 511531 were LLM ACCEPTs.
+The saved reasons treated 10x scaling as same packaging, inferred BO/100 from
+the candidate while calling the input's EA/1 and SKU errors, and confused raw
+with EA prices for the 400-count case. The revised prompt makes proportional
+pricing the key confirmation and packaging REJECT precedence explicit, limits
+entry-error exceptions, and prevents copying candidate
+packaging onto the input. Existing saved decisions are not changed by editing
+the prompt. Include the original input description `DBF-DNU-USE AMV2161Z` in
+evaluations of 511495; replacing it with the candidate's 100-test description
+would hide the failure being checked.
+
+Inputs 511674 and 511681 had PENDING each-line matches (686792 and 686810;
+511681 also had a separately reasoned INFOR_CL PENDING, 687514). Their reasons
+asked whether EA/1 could represent a full pack, despite proportional raw prices;
+687514 even acknowledged near-equal EA pricing. The stored match SKU for 511681
+is `DYND30281H`. Its case-of-500 matches 686811/686813 were also incorrectly
+ACCEPTed by treating the case as the same effective 100-count inner pack.
+The prompt now makes a supported packaging REJECT terminal before PENDING and
+defines effective packaging as the purchased sale unit, with both failures in
+the examples. These edits do not rerun the model or change saved decisions.
 
 ## Adding a version
 

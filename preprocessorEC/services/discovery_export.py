@@ -34,11 +34,13 @@ LOCATED_CONTRACT_COLUMNS = (
     "SKU",
     "Description",
     "Exact",
+    "Matched On",
     "Similarity",
     "Verdict",
-    "Matched SKU",
     "Matched Description",
     "Matched Contract",
+    "Manufacturer Part Number",
+    "Vendor Part Number",
     "UOM",
     "QOE",
     "Price",
@@ -86,11 +88,13 @@ def _blank_match_row(item: dict, located_count: int, has_supplier: bool) -> dict
         "SKU": item.get("sku_input"),
         "Description": item.get("description_input"),
         "Exact": "",
+        "Matched On": "",
         "Similarity": None,
         "Verdict": "",
-        "Matched SKU": "",
         "Matched Description": "",
         "Matched Contract": "",
+        "Manufacturer Part Number": "",
+        "Vendor Part Number": "",
         "UOM": "",
         "QOE": None,
         "Price": None,
@@ -110,21 +114,21 @@ def _blank_match_row(item: dict, located_count: int, has_supplier: bool) -> dict
 
 def _match_row(item: dict, match: dict, verdict, details: dict,
                located_count: int, has_supplier: bool) -> dict:
-    matched_sku = (
-        match.get("mfg_catalog_num_matched")
-        if match.get("matched_on") == "REDUCED_MFG"
-        else match.get("vendor_catalog_num_matched")
-    )
     row = {
         "Input Row": item.get("file_row"),
         "SKU": item.get("sku_input"),
         "Description": item.get("description_input"),
         "Exact": "Yes" if match.get("sku_exact") else "No",
+        "Matched On": match.get("matched_on") or "",
         "Similarity": match.get("desc_similarity"),
         "Verdict": verdict or "",
-        "Matched SKU": matched_sku,
         "Matched Description": match.get("description_matched"),
         "Matched Contract": match.get("contract_id_matched"),
+        # Both catalog numbers rather than only the one the hit keyed on:
+        # ``Matched On`` already says which that was, and buyers work from
+        # whichever number their own system carries.
+        "Manufacturer Part Number": match.get("mfg_catalog_num_matched"),
+        "Vendor Part Number": match.get("vendor_catalog_num_matched"),
         "UOM": match.get("uom_matched"),
         "QOE": match.get("qoe_matched"),
         "Price": match.get("unit_price_matched"),

@@ -1076,7 +1076,7 @@ def _llm_match_dict(match, match_vendor: str, supplier_type: str = "") -> dict:
     }
 
 
-def _awaiting_llm_review(match) -> bool:
+def awaiting_llm_review(match) -> bool:
     """True when *match* is undecided and the LLM has not already judged it.
 
     An undecided LLM verdict writes ``PENDING`` back (see `_apply_llm_verdict`)
@@ -1242,7 +1242,7 @@ def run_llm_review(
 
     pending_matches = [
         m for m in task_repo.get_match_results(task_id, matched_source="CCX")
-        if _awaiting_llm_review(m) and m.similarity_bucket in ("MED", "LOW")
+        if awaiting_llm_review(m) and m.similarity_bucket in ("MED", "LOW")
     ]
 
     if not pending_matches:
@@ -1569,7 +1569,7 @@ def run_infor_residue_llm_review(
     """Send MED/LOW Infor residue matches to LLM, same pattern as CCX LLM review."""
     pending = [
         m for m in task_repo.get_match_results(task_id, matched_source="INFOR_CL")
-        if _awaiting_llm_review(m) and m.similarity_bucket in ("MED", "LOW")
+        if awaiting_llm_review(m) and m.similarity_bucket in ("MED", "LOW")
     ]
     if not pending:
         return {"reviewed": 0}
@@ -1593,7 +1593,7 @@ def run_llm_review_pending_all(
 
     Triggered by the user after manual review when leftover PENDING rows should
     be auto-decided. Rows the LLM already reviewed and left undecided are
-    skipped (see `_awaiting_llm_review`), so repeat clicks make progress instead
+    skipped (see `awaiting_llm_review`), so repeat clicks make progress instead
     of re-asking the same question. CCX is processed first so the cascade in
     update_match_decision settles linked INFOR_CL CASCADE rows before the
     INFOR_CL pass re-reads PENDING from the DB.
@@ -1607,7 +1607,7 @@ def run_llm_review_pending_all(
     for source in ("CCX", "INFOR_CL"):
         pending = [
             m for m in task_repo.get_match_results(task_id, matched_source=source)
-            if _awaiting_llm_review(m)
+            if awaiting_llm_review(m)
         ]
         if not pending:
             continue
