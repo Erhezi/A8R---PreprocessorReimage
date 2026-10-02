@@ -11,6 +11,7 @@ in by the caller rather than read from ``current_app``.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Optional
 
 from sqlalchemy import bindparam
@@ -42,6 +43,9 @@ COLUMN_ALIASES = {
         "catalog_#", "cat_#", "part_number", "part_no", "part_#", "mfg_catalog_num",
         "manufacturer_part_number", "manufacturer_catalog_number", "mfg#",
         "vendor_catalog_num", "vendor_part_number", "vendor#",
+        "item", "item_id", "catalog", "mfg_catalog", "mfg_part_number", "mpn",
+        "vendor_item_number", "supplier_part_number", "supplier_item_number",
+        "product_number", "product_code", "reference_number", "ref_number",
     ],
     "description": [
         "description", "desc", "item_description", "product_description", "item_desc",
@@ -61,8 +65,19 @@ def _sql_session() -> Session:
     return Session(get_sqlserver_engine())
 
 
+_NUMBER_WORDS = {"#": "num", "no": "num", "nbr": "num", "number": "num"}
+
+
 def _normalize_header(name: str) -> str:
-    return str(name).strip().lower().replace(" ", "_")
+    """Canonical header form for alias matching.
+
+    Tolerates BOMs, punctuation ("Mfg. Catalog #"), hyphens/underscores/spaces,
+    and the many spellings of "number" (#, no, nbr, number) so that
+    ``Item #``, ``item_no`` and ``Item Number`` all compare equal.
+    """
+    text = str(name).replace("﻿", "").strip().lower().replace("#", " # ")
+    tokens = re.findall(r"[a-z0-9]+|#", text)
+    return "_".join(_NUMBER_WORDS.get(t, t) for t in tokens)
 
 
 def resolve_columns(headers: list[str], user_mapping: Optional[dict] = None) -> dict:
@@ -76,7 +91,11 @@ def resolve_columns(headers: list[str], user_mapping: Optional[dict] = None) -> 
 
     for key in COLUMN_KEYS:
         chosen = user_mapping.get(key)
-        if chosen and chosen in headers:
+        if chosen:
+            if chosen not in headers:
+                raise DiscoveryInputError(
+                    f"Mapped column '{chosen}' for {key} was not found in the file."
+                )
             resolved[key] = chosen
             continue
         resolved[key] = None
@@ -87,7 +106,7 @@ def resolve_columns(headers: list[str], user_mapping: Optional[dict] = None) -> 
         if resolved[key]:
             continue
         for alias in COLUMN_ALIASES[key]:
-            candidate = normalized.get(alias)
+            candidate = normalized.get(_normalize_header(alias))
             if candidate and candidate not in taken:
                 resolved[key] = candidate
                 taken.add(candidate)
@@ -189,6 +208,10 @@ def create_set_from_upload(
             f"Unknown match mode '{match_mode}'. Use one of: {', '.join(MATCH_MODES)}."
         )
 
+    # Headers must match what the browser shows in the mapping dropdowns, which
+    # are String(h).trim() of the raw cells — pandas keeps trailing spaces and
+    # numeric headers as-is, which would silently void the user's mapping.
+    dataframe = dataframe.rename(columns=lambda c: str(c).strip())
     columns = resolve_columns(list(dataframe.columns), user_mapping)
     items = parse_upload(dataframe, columns, max_rows)
     has_supplier = any(item["supplier_input"] for item in items)

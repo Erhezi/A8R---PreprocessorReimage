@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Contract Atlas Preprocessor — Routes, Services &amp; Design</title>
+<style>
+  :root { color-scheme: light; --ink:#243247; --muted:#596579; --accent:#1f4e79; --line:#d6dfe9; --soft:#f3f6fa; }
+  * { box-sizing:border-box; }
+  body { max-width:1120px; margin:auto; padding:36px 28px 70px; font:15px/1.6 "Segoe UI",Calibri,Arial,sans-serif; color:var(--ink); background:white; }
+  h1 { font-size:30px; line-height:1.25; color:var(--accent); border-bottom:3px solid var(--accent); padding-bottom:15px; margin:0 0 12px; }
+  h2 { margin-top:36px; color:var(--accent); font-size:22px; border-bottom:1px solid var(--line); padding-bottom:6px; }
+  h3 { font-size:17px; margin:22px 0 8px; }
+  a { color:var(--accent); text-underline-offset:3px; }
+  nav { display:flex; flex-wrap:wrap; gap:8px 20px; padding:14px 18px; background:var(--soft); border-radius:8px; }
+  .meta, .source { color:var(--muted); font-size:13px; }
+  code { font:0.9em/1.5 Consolas,"Courier New",monospace; background:var(--soft); padding:2px 4px; border-radius:3px; overflow-wrap:anywhere; }
+  table { width:100%; border-collapse:collapse; margin:12px 0 20px; font-size:14px; }
+  th, td { text-align:left; vertical-align:top; padding:10px 12px; border:1px solid var(--line); overflow-wrap:anywhere; }
+  th { background:#e8eff7; }
+  tbody tr:nth-child(even) { background:#fafbfd; }
+  .note { padding:14px 18px; border-left:4px solid #d1a24b; background:#fff8e8; }
+  .flow { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:20px 0; }
+  .flow span { padding:10px 12px; border:1px solid #a9bed7; border-radius:6px; background:#edf3fa; font-weight:600; }
+  .flow b { color:var(--muted); }
+  details { border:1px solid var(--line); border-radius:6px; margin:10px 0; padding:12px 16px; }
+  summary { cursor:pointer; color:var(--accent); font-weight:600; }
+  .route-table { table-layout:fixed; }
+  .route-table th:nth-child(1) { width:10%; }
+  .route-table th:nth-child(2) { width:47%; }
+  .route-table th:nth-child(3) { width:43%; }
+  .route-table code { background:transparent; padding:0; }
+  .method { font-size:12px; font-weight:700; }
+  @media(max-width:640px) { body { padding:22px 14px; } h1 { font-size:25px; } th,td { padding:7px; } .route-table { font-size:12px; } .route-table th:nth-child(1) { width:15%; } .route-table th:nth-child(2) { width:45%; } .route-table th:nth-child(3) { width:40%; } }
+  @media print { body { max-width:none; padding:0; font-size:11px; } nav { display:none; } h2,summary { break-after:avoid; } tr { break-inside:avoid; } details { border:0; padding:0; } a { color:inherit; } }
+</style>
+</head>
+<body>
+<header>
+<h1>Contract Atlas Preprocessor<br>Routes, services &amp; overall design</h1>
+<p class="meta">Code snapshot: September 30, 2026 · Scope: the root <code>run.py</code> and <code>preprocessorEC/</code> application, including current working-tree changes. The nested <code>A8---Contract-Atlas/</code> project is outside this guide.</p>
+<p>A quick developer reference for the task-based contract preprocessing app: how requests move through the system, where business logic lives, and which endpoints are available.</p>
+</header>
+<nav aria-label="Guide sections"><a href="#design">Design</a><a href="#workflow">Workflow</a><a href="#services">Services</a><a href="#routes">Routes</a><a href="#operations">Running &amp; extending</a><a href="#gaps">Current gaps</a></nav>
+
+<section id="design">
+<h2>1. Overall design</h2>
+<p>The application is a <strong>Flask monolith organized by workflow phase</strong>. Jinja templates and Bootstrap render the pages; browser requests call JSON APIs for validation, matching, review decisions, and downloads. Quick Discovery is a separate, task-free lookup workflow in the same app.</p>
+<div class="flow" aria-label="Application layers"><span>Pages &amp; browser requests</span><b aria-hidden="true">→</b><span>Blueprint routes</span><b aria-hidden="true">→</b><span>Services &amp; state machine</span><b aria-hidden="true">→</b><span>Repositories / SQL</span></div>
+<table>
+<thead><tr><th>Layer / location</th><th>Responsibility</th></tr></thead>
+<tbody>
+<tr><td><a href="run.py"><code>run.py</code></a> and <a href="preprocessorEC/__init__.py"><code>preprocessorEC/__init__.py</code></a></td><td>Entry point and <code>create_app()</code> factory. Load configuration, initialize sessions and database engines, register 11 blueprints, configure login, and attempt to load the sentence-transformer model.</td></tr>
+<tr><td><code>preprocessorEC/&lt;feature&gt;/routes.py</code></td><td>HTTP input handling, authentication, JSON/file responses and page rendering. Routes delegate business operations to services; some also perform repository or SQL queries directly.</td></tr>
+<tr><td><code>preprocessorEC/services/</code></td><td>Validation, matching, scoring, review, dedup decisions and report construction. Many services are independent of Flask, but some helpers, including scoring and LLM review, read Flask configuration.</td></tr>
+<tr><td><a href="preprocessorEC/state.py"><code>state.py</code></a></td><td><code>TaskState</code>, phase/status constants and <code>TaskStateMachine</code>. Enforces forward transition guards and records phase changes. LangGraph is a future design target, not the current runtime.</td></tr>
+<tr><td><code>db/task_repo.py</code>, <code>db/discovery_repo.py</code>, <code>models.py</code></td><td>SQL Server persistence: tasks, input items, match snapshots, review decisions, issues, status history, discovery sets and prompt versions. Parameterized SQL also lives in feature <code>queries/</code> directories and is loaded by <code>db/sql_loader.py</code>.</td></tr>
+<tr><td><code>db/workstate_repo.py</code>, <code>common/session.py</code></td><td>SQLite stores intermediate task state as JSON in <code>instance/workstate.db</code>; Flask sessions use a separate <code>instance/session.db</code>. SQLite tables are initialized by the app.</td></tr>
+<tr><td><code>templates/</code>, feature <code>templates/</code>, <code>static/</code></td><td>Shared layout, task and phase pages, embedded browser scripts and styles. The task detail page incorporates intake and preprocess content.</td></tr>
+</tbody></table>
+<p><strong>Data boundaries:</strong> SQL Server holds durable business records in the <code>Preprocessor</code> database. Queries also read shared CCX and Infor data through <code>PLMPreprocessorShared</code>. The dedup workspace (<code>PreprocessorTaskItemForDecision</code>) is an editable snapshot of accepted matches, separate from raw matching results. Phase changes update SQLite state, the SQL Server task record and the audit log in separate operations.</p>
+<p><strong>Access:</strong> workflow pages and APIs use Flask-Login sessions. Registration supports <code>sourcing</code>, <code>mdm</code> and <code>preprocessor</code> roles. Debug routes and Discovery prompt creation/activation require the <code>preprocessor</code> role; task contract registration has additional role checks. The admin route currently has a login guard only.</p>
+</section>
+
+<section id="workflow">
+<h2>2. Main workflow</h2>
+<div class="flow" aria-label="Task phases in order"><span>1 Intake</span><b aria-hidden="true">→</b><span>2 Identity</span><b aria-hidden="true">→</b><span>3 Preprocess</span><b aria-hidden="true">→</b><span>4 Dedup</span><b aria-hidden="true">→</b><span>5 Export</span><b aria-hidden="true">→</b><span>6 Monitoring</span></div>
+<table><thead><tr><th>Phase</th><th>Current behavior</th><th>Transition guard</th></tr></thead><tbody>
+<tr><td>Intake</td><td>Create a task; upload Excel/CSV rows; normalize fields; run PC1; correct, delete or manually pass eligible rows. Passing rows can advance while error rows are split into a child task.</td><td><code>pc1_passed</code></td></tr>
+<tr><td>Identity</td><td>Copy/apply standardized descriptions, select or confirm manufacturer information, enter contract details and run PC2.</td><td><code>pc2_passed</code></td></tr>
+<tr><td>Preprocess</td><td>Match CCX SKUs and score confidence; group contracts; cascade into Infor; optionally review with an LLM; match Infor residue; label Infor item numbers; validate buy UOM. Human decisions and issue resolution feed finalization.</td><td><code>status == PREPROCESSED</code></td></tr>
+<tr><td>Dedup</td><td>Materialize accepted matches, choose keep/drop independently for each side, edit fields, and run kept-set integrity checks. Finalization marks dedup complete.</td><td><code>status == DEDUP_COMPLETE</code></td></tr>
+<tr><td>Export</td><td>Preview/download the dedup review workbook and mark contract replacements. Generic operational export formats remain a placeholder. Finalization advances to monitoring.</td><td><code>status == EXPORTED</code></td></tr>
+<tr><td>Monitoring</td><td>Show current phase/status and transition history.</td><td>No outgoing phase transition.</td></tr>
+</tbody></table>
+<p><strong>Matching choices:</strong> confidence scoring combines manufacturer number, description, price and packaging factors according to pair type. Tasks retain their threshold configuration, LLM prompt version and <code>PAIR</code>/<code>GROUP</code> review mode. Configuration B is the default (HIGH ≥ 0.90; MED ≥ 0.45). HIGH matches auto-accept; lower-confidence matches can receive LLM and human review. Match decisions use <code>ACCEPTED</code>, <code>REJECTED</code> and <code>PENDING</code>.</p>
+<p><strong>Quick Discovery:</strong> upload SKU + Description, optionally Supplier → match/rank CCX candidates → inspect or override verdicts → export. It uses its own sets/items/matches and database-backed prompt versions. The browser drives LLM work through <code>start</code> and repeated <code>run-slice</code> requests; each slice can run concurrent calls. Verdicts are <code>SAME</code>, <code>DIFFERENT</code> or <code>UNCERTAIN</code>.</p>
+</section>
+
+<section id="services">
+<h2>3. Service map</h2>
+<p>All paths below are relative to <code>preprocessorEC/services/</code>. These are Python modules within the Flask application, not separately deployed services.</p>
+<table><thead><tr><th>Module(s)</th><th>Responsibility / primary entry points</th></tr></thead><tbody>
+<tr><td><code>intake_service.py</code></td><td>PC1 normalization and validation, duplicate checks, edits and manual passes; <code>run_precheck()</code>, <code>proceed_with_passing()</code>, <code>update_item_fields()</code>.</td></tr>
+<tr><td><code>precheck_report.py</code></td><td>Excel report of PC1 errors/warnings, including header-level errors; <code>build_excel()</code>.</td></tr>
+<tr><td><code>identity_service.py</code></td><td>Description updates, manufacturer lookups/confirmation and PC2; <code>run_precheck2()</code>, <code>advance_to_preprocess()</code>.</td></tr>
+<tr><td><code>preprocess_service.py</code></td><td>Main orchestration and individual matching steps; <code>run_full_preprocess()</code>, <code>run_sku_matching()</code>, <code>run_infor_cascade()</code>, <code>run_infor_residue()</code>, item labeling, buy-UOM checks, decisions and <code>finalize_preprocess()</code>.</td></tr>
+<tr><td><code>scoring.py</code></td><td>Pair classification, confidence scores, batch description similarity and HIGH/MED/LOW thresholds. Uses sentence-transformer embeddings when available, with fallback similarity.</td></tr>
+<tr><td><code>llm_review.py</code>, <code>llm_review_prompts/</code></td><td>Contract-load match review in PAIR or GROUP mode. Versioned Markdown prompts live in the repository and are selected per task.</td></tr>
+<tr><td><code>llm_client.py</code>, <code>llm_connection_test.py</code></td><td>Shared OpenAI-compatible/Azure client configuration, timeouts, retries and certificate handling; connectivity diagnostics for the debug API.</td></tr>
+<tr><td><code>dedup_workspace.py</code>, <code>dedup_resolution.py</code></td><td>Materialize accepted CCX/Infor matches into editable decision rows; calculate default resolution strategies and actions. Existing workspace rows are retained unless reset.</td></tr>
+<tr><td><code>dedup_service.py</code></td><td>Retrieve candidates, change per-side decisions, track inline edits, reset the workspace and finalize. Simulation and its older integrity helper remain placeholders.</td></tr>
+<tr><td><code>integrity_check.py</code></td><td>Implemented checks for manufacturer consistency, QOE per UOM and UOM per vendor part number across the kept set. Persists issues; edits plus reruns resolve them.</td></tr>
+<tr><td><code>im_check.py</code></td><td>Item-master consequence warnings: sole contract coverage, affected locations and vendor/location alignment. Candidate selection and persistence exist; source lookups remain scaffolded.</td></tr>
+<tr><td><code>dedup_review_export.py</code>, <code>dedup_review_rules.py</code></td><td>Dedup workbook with <code>quick_line_count</code> and per-contract sheets; derive Action/Notes and include replacement leftovers where requested.</td></tr>
+<tr><td><code>export_service.py</code></td><td>Contract replacement flags and export finalization. <code>generate_export()</code> returns <code>not_implemented</code>.</td></tr>
+<tr><td><code>monitoring_service.py</code></td><td><code>get_task_report()</code> returns task state and status history.</td></tr>
+<tr><td><code>discovery_service.py</code></td><td>Parse discovery uploads, match CCX catalog numbers, calculate similarity and rank results.</td></tr>
+<tr><td><code>discovery_llm.py</code></td><td>Versioned database prompts, PAIR/GROUP rendering and concurrent discovery comparisons.</td></tr>
+<tr><td><code>discovery_export.py</code></td><td>Located-contract report driven by uploaded rows, including unmatched inputs; applies effective verdicts and reads live contract details.</td></tr>
+</tbody></table>
+</section>
+
+<section id="routes">
+<h2>4. Current route inventory</h2>
+<p>Paths below omit the deployment prefix. Development uses no prefix; production prepends <code>URL_PREFIX</code> (default <code>/preprocessor</code>) to blueprint and static routes. Auth paths already include <code>/auth</code>. The factory's root redirect is registered literally at <code>/</code>, independently of the prefix.</p>
+<p><code>&lt;task_id&gt;</code>, <code>&lt;int:item_id&gt;</code> and similar segments are Flask path parameters. Methods listed are the explicit application methods; Flask's automatic HEAD/OPTIONS handling is omitted. Most APIs exchange JSON; authentication uses forms and upload routes accept files.</p>
+<table><thead><tr><th>Method</th><th>Path</th><th>Purpose</th></tr></thead><tbody><tr><td>GET</td><td><code>/</code></td><td>Redirect to task list if logged in, otherwise auth landing.</td></tr><tr><td>GET</td><td><code>/static/&lt;path:filename&gt;</code></td><td>Flask static assets (deployment prefix applies).</td></tr></tbody></table>
+<p class="meta">120 explicit blueprint route registrations, grouped below. Expand a section to browse its endpoints.</p>
+<details><summary>Authentication ? 4 routes</summary>
+<p class="source">Source: <a href="preprocessorEC/auth/routes.py"><code>preprocessorEC/auth/routes.py</code></a></p>
+<table class="route-table"><thead><tr><th>Method</th><th>Path</th><th>Purpose / handler</th></tr></thead><tbody>
+<tr data-route="/auth/landing" data-methods="GET"><td class="method">GET</td><td><code>/auth/landing</code></td><td>Public landing page; redirects authenticated users to tasks.<br><span class="source">Public ? <code>landing()</code></span></td></tr>
+<tr data-route="/auth/login" data-methods="GET,POST"><td class="method">GET / POST</td><td><code>/auth/login</code></td><td>Display login form or authenticate submitted credentials.<br><span class="source">Public ? <code>login()</code></span></td></tr>
+<tr data-route="/auth/register" data-methods="GET,POST"><td class="method">GET / POST</td><td><code>/auth/register</code></td><td>Display registration form or create a user.<br><span class="source">Public ? <code>register()</code></span></td></tr>
+<tr data-route="/auth/logout" data-methods="GET"><td class="method">GET</td><td><code>/auth/logout</code></td><td>Log out and clear the session.<br><span class="source">Login required ? <code>logout()</code></span></td></tr>
+</tbody></table></details>
+<details><summary>Tasks ? 13 routes</summary>
+<p class="source">Source: <a href="preprocessorEC/tasks/routes.py"><code>preprocessorEC/tasks/routes.py</code></a></p>
+<table class="route-table"><thead><tr><th>Method</th><th>Path</th><th>Purpose / handler</th></tr></thead><tbody>
+<tr data-route="/api/tasks" data-methods="GET"><td class="method">GET</td><td><code>/api/tasks</code></td><td>Return the task list as JSON.<br><span class="source">Login required ? <code>api_list_tasks()</code></span></td></tr>
+<tr data-route="/api/tasks/&lt;task_id&gt;" data-methods="GET"><td class="method">GET</td><td><code>/api/tasks/&lt;task_id&gt;</code></td><td>Return a single task&#x27;s detail as JSON.<br><span class="source">Login required ? <code>api_get_task()</code></span></td></tr>
+<tr data-route="/api/tasks" data-methods="POST"><td class="method">POST</td><td><code>/api/tasks</code></td><td>Create a new task from JSON body.<br><span class="source">Login required ? <code>api_create_task()</code></span></td></tr>
+<tr data-route="/api/tasks/&lt;task_id&gt;" data-methods="DELETE"><td class="method">DELETE</td><td><code>/api/tasks/&lt;task_id&gt;</code></td><td>Permanently delete a task and cascade-remove its entire sub-task family.<br><span class="source">Login required ? <code>api_delete_task()</code></span></td></tr>
+<tr data-route="/api/tasks/&lt;task_id&gt;" data-methods="PUT"><td class="method">PUT</td><td><code>/api/tasks/&lt;task_id&gt;</code></td><td>Update editable fields on a task.<br><span class="source">Login required ? <code>api_update_task()</code></span></td></tr>
+<tr data-route="/api/tasks/&lt;task_id&gt;/advance" data-methods="PUT"><td class="method">PUT</td><td><code>/api/tasks/&lt;task_id&gt;/advance</code></td><td>Advance a task to the next phase via the state machine.<br><span class="source">Login required ? <code>api_advance_task()</code></span></td></tr>
+<tr data-route="/api/contract-lookup" data-methods="GET"><td class="method">GET</td><td><code>/api/contract-lookup</code></td><td>Look up a contract from CCXInforSyncedContractHeader by ContractID.<br><span class="source">Login required ? <code>api_contract_lookup()</code></span></td></tr>
+<tr data-route="/api/contract-validate" data-methods="GET"><td class="method">GET</td><td><code>/api/contract-validate</code></td><td>Validate form fields against CCXInforSyncedContractHeader.<br><span class="source">Login required ? <code>api_contract_validate()</code></span></td></tr>
+<tr data-route="/api/vendor-search" data-methods="GET"><td class="method">GET</td><td><code>/api/vendor-search</code></td><td>Search vw_PurchaseVendorLocation by vendor name or purchase-from name.<br><span class="source">Login required ? <code>api_vendor_search()</code></span></td></tr>
+<tr data-route="/api/tasks/&lt;task_id&gt;/contract-registration-precheck" data-methods="GET"><td class="method">GET</td><td><code>/api/tasks/&lt;task_id&gt;/contract-registration-precheck</code></td><td>Verify an entered CCX contract number against a task&#x27;s header (no writes).<br><span class="source">Login required; contract-edit role check ? <code>api_contract_registration_precheck()</code></span></td></tr>
+<tr data-route="/api/tasks/&lt;task_id&gt;/contract-number" data-methods="POST"><td class="method">POST</td><td><code>/api/tasks/&lt;task_id&gt;/contract-number</code></td><td>Register a verified CCX contract number on a task.<br><span class="source">Login required; contract-edit role check ? <code>api_register_contract_number()</code></span></td></tr>
+<tr data-route="/tasks/" data-methods="GET"><td class="method">GET</td><td><code>/tasks/</code></td><td>Render the task list landing page.<br><span class="source">Login required ? <code>task_list()</code></span></td></tr>
+<tr data-route="/tasks/&lt;task_id&gt;" data-methods="GET"><td class="method">GET</td><td><code>/tasks/&lt;task_id&gt;</code></td><td>Render the per-task detail page.<br><span class="source">Login required ? <code>task_detail()</code></span></td></tr>
+</tbody></table></details>
+<details><summary>Intake ? 14 routes</summary>
+<p class="source">Source: <a href="preprocessorEC/intake/routes.py"><code>preprocessorEC/intake/routes.py</code></a></p>
+<table class="route-table"><thead><tr><th>Method</th><th>Path</th><th>Purpose / handler</th></tr></thead><tbody>
+<tr data-route="/api/intake/&lt;task_id&gt;" data-methods="GET"><td class="method">GET</td><td><code>/api/intake/&lt;task_id&gt;</code></td><td>Return the current intake state for a task.<br><span class="source">Login required ? <code>api_intake_state()</code></span></td></tr>
+<tr data-route="/api/intake/&lt;task_id&gt;/items/&lt;int:item_id&gt;" data-methods="DELETE"><td class="method">DELETE</td><td><code>/api/intake/&lt;task_id&gt;/items/&lt;int:item_id&gt;</code></td><td>Soft-delete a single item row (mark as DELETED_PC1).<br><span class="source">Login required ? <code>api_delete_item()</code></span></td></tr>
+<tr data-route="/api/intake/&lt;task_id&gt;/upload" data-methods="POST"><td class="method">POST</td><td><code>/api/intake/&lt;task_id&gt;/upload</code></td><td>Upload an Excel or CSV file of items for this task.<br><span class="source">Login required ? <code>api_upload_items()</code></span></td></tr>
+<tr data-route="/api/intake/&lt;task_id&gt;/reupload" data-methods="POST"><td class="method">POST</td><td><code>/api/intake/&lt;task_id&gt;/reupload</code></td><td>Delete all existing items and replace with a new upload.<br><span class="source">Login required ? <code>api_reupload_items()</code></span></td></tr>
+<tr data-route="/api/intake/&lt;task_id&gt;/precheck" data-methods="POST"><td class="method">POST</td><td><code>/api/intake/&lt;task_id&gt;/precheck</code></td><td>Run PC1 pre-check on uploaded items.<br><span class="source">Login required ? <code>api_run_precheck()</code></span></td></tr>
+<tr data-route="/api/intake/&lt;task_id&gt;/errors" data-methods="GET"><td class="method">GET</td><td><code>/api/intake/&lt;task_id&gt;/errors</code></td><td>Get all PC1 errors for a task.<br><span class="source">Login required ? <code>api_get_errors()</code></span></td></tr>
+<tr data-route="/api/intake/&lt;task_id&gt;/recheck" data-methods="POST"><td class="method">POST</td><td><code>/api/intake/&lt;task_id&gt;/recheck</code></td><td>Re-run PC1 on specific items after fixes.<br><span class="source">Login required ? <code>api_recheck()</code></span></td></tr>
+<tr data-route="/api/intake/&lt;task_id&gt;/proceed" data-methods="POST"><td class="method">POST</td><td><code>/api/intake/&lt;task_id&gt;/proceed</code></td><td>Advance passing items to Phase 2 (Identity).<br><span class="source">Login required ? <code>api_proceed()</code></span></td></tr>
+<tr data-route="/api/intake/&lt;task_id&gt;/items/&lt;int:item_id&gt;" data-methods="PUT"><td class="method">PUT</td><td><code>/api/intake/&lt;task_id&gt;/items/&lt;int:item_id&gt;</code></td><td>In-place edit of an ERROR_PC1 item&#x27;s fields.<br><span class="source">Login required ? <code>api_edit_item()</code></span></td></tr>
+<tr data-route="/api/intake/&lt;task_id&gt;/items/&lt;int:item_id&gt;/pass" data-methods="POST"><td class="method">POST</td><td><code>/api/intake/&lt;task_id&gt;/items/&lt;int:item_id&gt;/pass</code></td><td>Manually pass a WARN_PC1 item with audit trail.<br><span class="source">Login required ? <code>api_manual_pass()</code></span></td></tr>
+<tr data-route="/api/intake/&lt;task_id&gt;/items/bulk-pass" data-methods="POST"><td class="method">POST</td><td><code>/api/intake/&lt;task_id&gt;/items/bulk-pass</code></td><td>Manually pass a set of WARN_PC1 items in one request.<br><span class="source">Login required ? <code>api_bulk_manual_pass()</code></span></td></tr>
+<tr data-route="/api/intake/&lt;task_id&gt;/error-report.xlsx" data-methods="GET"><td class="method">GET</td><td><code>/api/intake/&lt;task_id&gt;/error-report.xlsx</code></td><td>Download an xlsx summarizing every PC1 error/warning per input row.<br><span class="source">Login required ? <code>api_download_error_report()</code></span></td></tr>
+<tr data-route="/api/intake/&lt;task_id&gt;/recheck-all" data-methods="POST"><td class="method">POST</td><td><code>/api/intake/&lt;task_id&gt;/recheck-all</code></td><td>Reset ALL error/warn items to UPLOADED and re-run PC1.<br><span class="source">Login required ? <code>api_recheck_all()</code></span></td></tr>
+<tr data-route="/intake/&lt;task_id&gt;" data-methods="GET"><td class="method">GET</td><td><code>/intake/&lt;task_id&gt;</code></td><td>Render the intake form page.<br><span class="source">Login required ? <code>intake_form()</code></span></td></tr>
+</tbody></table></details>
+<details><summary>Identity ? 12 routes</summary>
+<p class="source">Source: <a href="preprocessorEC/identity/routes.py"><code>preprocessorEC/identity/routes.py</code></a></p>
+<table class="route-table"><thead><tr><th>Method</th><th>Path</th><th>Purpose / handler</th></tr></thead><tbody>
+<tr data-route="/api/identity/&lt;task_id&gt;" data-methods="GET"><td class="method">GET</td><td><code>/api/identity/&lt;task_id&gt;</code></td><td>Read identity state and task details.<br><span class="source">Login required ? <code>api_identity_state()</code></span></td></tr>
+<tr data-route="/api/identity/&lt;task_id&gt;/copy-descriptions" data-methods="POST"><td class="method">POST</td><td><code>/api/identity/&lt;task_id&gt;/copy-descriptions</code></td><td>Copy input descriptions into standardized descriptions.<br><span class="source">Login required ? <code>api_copy_descriptions()</code></span></td></tr>
+<tr data-route="/api/identity/&lt;task_id&gt;/standardized-descriptions" data-methods="POST"><td class="method">POST</td><td><code>/api/identity/&lt;task_id&gt;/standardized-descriptions</code></td><td>Apply standardized description updates.<br><span class="source">Login required ? <code>api_apply_descriptions()</code></span></td></tr>
+<tr data-route="/api/identity/&lt;task_id&gt;/manufacturer-info" data-methods="GET"><td class="method">GET</td><td><code>/api/identity/&lt;task_id&gt;/manufacturer-info</code></td><td>Fetch manufacturer info from Infor header for UPDATE contracts.<br><span class="source">Login required ? <code>api_manufacturer_info()</code></span></td></tr>
+<tr data-route="/api/identity/&lt;task_id&gt;/manufacturer-confirm" data-methods="POST"><td class="method">POST</td><td><code>/api/identity/&lt;task_id&gt;/manufacturer-confirm</code></td><td>Confirm or edit the manufacturer code for UPDATE contracts.<br><span class="source">Login required ? <code>api_manufacturer_confirm()</code></span></td></tr>
+<tr data-route="/api/identity/manufacturers/search" data-methods="GET"><td class="method">GET</td><td><code>/api/identity/manufacturers/search</code></td><td>Search manufacturer table for NEW contracts.<br><span class="source">Login required ? <code>api_search_manufacturers()</code></span></td></tr>
+<tr data-route="/api/identity/&lt;task_id&gt;/manufacturer-select" data-methods="POST"><td class="method">POST</td><td><code>/api/identity/&lt;task_id&gt;/manufacturer-select</code></td><td>Select a manufacturer from the search results (NEW/UPDATE/MIX contracts).<br><span class="source">Login required ? <code>api_manufacturer_select()</code></span></td></tr>
+<tr data-route="/api/identity/&lt;task_id&gt;/manufacturer-auto-confirm" data-methods="POST"><td class="method">POST</td><td><code>/api/identity/&lt;task_id&gt;/manufacturer-auto-confirm</code></td><td>Auto-confirm manufacturer for EXPIRE contracts (no user action needed).<br><span class="source">Login required ? <code>api_manufacturer_auto_confirm()</code></span></td></tr>
+<tr data-route="/api/identity/&lt;task_id&gt;/contract-number" data-methods="POST"><td class="method">POST</td><td><code>/api/identity/&lt;task_id&gt;/contract-number</code></td><td>Save the task contract number.<br><span class="source">Login required ? <code>api_contract_number()</code></span></td></tr>
+<tr data-route="/api/identity/&lt;task_id&gt;/precheck2" data-methods="POST"><td class="method">POST</td><td><code>/api/identity/&lt;task_id&gt;/precheck2</code></td><td>Run PC2 validation.<br><span class="source">Login required ? <code>api_run_precheck2()</code></span></td></tr>
+<tr data-route="/api/identity/&lt;task_id&gt;/proceed" data-methods="POST"><td class="method">POST</td><td><code>/api/identity/&lt;task_id&gt;/proceed</code></td><td>Advance to the next phase when validation allows.<br><span class="source">Login required ? <code>api_proceed()</code></span></td></tr>
+<tr data-route="/identity/&lt;task_id&gt;" data-methods="GET"><td class="method">GET</td><td><code>/identity/&lt;task_id&gt;</code></td><td>Render identity page.<br><span class="source">Login required ? <code>identity_page()</code></span></td></tr>
+</tbody></table></details>
+<details><summary>Preprocess ? 35 routes</summary>
+<p class="source">Source: <a href="preprocessorEC/preprocess/routes.py"><code>preprocessorEC/preprocess/routes.py</code></a></p>
+<table class="route-table"><thead><tr><th>Method</th><th>Path</th><th>Purpose / handler</th></tr></thead><tbody>
+<tr data-route="/api/preprocess/&lt;task_id&gt;/run" data-methods="POST"><td class="method">POST</td><td><code>/api/preprocess/&lt;task_id&gt;/run</code></td><td>Run the full matching, review, labeling and buy-UOM pipeline.<br><span class="source">Login required ? <code>api_run_preprocess()</code></span></td></tr>
+<tr data-route="/api/preprocess/&lt;task_id&gt;/data-freshness" data-methods="GET"><td class="method">GET</td><td><code>/api/preprocess/&lt;task_id&gt;/data-freshness</code></td><td>Report whether this task&#x27;s CCX matches predate the last source reload.<br><span class="source">Login required ? <code>api_data_freshness()</code></span></td></tr>
+<tr data-route="/api/preprocess/&lt;task_id&gt;/sku-matching" data-methods="POST"><td class="method">POST</td><td><code>/api/preprocess/&lt;task_id&gt;/sku-matching</code></td><td>Run just CCX SKU matching + similarity scoring.<br><span class="source">Login required ? <code>api_sku_matching()</code></span></td></tr>
+<tr data-route="/api/preprocess/&lt;task_id&gt;/contract-check" data-methods="POST"><td class="method">POST</td><td><code>/api/preprocess/&lt;task_id&gt;/contract-check</code></td><td>Run contract-level grouping for review.<br><span class="source">Login required ? <code>api_contract_check()</code></span></td></tr>
+<tr data-route="/api/preprocess/&lt;task_id&gt;/contracts" data-methods="GET"><td class="method">GET</td><td><code>/api/preprocess/&lt;task_id&gt;/contracts</code></td><td>Read contract review state.<br><span class="source">Login required ? <code>api_get_contracts()</code></span></td></tr>
+<tr data-route="/api/preprocess/&lt;task_id&gt;/contract-decision" data-methods="POST"><td class="method">POST</td><td><code>/api/preprocess/&lt;task_id&gt;/contract-decision</code></td><td>Save a contract-level review decision.<br><span class="source">Login required ? <code>api_contract_decision()</code></span></td></tr>
+<tr data-route="/api/preprocess/&lt;task_id&gt;/items" data-methods="GET"><td class="method">GET</td><td><code>/api/preprocess/&lt;task_id&gt;/items</code></td><td>Read item review state.<br><span class="source">Login required ? <code>api_get_items()</code></span></td></tr>
+<tr data-route="/api/preprocess/&lt;task_id&gt;/item-decision" data-methods="POST"><td class="method">POST</td><td><code>/api/preprocess/&lt;task_id&gt;/item-decision</code></td><td>Save an item-level review decision.<br><span class="source">Login required ? <code>api_item_decision()</code></span></td></tr>
+<tr data-route="/api/preprocess/&lt;task_id&gt;/summary" data-methods="GET"><td class="method">GET</td><td><code>/api/preprocess/&lt;task_id&gt;/summary</code></td><td>Return preprocessed dataset summary: INPUT items with labeling info.<br><span class="source">Login required ? <code>api_summary()</code></span></td></tr>
+<tr data-route="/api/preprocess/&lt;task_id&gt;/infor-cascade" data-methods="POST"><td class="method">POST</td><td><code>/api/preprocess/&lt;task_id&gt;/infor-cascade</code></td><td>Run Infor cascade step (after CCX decisions are made).<br><span class="source">Login required ? <code>api_infor_cascade()</code></span></td></tr>
+<tr data-route="/api/preprocess/&lt;task_id&gt;/infor-residue" data-methods="POST"><td class="method">POST</td><td><code>/api/preprocess/&lt;task_id&gt;/infor-residue</code></td><td>Run Infor residue matching step.<br><span class="source">Login required ? <code>api_infor_residue()</code></span></td></tr>
+<tr data-route="/api/preprocess/&lt;task_id&gt;/item-labeling" data-methods="POST"><td class="method">POST</td><td><code>/api/preprocess/&lt;task_id&gt;/item-labeling</code></td><td>Run 3-source Item# labeling step.<br><span class="source">Login required ? <code>api_item_labeling()</code></span></td></tr>
+<tr data-route="/api/preprocess/&lt;task_id&gt;/buy-uom" data-methods="POST"><td class="method">POST</td><td><code>/api/preprocess/&lt;task_id&gt;/buy-uom</code></td><td>Run Buy UOM aggregation for labeled item candidates.<br><span class="source">Login required ? <code>api_buy_uom()</code></span></td></tr>
+<tr data-route="/api/preprocess/&lt;task_id&gt;/llm-review" data-methods="POST"><td class="method">POST</td><td><code>/api/preprocess/&lt;task_id&gt;/llm-review</code></td><td>Run LLM review for pending MED/LOW matches.<br><span class="source">Login required ? <code>api_llm_review()</code></span></td></tr>
+<tr data-route="/api/preprocess/llm-review-prompts/&lt;name&gt;" data-methods="GET"><td class="method">GET</td><td><code>/api/preprocess/llm-review-prompts/&lt;name&gt;</code></td><td>Full text of one review prompt, for the prompt-viewer modal.<br><span class="source">Login required ? <code>api_llm_review_prompt()</code></span></td></tr>
+<tr data-route="/api/preprocess/&lt;task_id&gt;/llm-review-pending" data-methods="POST"><td class="method">POST</td><td><code>/api/preprocess/&lt;task_id&gt;/llm-review-pending</code></td><td>Send every remaining PENDING match (any bucket, any source) to the LLM.<br><span class="source">Login required ? <code>api_llm_review_pending()</code></span></td></tr>
+<tr data-route="/api/preprocess/&lt;task_id&gt;/finalize" data-methods="POST"><td class="method">POST</td><td><code>/api/preprocess/&lt;task_id&gt;/finalize</code></td><td>Finalize this phase and advance the task.<br><span class="source">Login required ? <code>api_finalize()</code></span></td></tr>
+<tr data-route="/api/preprocess/&lt;task_id&gt;/contract-summary" data-methods="GET"><td class="method">GET</td><td><code>/api/preprocess/&lt;task_id&gt;/contract-summary</code></td><td>Return contract-level match summary with per-bucket counts.<br><span class="source">Login required ? <code>api_contract_summary()</code></span></td></tr>
+<tr data-route="/api/preprocess/&lt;task_id&gt;/matches" data-methods="GET"><td class="method">GET</td><td><code>/api/preprocess/&lt;task_id&gt;/matches</code></td><td>Return match results with optional filtering.<br><span class="source">Login required ? <code>api_get_matches()</code></span></td></tr>
+<tr data-route="/api/preprocess/&lt;task_id&gt;/item-matches" data-methods="GET"><td class="method">GET</td><td><code>/api/preprocess/&lt;task_id&gt;/item-matches</code></td><td>Return exploded item matching results enriched with input item fields.<br><span class="source">Login required ? <code>api_get_item_matches()</code></span></td></tr>
+<tr data-route="/api/preprocess/&lt;task_id&gt;/update-false-positives" data-methods="POST"><td class="method">POST</td><td><code>/api/preprocess/&lt;task_id&gt;/update-false-positives</code></td><td>Mark selected match_ids as REJECTED (false positive).<br><span class="source">Login required ? <code>api_update_false_positives()</code></span></td></tr>
+<tr data-route="/api/preprocess/&lt;task_id&gt;/update-true-matches" data-methods="POST"><td class="method">POST</td><td><code>/api/preprocess/&lt;task_id&gt;/update-true-matches</code></td><td>Mark selected match_ids as ACCEPTED (true match).<br><span class="source">Login required ? <code>api_update_true_matches()</code></span></td></tr>
+<tr data-route="/api/preprocess/&lt;task_id&gt;/update-pending" data-methods="POST"><td class="method">POST</td><td><code>/api/preprocess/&lt;task_id&gt;/update-pending</code></td><td>Mark selected match_ids back to PENDING for re-review.<br><span class="source">Login required ? <code>api_update_pending()</code></span></td></tr>
+<tr data-route="/api/preprocess/&lt;task_id&gt;/toggle-contract" data-methods="POST"><td class="method">POST</td><td><code>/api/preprocess/&lt;task_id&gt;/toggle-contract</code></td><td>Apply a tri-state contract decision to all matches under a contract.<br><span class="source">Login required ? <code>api_toggle_contract()</code></span></td></tr>
+<tr data-route="/preprocess/&lt;task_id&gt;" data-methods="GET"><td class="method">GET</td><td><code>/preprocess/&lt;task_id&gt;</code></td><td>Render preprocess page.<br><span class="source">Login required ? <code>preprocess_page()</code></span></td></tr>
+<tr data-route="/api/preprocess/&lt;task_id&gt;/issues" data-methods="GET"><td class="method">GET</td><td><code>/api/preprocess/&lt;task_id&gt;/issues</code></td><td>All preprocess issues for a task (resolved + unresolved).<br><span class="source">Login required ? <code>api_get_issues()</code></span></td></tr>
+<tr data-route="/api/preprocess/&lt;task_id&gt;/items/&lt;int:item_id&gt;/accepted-matches" data-methods="GET"><td class="method">GET</td><td><code>/api/preprocess/&lt;task_id&gt;/items/&lt;int:item_id&gt;/accepted-matches</code></td><td>ACCEPTED CCX + INFOR_CL matches for one input item — drill-down panel.<br><span class="source">Login required ? <code>api_get_accepted_matches()</code></span></td></tr>
+<tr data-route="/api/preprocess/&lt;task_id&gt;/issues/&lt;int:issue_id&gt;/select-infor-item" data-methods="POST"><td class="method">POST</td><td><code>/api/preprocess/&lt;task_id&gt;/issues/&lt;int:issue_id&gt;/select-infor-item</code></td><td>Resolve MULTI_ITEM_ERROR by picking exactly one Infor item#.<br><span class="source">Login required ? <code>api_select_infor_item()</code></span></td></tr>
+<tr data-route="/api/preprocess/&lt;task_id&gt;/issues/&lt;int:issue_id&gt;/keep-mfg-only-item" data-methods="POST"><td class="method">POST</td><td><code>/api/preprocess/&lt;task_id&gt;/issues/&lt;int:issue_id&gt;/keep-mfg-only-item</code></td><td>Resolve MFG_ONLY_ITEM_WARN as Noted: keep the Source 4 Item#.<br><span class="source">Login required ? <code>api_keep_mfg_only_item()</code></span></td></tr>
+<tr data-route="/api/preprocess/&lt;task_id&gt;/issues/&lt;int:issue_id&gt;/detach-mfg-only-item" data-methods="POST"><td class="method">POST</td><td><code>/api/preprocess/&lt;task_id&gt;/issues/&lt;int:issue_id&gt;/detach-mfg-only-item</code></td><td>Resolve MFG_ONLY_ITEM_WARN by detaching: the input item stays unlabeled.<br><span class="source">Login required ? <code>api_detach_mfg_only_item()</code></span></td></tr>
+<tr data-route="/api/preprocess/&lt;task_id&gt;/issues/&lt;int:issue_id&gt;/note" data-methods="POST"><td class="method">POST</td><td><code>/api/preprocess/&lt;task_id&gt;/issues/&lt;int:issue_id&gt;/note</code></td><td>Demote BUY_UOM_ERROR to WARN; carry forward.<br><span class="source">Login required ? <code>api_note_buy_uom()</code></span></td></tr>
+<tr data-route="/api/preprocess/&lt;task_id&gt;/issues/&lt;int:issue_id&gt;/recheck" data-methods="POST"><td class="method">POST</td><td><code>/api/preprocess/&lt;task_id&gt;/issues/&lt;int:issue_id&gt;/recheck</code></td><td>Re-query Infor UOM for the item; resolve if buy UOM is now present.<br><span class="source">Login required ? <code>api_recheck_buy_uom()</code></span></td></tr>
+<tr data-route="/api/preprocess/&lt;task_id&gt;/issues/&lt;int:issue_id&gt;/edit-uom-qoe" data-methods="POST"><td class="method">POST</td><td><code>/api/preprocess/&lt;task_id&gt;/issues/&lt;int:issue_id&gt;/edit-uom-qoe</code></td><td>Edit input UOM/QOE on a BUY_UOM_ERROR item.<br><span class="source">Login required ? <code>api_edit_buy_uom()</code></span></td></tr>
+<tr data-route="/api/preprocess/&lt;task_id&gt;/issues/&lt;int:issue_id&gt;/ignore" data-methods="POST"><td class="method">POST</td><td><code>/api/preprocess/&lt;task_id&gt;/issues/&lt;int:issue_id&gt;/ignore</code></td><td>EXPIRE-intent only: dismiss WARN, advance item to ITEM_PREPROCESSED.<br><span class="source">Login required ? <code>api_ignore_buy_uom()</code></span></td></tr>
+<tr data-route="/api/preprocess/&lt;task_id&gt;/items/&lt;int:item_id&gt;" data-methods="DELETE"><td class="method">DELETE</td><td><code>/api/preprocess/&lt;task_id&gt;/items/&lt;int:item_id&gt;</code></td><td>Soft-delete an input item from Phase 3 (mark DELETED_PREPROCESS).<br><span class="source">Login required ? <code>api_soft_delete_preprocess_item()</code></span></td></tr>
+</tbody></table></details>
+<details><summary>Dedup ? 12 routes</summary>
+<p class="source">Source: <a href="preprocessorEC/dedup/routes.py"><code>preprocessorEC/dedup/routes.py</code></a></p>
+<table class="route-table"><thead><tr><th>Method</th><th>Path</th><th>Purpose / handler</th></tr></thead><tbody>
+<tr data-route="/api/dedup/&lt;task_id&gt;/simulate" data-methods="POST"><td class="method">POST</td><td><code>/api/dedup/&lt;task_id&gt;/simulate</code></td><td>Change simulation placeholder; returns not_implemented.<br><span class="source">Login required ? <code>api_simulate()</code></span></td></tr>
+<tr data-route="/api/dedup/&lt;task_id&gt;/validate" data-methods="POST"><td class="method">POST</td><td><code>/api/dedup/&lt;task_id&gt;/validate</code></td><td>Run all 3 integrity checks on the kept-set and return a summary.<br><span class="source">Login required ? <code>api_validate()</code></span></td></tr>
+<tr data-route="/api/dedup/&lt;task_id&gt;/issues" data-methods="GET"><td class="method">GET</td><td><code>/api/dedup/&lt;task_id&gt;/issues</code></td><td>Read the persisted integrity issues for a task (page-load hydrate).<br><span class="source">Login required ? <code>api_get_issues()</code></span></td></tr>
+<tr data-route="/api/dedup/&lt;task_id&gt;/im-checks" data-methods="POST"><td class="method">POST</td><td><code>/api/dedup/&lt;task_id&gt;/im-checks</code></td><td>Run the 3 item-master consequence checks (WARN-level, non-blocking).<br><span class="source">Login required ? <code>api_run_im_checks()</code></span></td></tr>
+<tr data-route="/api/dedup/&lt;task_id&gt;/im-results" data-methods="GET"><td class="method">GET</td><td><code>/api/dedup/&lt;task_id&gt;/im-results</code></td><td>Read persisted IM-check results for the task (page-load hydrate).<br><span class="source">Login required ? <code>api_get_im_results()</code></span></td></tr>
+<tr data-route="/api/dedup/&lt;task_id&gt;/finalize" data-methods="POST"><td class="method">POST</td><td><code>/api/dedup/&lt;task_id&gt;/finalize</code></td><td>Finalize this phase and advance the task.<br><span class="source">Login required ? <code>api_finalize()</code></span></td></tr>
+<tr data-route="/api/dedup/&lt;task_id&gt;/matches" data-methods="GET"><td class="method">GET</td><td><code>/api/dedup/&lt;task_id&gt;/matches</code></td><td>Read matching or dedup candidate rows.<br><span class="source">Login required ? <code>api_get_matches()</code></span></td></tr>
+<tr data-route="/api/dedup/&lt;task_id&gt;/decisions" data-methods="POST"><td class="method">POST</td><td><code>/api/dedup/&lt;task_id&gt;/decisions</code></td><td>Apply bulk dedup decisions.<br><span class="source">Login required ? <code>api_update_decisions()</code></span></td></tr>
+<tr data-route="/api/dedup/&lt;task_id&gt;/decision" data-methods="POST"><td class="method">POST</td><td><code>/api/dedup/&lt;task_id&gt;/decision</code></td><td>Apply a per-side keep/drop decision.<br><span class="source">Login required ? <code>api_set_decision()</code></span></td></tr>
+<tr data-route="/api/dedup/&lt;task_id&gt;/edit" data-methods="POST"><td class="method">POST</td><td><code>/api/dedup/&lt;task_id&gt;/edit</code></td><td>Edit one field on the input or matched side of a dedup row.<br><span class="source">Login required ? <code>api_edit_field()</code></span></td></tr>
+<tr data-route="/api/dedup/&lt;task_id&gt;/reset" data-methods="POST"><td class="method">POST</td><td><code>/api/dedup/&lt;task_id&gt;/reset</code></td><td>Wipe and re-populate the dedup workspace from defaults.<br><span class="source">Login required ? <code>api_reset_workspace()</code></span></td></tr>
+<tr data-route="/dedup/&lt;task_id&gt;" data-methods="GET"><td class="method">GET</td><td><code>/dedup/&lt;task_id&gt;</code></td><td>Render the dedup workspace.<br><span class="source">Login required ? <code>dedup_page()</code></span></td></tr>
+</tbody></table></details>
+<details><summary>Export ? 6 routes</summary>
+<p class="source">Source: <a href="preprocessorEC/export/routes.py"><code>preprocessorEC/export/routes.py</code></a></p>
+<table class="route-table"><thead><tr><th>Method</th><th>Path</th><th>Purpose / handler</th></tr></thead><tbody>
+<tr data-route="/api/export/&lt;task_id&gt;/generate" data-methods="POST"><td class="method">POST</td><td><code>/api/export/&lt;task_id&gt;/generate</code></td><td>Generic export placeholder; returns not_implemented.<br><span class="source">Login required ? <code>api_generate()</code></span></td></tr>
+<tr data-route="/api/export/&lt;task_id&gt;/finalize" data-methods="POST"><td class="method">POST</td><td><code>/api/export/&lt;task_id&gt;/finalize</code></td><td>Finalize this phase and advance the task.<br><span class="source">Login required ? <code>api_finalize()</code></span></td></tr>
+<tr data-route="/api/export/&lt;task_id&gt;/dedup-review/preview" data-methods="GET"><td class="method">GET</td><td><code>/api/export/&lt;task_id&gt;/dedup-review/preview</code></td><td>Preview dedup report data.<br><span class="source">Login required ? <code>api_dedup_review_preview()</code></span></td></tr>
+<tr data-route="/api/export/&lt;task_id&gt;/dedup-review.xlsx" data-methods="GET"><td class="method">GET</td><td><code>/api/export/&lt;task_id&gt;/dedup-review.xlsx</code></td><td>Download the dedup review Excel workbook.<br><span class="source">Login required ? <code>api_dedup_review_download()</code></span></td></tr>
+<tr data-route="/api/export/&lt;task_id&gt;/contract-replacement" data-methods="POST"><td class="method">POST</td><td><code>/api/export/&lt;task_id&gt;/contract-replacement</code></td><td>Mark/un-mark a matched contract as REPLACE from the export preview.<br><span class="source">Login required ? <code>api_contract_replacement()</code></span></td></tr>
+<tr data-route="/export/&lt;task_id&gt;" data-methods="GET"><td class="method">GET</td><td><code>/export/&lt;task_id&gt;</code></td><td>Render export page.<br><span class="source">Login required ? <code>export_page()</code></span></td></tr>
+</tbody></table></details>
+<details><summary>Monitoring ? 2 routes</summary>
+<p class="source">Source: <a href="preprocessorEC/monitoring/routes.py"><code>preprocessorEC/monitoring/routes.py</code></a></p>
+<table class="route-table"><thead><tr><th>Method</th><th>Path</th><th>Purpose / handler</th></tr></thead><tbody>
+<tr data-route="/api/monitoring/&lt;task_id&gt;" data-methods="GET"><td class="method">GET</td><td><code>/api/monitoring/&lt;task_id&gt;</code></td><td>Read task phase, status and history.<br><span class="source">Login required ? <code>api_task_report()</code></span></td></tr>
+<tr data-route="/monitoring/&lt;task_id&gt;" data-methods="GET"><td class="method">GET</td><td><code>/monitoring/&lt;task_id&gt;</code></td><td>Render monitoring page.<br><span class="source">Login required ? <code>monitoring_page()</code></span></td></tr>
+</tbody></table></details>
+<details><summary>Discovery ? 19 routes</summary>
+<p class="source">Source: <a href="preprocessorEC/discovery/routes.py"><code>preprocessorEC/discovery/routes.py</code></a></p>
+<table class="route-table"><thead><tr><th>Method</th><th>Path</th><th>Purpose / handler</th></tr></thead><tbody>
+<tr data-route="/discovery/" data-methods="GET"><td class="method">GET</td><td><code>/discovery/</code></td><td>Render Discovery set list and upload page.<br><span class="source">Login required ? <code>discovery_home()</code></span></td></tr>
+<tr data-route="/discovery/&lt;int:set_id&gt;" data-methods="GET"><td class="method">GET</td><td><code>/discovery/&lt;int:set_id&gt;</code></td><td>Render one Discovery set.<br><span class="source">Login required ? <code>discovery_set_page()</code></span></td></tr>
+<tr data-route="/discovery/prompts" data-methods="GET"><td class="method">GET</td><td><code>/discovery/prompts</code></td><td>Read and inspect versioned Discovery prompts (login required).<br><span class="source">Login required ? <code>discovery_prompts_page()</code></span></td></tr>
+<tr data-route="/api/discovery/sets" data-methods="GET"><td class="method">GET</td><td><code>/api/discovery/sets</code></td><td>List Discovery sets.<br><span class="source">Login required ? <code>api_list_sets()</code></span></td></tr>
+<tr data-route="/api/discovery/upload" data-methods="POST"><td class="method">POST</td><td><code>/api/discovery/upload</code></td><td>Upload a discovery file: SKU + Description (+ optional Supplier).<br><span class="source">Login required ? <code>api_upload()</code></span></td></tr>
+<tr data-route="/api/discovery/&lt;int:set_id&gt;" data-methods="DELETE"><td class="method">DELETE</td><td><code>/api/discovery/&lt;int:set_id&gt;</code></td><td>Delete a Discovery set.<br><span class="source">Login required ? <code>api_delete_set()</code></span></td></tr>
+<tr data-route="/api/discovery/&lt;int:set_id&gt;/match" data-methods="POST"><td class="method">POST</td><td><code>/api/discovery/&lt;int:set_id&gt;/match</code></td><td>Run CCX SKU matching, local similarity scoring, and ranking.<br><span class="source">Login required ? <code>api_match()</code></span></td></tr>
+<tr data-route="/api/discovery/&lt;int:set_id&gt;/summary" data-methods="GET"><td class="method">GET</td><td><code>/api/discovery/&lt;int:set_id&gt;/summary</code></td><td>Return summary counts for the current dataset.<br><span class="source">Login required ? <code>api_summary()</code></span></td></tr>
+<tr data-route="/api/discovery/&lt;int:set_id&gt;/results" data-methods="GET"><td class="method">GET</td><td><code>/api/discovery/&lt;int:set_id&gt;/results</code></td><td>Server-side paged results — a set can hold tens of thousands of rows.<br><span class="source">Login required ? <code>api_results()</code></span></td></tr>
+<tr data-route="/api/discovery/&lt;int:set_id&gt;/export.xlsx" data-methods="GET"><td class="method">GET</td><td><code>/api/discovery/&lt;int:set_id&gt;/export.xlsx</code></td><td>Download a Discovery workbook.<br><span class="source">Login required ? <code>api_export()</code></span></td></tr>
+<tr data-route="/api/discovery/&lt;int:set_id&gt;/verdicts" data-methods="POST"><td class="method">POST</td><td><code>/api/discovery/&lt;int:set_id&gt;/verdicts</code></td><td>Mark selected pairs SAME or DIFFERENT by hand, or clear the mark.<br><span class="source">Login required ? <code>api_set_verdicts()</code></span></td></tr>
+<tr data-route="/api/discovery/&lt;int:set_id&gt;/llm/estimate" data-methods="POST"><td class="method">POST</td><td><code>/api/discovery/&lt;int:set_id&gt;/llm/estimate</code></td><td>How many pairs a run would send, before any of it is spent.<br><span class="source">Login required ? <code>api_llm_estimate()</code></span></td></tr>
+<tr data-route="/api/discovery/&lt;int:set_id&gt;/llm/start" data-methods="POST"><td class="method">POST</td><td><code>/api/discovery/&lt;int:set_id&gt;/llm/start</code></td><td>Queue rows for judging and return the total the browser must work through.<br><span class="source">Login required ? <code>api_llm_start()</code></span></td></tr>
+<tr data-route="/api/discovery/&lt;int:set_id&gt;/llm/run-slice" data-methods="POST"><td class="method">POST</td><td><code>/api/discovery/&lt;int:set_id&gt;/llm/run-slice</code></td><td>Judge one slice. The page calls this until ``remaining`` hits zero.<br><span class="source">Login required ? <code>api_llm_run_slice()</code></span></td></tr>
+<tr data-route="/api/discovery/&lt;int:set_id&gt;/llm/cancel" data-methods="POST"><td class="method">POST</td><td><code>/api/discovery/&lt;int:set_id&gt;/llm/cancel</code></td><td>Drop everything still queued. Rows already judged keep their verdicts.<br><span class="source">Login required ? <code>api_llm_cancel()</code></span></td></tr>
+<tr data-route="/api/discovery/prompts" data-methods="GET"><td class="method">GET</td><td><code>/api/discovery/prompts</code></td><td>List versioned Discovery prompts.<br><span class="source">Login required ? <code>api_list_prompts()</code></span></td></tr>
+<tr data-route="/api/discovery/prompts" data-methods="POST"><td class="method">POST</td><td><code>/api/discovery/prompts</code></td><td>Save a new prompt version. Existing versions are never mutated.<br><span class="source">Login required; role_required(&#x27;preprocessor&#x27;) ? <code>api_create_prompt()</code></span></td></tr>
+<tr data-route="/api/discovery/prompts/&lt;int:prompt_version_id&gt;/activate" data-methods="POST"><td class="method">POST</td><td><code>/api/discovery/prompts/&lt;int:prompt_version_id&gt;/activate</code></td><td>Activate a saved Discovery prompt version.<br><span class="source">Login required; role_required(&#x27;preprocessor&#x27;) ? <code>api_activate_prompt()</code></span></td></tr>
+<tr data-route="/api/discovery/prompts/preview" data-methods="POST"><td class="method">POST</td><td><code>/api/discovery/prompts/preview</code></td><td>Render a template against a sample pair so an author can see the result.<br><span class="source">Login required ? <code>api_preview_prompt()</code></span></td></tr>
+</tbody></table></details>
+<details><summary>Admin ? 1 routes</summary>
+<p class="source">Source: <a href="preprocessorEC/admin/routes.py"><code>preprocessorEC/admin/routes.py</code></a></p>
+<table class="route-table"><thead><tr><th>Method</th><th>Path</th><th>Purpose / handler</th></tr></thead><tbody>
+<tr data-route="/admin/" data-methods="GET"><td class="method">GET</td><td><code>/admin/</code></td><td>Admin placeholder page.<br><span class="source">Login required ? <code>admin_home()</code></span></td></tr>
+</tbody></table></details>
+<details><summary>Debug ? 2 routes</summary>
+<p class="source">Source: <a href="preprocessorEC/debug/routes.py"><code>preprocessorEC/debug/routes.py</code></a></p>
+<table class="route-table"><thead><tr><th>Method</th><th>Path</th><th>Purpose / handler</th></tr></thead><tbody>
+<tr data-route="/debug/" data-methods="GET"><td class="method">GET</td><td><code>/debug/</code></td><td>Inspect the current session and user.<br><span class="source">Login required; role_required(&#x27;preprocessor&#x27;) ? <code>debug_home()</code></span></td></tr>
+<tr data-route="/debug/api/openai-connection" data-methods="POST"><td class="method">POST</td><td><code>/debug/api/openai-connection</code></td><td>Test the configured LLM connection.<br><span class="source">Login required; role_required(&#x27;preprocessor&#x27;) ? <code>debug_openai_connection()</code></span></td></tr>
+</tbody></table></details>
+</section>
+
+<section id="operations">
+<h2>5. Running &amp; extending the project</h2>
+<ul>
+<li><strong>Development:</strong> <code>python run.py</code> starts Flask in debug mode on port <code>5000</code>.</li>
+<li><strong>Production:</strong> <code>python run.py production</code> serves through Waitress on <code>0.0.0.0:8090</code>; the default blueprint prefix is <code>/preprocessor</code>.</li>
+<li><strong>Configuration:</strong> see <a href="preprocessorEC/config.py"><code>config.py</code></a> and <a href=".env.example"><code>.env.example</code></a>. Configure SQL Server/ODBC, session secret, LLM connection settings and Discovery limits. SQL Server uses Windows trusted authentication. No credentials are included in this guide.</li>
+<li><strong>Database changes:</strong> SQL Server schema scripts live in <code>migrations/</code>, with relocation scripts under <code>migrations/server_move/</code>. The app factory creates SQLite working-state/session tables; it does not run the SQL Server migrations.</li>
+<li><strong>Model loading:</strong> startup attempts to load <code>models/all-MiniLM-L6-v2</code>, or download/cache it if absent. Failure is logged and fallback scoring remains available. The call happens during app creation.</li>
+<li><strong>Changes:</strong> start with the feature route and template, put reusable logic in services, and keep data access in repositories/query files where practical. Phase changes should use <code>TaskStateMachine</code> so guards and audit history stay aligned.</li>
+<li><strong>Verification:</strong> focused regression tests live in <code>tests/</code>, covering matching, decision batching, stale labels, LLM prompts and disconnect retries. This guide was checked against source; it is not evidence of a live database or deployment test.</li>
+</ul>
+<p>For report interpretation, see the companion <a href="contract_reports_guide.html">Contract reports guide</a>.</p>
+</section>
+
+<section id="gaps">
+<h2>6. Current implementation boundaries</h2>
+<div class="note"><strong>Registered routes do not always mean a finished feature.</strong> The following distinctions come from function bodies, rather than older module comments.</div>
+<ul>
+<li><code>POST /api/dedup/&lt;task_id&gt;/simulate</code> returns <code>not_implemented</code>. The older <code>dedup_service.validate_integrity()</code> is also a stub, but the live <code>/validate</code> route calls the implemented <code>integrity_check</code> service.</li>
+<li>Dedup finalization currently marks completion and advances; it does not itself rerun or enforce integrity checks.</li>
+<li><code>POST /api/export/&lt;task_id&gt;/generate</code> does not yet produce the generic <code>batch_upload</code>, <code>single_contract</code> or <code>infor_direct</code> files. Dedicated dedup-review, PC1 and Discovery workbook endpoints are implemented.</li>
+<li>Item-master consequence lookups are scaffolded warnings, and monitoring currently reports history rather than implementing a background synchronization monitor.</li>
+<li>Admin is a carried-over stub page. LangGraph/checkpoint integration remains a future direction; the current workflow is driven by Flask requests and a Python state machine.</li>
+</ul>
+</section>
+<footer class="meta">Source reference: app factory, feature route decorators, state machine, service implementations, repositories and configuration in this working tree.</footer>
+</body>
+</html>

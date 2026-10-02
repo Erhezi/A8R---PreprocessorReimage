@@ -125,7 +125,9 @@ def api_upload_items(task_id: str):
         df = pd.read_excel(io.BytesIO(f.read()), dtype=str)
 
         # Build reverse map: original_header → internal key
-        reverse = {v: k for k, v in user_mapping.items() if v}
+        # The front-end trims headers before sending the mapping, so compare
+        # against stripped headers — otherwise "Mfr Item # " silently misses.
+        reverse = {str(v).strip(): k for k, v in user_mapping.items() if v}
 
         # Rename columns in a single pass over the ORIGINAL headers so an
         # explicitly mapped column always owns its internal key name. An
@@ -137,10 +139,11 @@ def api_upload_items(task_id: str):
         new_cols = []
         assigned = set()
         for c in df.columns:
-            if c in reverse:
-                name = reverse[c]
+            c_stripped = str(c).strip()
+            if c_stripped in reverse:
+                name = reverse[c_stripped]
             else:
-                name = c.strip().lower().replace(" ", "_")
+                name = c_stripped.lower().replace(" ", "_")
                 if name in mapped_keys or name in assigned:
                     base, n = name, 2
                     while name in mapped_keys or name in assigned:
