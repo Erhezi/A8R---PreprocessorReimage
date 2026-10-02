@@ -628,3 +628,18 @@ CREATE TABLE [Preprocessor].[ValidUOM] (
 );
 END;
 GO
+
+-- ------------------------------------------------------------
+-- Added 2026-09-30 (migration 042), not part of the PRIME snapshot:
+-- Source 4 (manufacturer part number only) columns on TaskItem.
+-- ------------------------------------------------------------
+
+IF COL_LENGTH('Preprocessor.PreprocessorTaskItem', 'infor_item_4') IS NULL
+ALTER TABLE [Preprocessor].[PreprocessorTaskItem]
+    ADD [infor_item_4] varchar(255) COLLATE SQL_Latin1_General_CP1_CI_AS NULL;
+GO
+
+IF COL_LENGTH('Preprocessor.PreprocessorTaskItem', 'infor_item_4_active') IS NULL
+ALTER TABLE [Preprocessor].[PreprocessorTaskItem]
+    ADD [infor_item_4_active] varchar(5) COLLATE SQL_Latin1_General_CP1_CI_AS NULL;
+GO

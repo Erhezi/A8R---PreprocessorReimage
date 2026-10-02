@@ -26,7 +26,7 @@ instead. No foreign key crosses the boundary — all 22 stay inside
 | Script | Run against | Notes |
 |---|---|---|
 | `00_create_schemas.sql` | both | Creates `[Preprocessor]` in PLMPreprocessorShared |
-| `10_tables_preprocessor.sql` | Preprocessor | 25 tables |
+| `10_tables_preprocessor.sql` | Preprocessor | 25 tables (+ the migration 042 TaskItem columns) |
 | `11_tables_shared_bulk.sql` | PLMPreprocessorShared | 8 tables |
 | `procs/*.sql` | Preprocessor | 14 procedures, `CREATE OR ALTER` |
 | *(bulk load)* | — | App state from PRIME, identity preserved |

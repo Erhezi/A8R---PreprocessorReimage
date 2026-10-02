@@ -363,7 +363,7 @@ def api_infor_residue(task_id: str):
 @preprocess_bp.route("/api/preprocess/<task_id>/item-labeling", methods=["POST"])
 @login_required
 def api_item_labeling(task_id: str):
-    """Run 3-source Item# labeling step."""
+    """Run 4-source Item# labeling step."""
     result = preprocess_service.run_item_labeling(task_id, _sm())
     return jsonify(result)
 
@@ -721,12 +721,16 @@ def api_get_item_matches(task_id: str):
     return jsonify(rows)
 
 
-def _apply_match_decision(match_ids, match_status: str):
+def _apply_match_decision(task_id: str, match_ids, match_status: str):
     """Apply one decision to a batch of match_ids and build the JSON response.
 
     The batch is one transaction, so it either all lands or none of it does —
     a mid-batch failure used to leave some rows decided and some not, with the
     selection already cleared client-side and no way to tell which.
+
+    Once it lands, the Item# labels of the items behind those matches are
+    brought up to date; ``relabeled`` tells the page whether the Item
+    Matching Results table changed.
     """
     if not match_ids or not isinstance(match_ids, list):
         return jsonify({"error": "match_ids list required"}), 400
@@ -751,7 +755,10 @@ def _apply_match_decision(match_ids, match_status: str):
             {"error": "The database was busy and nothing was changed. Please try again."}
         ), 503
 
-    return jsonify({"updated": updated})
+    relabel = preprocess_service.refresh_item_labels_after_decisions(
+        task_id, _sm(), match_ids=ids,
+    )
+    return jsonify({"updated": updated, "relabeled": relabel["relabeled"]})
 
 
 @preprocess_bp.route("/api/preprocess/<task_id>/update-false-positives", methods=["POST"])
@@ -761,7 +768,7 @@ def api_update_false_positives(task_id: str):
 
     Body: {"match_ids": [1, 2, 3]}
     """
-    return _apply_match_decision(request.get_json(force=True).get("match_ids", []), "REJECTED")
+    return _apply_match_decision(task_id, request.get_json(force=True).get("match_ids", []), "REJECTED")
 
 
 @preprocess_bp.route("/api/preprocess/<task_id>/update-true-matches", methods=["POST"])
@@ -771,7 +778,7 @@ def api_update_true_matches(task_id: str):
 
     Body: {"match_ids": [1, 2, 3]}
     """
-    return _apply_match_decision(request.get_json(force=True).get("match_ids", []), "ACCEPTED")
+    return _apply_match_decision(task_id, request.get_json(force=True).get("match_ids", []), "ACCEPTED")
 
 
 @preprocess_bp.route("/api/preprocess/<task_id>/update-pending", methods=["POST"])
@@ -781,7 +788,7 @@ def api_update_pending(task_id: str):
 
     Body: {"match_ids": [1, 2, 3]}
     """
-    return _apply_match_decision(request.get_json(force=True).get("match_ids", []), "PENDING")
+    return _apply_match_decision(task_id, request.get_json(force=True).get("match_ids", []), "PENDING")
 
 
 @preprocess_bp.route("/api/preprocess/<task_id>/toggle-contract", methods=["POST"])
@@ -836,6 +843,7 @@ def api_toggle_contract(task_id: str):
             "status": result["match_status"],
             "updated": result["affected"],
             "cascade_updated": result.get("cascade_affected", 0),
+            "relabeled": result.get("relabeled", 0),
             "contract_rows": contract_rows,
         }
     )
@@ -897,6 +905,37 @@ def api_select_infor_item(task_id: str, issue_id: int):
     user = current_user.username if current_user.is_authenticated else "system"
     try:
         result = preprocess_service.resolve_multi_item_pick(task_id, issue_id, picked, user)
+        return jsonify(_with_auto_advance(task_id, result, user))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@preprocess_bp.route("/api/preprocess/<task_id>/issues/<int:issue_id>/keep-mfg-only-item", methods=["POST"])
+@login_required
+def api_keep_mfg_only_item(task_id: str, issue_id: int):
+    """Resolve MFG_ONLY_ITEM_WARN as Noted: keep the Source 4 Item#.
+
+    Body: {"infor_item_number": "112204"} — one of the issue's candidates.
+    """
+    data = request.get_json(force=True) or {}
+    kept = data.get("infor_item_number")
+    if not kept:
+        return jsonify({"error": "infor_item_number required"}), 400
+    user = current_user.username if current_user.is_authenticated else "system"
+    try:
+        result = preprocess_service.resolve_mfg_only_keep(task_id, issue_id, kept, user)
+        return jsonify(_with_auto_advance(task_id, result, user))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@preprocess_bp.route("/api/preprocess/<task_id>/issues/<int:issue_id>/detach-mfg-only-item", methods=["POST"])
+@login_required
+def api_detach_mfg_only_item(task_id: str, issue_id: int):
+    """Resolve MFG_ONLY_ITEM_WARN by detaching: the input item stays unlabeled."""
+    user = current_user.username if current_user.is_authenticated else "system"
+    try:
+        result = preprocess_service.resolve_mfg_only_detach(task_id, issue_id, user)
         return jsonify(_with_auto_advance(task_id, result, user))
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400

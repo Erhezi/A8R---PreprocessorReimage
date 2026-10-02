@@ -191,6 +191,8 @@ class TaskItem(Base):
     infor_item_2_active = Column(String(5), nullable=True)
     infor_item_3 = Column(String(255), nullable=True)  # Item# from TP Infor CL match
     infor_item_3_active = Column(String(30), nullable=True)
+    infor_item_4 = Column(String(255), nullable=True)  # Item# from MDM_ITEM (MfgNum only); set only when 1-3 are empty
+    infor_item_4_active = Column(String(5), nullable=True)
     infor_buy_uom_options = Column(String(500), nullable=True)  # e.g. "BX*5, PK*10"
     ccx_pkid = Column(Integer, nullable=True)
     infor_pkid = Column(String(31), nullable=True)
@@ -256,6 +258,8 @@ class TaskItem(Base):
             "infor_item_2_active": self.infor_item_2_active,
             "infor_item_3": self.infor_item_3,
             "infor_item_3_active": self.infor_item_3_active,
+            "infor_item_4": self.infor_item_4,
+            "infor_item_4_active": self.infor_item_4_active,
             "infor_buy_uom_options": self.infor_buy_uom_options,
             "ccx_pkid": self.ccx_pkid,
             "infor_pkid": self.infor_pkid,
@@ -652,7 +656,7 @@ class PreprocessIssue(Base):
     task_id = Column(String(4), ForeignKey(f"{SCHEMA}.PreprocessorTask.task_id"), nullable=False)
     item_id = Column(Integer, ForeignKey(f"{SCHEMA}.PreprocessorTaskItem.item_id"), nullable=False)
 
-    issue_type = Column(String(40), nullable=False)   # BUY_UOM_ERROR | MULTI_ITEM_ERROR
+    issue_type = Column(String(40), nullable=False)   # BUY_UOM_ERROR | MULTI_ITEM_ERROR | MFG_ONLY_ITEM_WARN | ...
     severity = Column(String(10), nullable=False)     # ERROR | WARN
     detail = Column(Text, nullable=True)              # JSON payload
 

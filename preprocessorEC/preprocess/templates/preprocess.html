@@ -238,7 +238,7 @@
         </div>
         <div class="step-row mb-1" data-step="item-labeling">
           <span class="badge bg-secondary me-2 step-badge">7</span>
-          <span class="step-label">3-Source Item# Labeling</span>
+          <span class="step-label">4-Source Item# Labeling</span>
           <span class="step-status ms-2 text-muted"></span>
         </div>
         <div class="step-row mb-1" data-step="buy-uom-check">
@@ -944,6 +944,7 @@ function renderContracts(contracts) {
       if (needsMatchRefresh) {
         loadMatches();
       }
+      refreshItemMatchesIfRelabeled(payload);
     });
   });
 }
@@ -1171,6 +1172,14 @@ function renderMatchesPage() {
   updateSelectionButtons();
 }
 
+// Accept/reject re-labels the affected items server-side (Source 3 reads
+// only ACCEPTED Infor contract lines); reload the table only when it did.
+function refreshItemMatchesIfRelabeled(payload) {
+  if (Number(payload?.relabeled || 0) > 0) {
+    loadItemMatches();
+  }
+}
+
 async function loadItemMatches() {
   document.getElementById("itemMatchCard").style.display = "";
   const resp = await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/item-matches`);
@@ -1329,9 +1338,16 @@ async function postMatchDecision(endpoint, ids) {
     alert(`Could not update ${ids.length} match(es). ${detail}`);
     return false;
   }
+  let payload = null;
+  try {
+    payload = await resp.json();
+  } catch (err) {
+    payload = null;
+  }
   selectedMatchIds = new Set();
   await loadContracts();
   await loadMatches();
+  refreshItemMatchesIfRelabeled(payload);
   return true;
 }
 
@@ -1367,6 +1383,7 @@ document.getElementById("btnLlmPending").addEventListener("click", async () => {
   btn.disabled = true;
   const originalText = btn.textContent;
   btn.textContent = "Reviewing…";
+  let reviewPayload = null;
   try {
     const resp = await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/llm-review-pending`, {
       method: "POST",
@@ -1378,6 +1395,7 @@ document.getElementById("btnLlmPending").addEventListener("click", async () => {
       return;
     }
     const data = await resp.json();
+    reviewPayload = data;
     alert(`LLM reviewed ${data.reviewed || 0} PENDING match(es).`);
   } catch (err) {
     alert(`LLM review failed: ${err}`);
@@ -1387,6 +1405,7 @@ document.getElementById("btnLlmPending").addEventListener("click", async () => {
     selectedMatchIds = new Set();
     await loadContracts();
     await loadMatches();
+    refreshItemMatchesIfRelabeled(reviewPayload);
   }
 });
 

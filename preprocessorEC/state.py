@@ -81,17 +81,18 @@ class Status:
     LLM_REVIEW           = "LLM_REVIEW"            # MED/LOW CCX matches sent to LLM for triage.
     INFOR_MATCHING       = "INFOR_MATCHING"        # Infor cascade running.
     INFOR_REVIEW         = "INFOR_REVIEW"          # Reserved: not currently set by code.
-    ITEM_LABELING        = "ITEM_LABELING"         # 3-source labeling step running.
+    ITEM_LABELING        = "ITEM_LABELING"         # 4-source labeling step running.
     BUY_UOM_CHECKING     = "BUY_UOM_CHECKING"      # Buy-UOM validation step running.
     PENDING_FINALIZATION = "PENDING_FINALIZATION"  # Pipeline complete; waiting on user to finalize.
     PREPROCESSED         = "PREPROCESSED"          # Preprocess done; advancing to Dedup.
     ON_HOLD_PREPROCESS   = "ON_HOLD_PREPROCESS"    # Finalize called but unresolved item issues remain.
 
     # --- Item-level (PreprocessorTaskItem.status) ---
-    # Written by 3-source labeling:
+    # Written by 4-source labeling:
     ITEM_FETCHED         = "ITEM_FETCHED"          # Labeling found 0 Infor item# candidates.
     ITEM_LABELED         = "ITEM_LABELED"          # Labeling reached exactly 1 consensus item#.
     MULTI_ITEM_ERROR     = "MULTI_ITEM_ERROR"      # Labeling found 2+ candidates; user must Pick.
+    MFG_ONLY_ITEM_WARN   = "MFG_ONLY_ITEM_WARN"    # Only Source 4 (mfg part # alone) found an item; user must Keep (Noted) or Detach.
     # Written by buy-UOM check / Pick / Noted:
     BUY_UOM_ERROR        = "BUY_UOM_ERROR"         # Expected UOM*QOE absent from Infor options (non-EXPIRE intent).
     BUY_UOM_WARN         = "BUY_UOM_WARN"          # Same as above but EXPIRE intent (auto-WARN) or demoted via "Noted".

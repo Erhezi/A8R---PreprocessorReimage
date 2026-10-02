@@ -96,11 +96,39 @@ function parseIssueDetail(issue) {
   try { return JSON.parse(issue.detail); } catch (e) { return {}; }
 }
 
+function escText(value) {
+  return String(value ?? "").replace(/[&<>"']/g, ch => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]
+  ));
+}
+
+// One Source 4 candidate: Item#, the MDM manufacturer it belongs to, and its
+// description — what a reviewer needs to judge whether it is really the input.
+function describeMfgOnlyCandidate(candidate) {
+  const mfr = candidate.manufacturer_name
+    ? `${escText(candidate.manufacturer_name)} (${escText(candidate.manufacturer)})`
+    : escText(candidate.manufacturer || "—");
+  return `<strong>${escText(candidate.item)}</strong> — ${mfr} — ${escText(candidate.description || "—")}`;
+}
+
+function mfgOnlyCandidates(detail) {
+  if (Array.isArray(detail.candidate_details) && detail.candidate_details.length) {
+    return detail.candidate_details;
+  }
+  return (detail.candidates || []).map(item => ({ item }));
+}
+
 function describeIssue(issue) {
   const detail = parseIssueDetail(issue);
   if (issue.issue_type === "MULTI_ITEM_ERROR") {
     const candidates = (detail.candidates || []).join(", ");
     return `Multiple Infor item numbers proposed: ${candidates || '—'}`;
+  }
+  if (issue.issue_type === "MFG_ONLY_ITEM_WARN") {
+    const candidates = mfgOnlyCandidates(detail).map(describeMfgOnlyCandidate).join("<br>");
+    return `No manufacturer, vendor or contract-line match. Item master matched on mfg part # `
+      + `<code>${escText(detail.mfg_catalog_num || "—")}</code> alone (manufacturer not confirmed) — `
+      + `keep it (Noted) or Detach:<br>${candidates || '—'}`;
   }
   if (issue.issue_type === "BUY_UOM_ERROR") {
     const expected = detail.expected || '—';
@@ -124,6 +152,12 @@ function actionsForIssue(issue, item) {
   }
   if (issue.issue_type === "MULTI_ITEM_ERROR") {
     return `<button class="btn btn-sm btn-outline-primary py-0 px-1" onclick="event.stopPropagation();openPickItemModal(${issue.issue_id})">Pick item…</button>`;
+  }
+  if (issue.issue_type === "MFG_ONLY_ITEM_WARN") {
+    return [
+      `<button class="btn btn-sm btn-outline-warning py-0 px-1 me-1" onclick="event.stopPropagation();keepMfgOnlyItem(${issue.issue_id})" title="Reviewed — keep this Infor item on the row">Noted</button>`,
+      `<button class="btn btn-sm btn-outline-danger py-0 px-1" onclick="event.stopPropagation();detachMfgOnlyItem(${issue.issue_id})" title="Not the same item — leave this row unlabeled">Detach</button>`,
+    ].join("");
   }
   if (issue.issue_type === "BUY_UOM_ERROR") {
     const intention = ((item && item.intention) || (currentTask && currentTask.intention) || "").toUpperCase();
@@ -247,35 +281,68 @@ function closeAcceptedMatches() {
 
 // ---- Issue resolution actions -------------------------------------------
 
+// Shared by MULTI_ITEM_ERROR (pick one Item#) and MFG_ONLY_ITEM_WARN with
+// several Source 4 candidates (pick the one to keep as Noted).
 function openPickItemModal(issueId) {
   const issue = currentIssues.find(i => i.issue_id === issueId);
   if (!issue) return;
   const detail = parseIssueDetail(issue);
-  const candidates = detail.candidates || [];
+  const isMfgOnly = issue.issue_type === "MFG_ONLY_ITEM_WARN";
+  const candidates = isMfgOnly ? mfgOnlyCandidates(detail) : (detail.candidates || []).map(item => ({ item }));
   document.getElementById("pickItemIssueId").value = issueId;
+  document.getElementById("pickItemIntro").textContent = isMfgOnly
+    ? "These item master records matched on manufacturer part number alone; the manufacturer is not confirmed. Pick the one to keep on this row, or cancel and Detach if none is the same item."
+    : "Multiple Infor item numbers were proposed by the labeling sources. Pick exactly one to use for this row.";
+  document.getElementById("btnSubmitPickItem").textContent = isMfgOnly ? "Keep Selected Item (Noted)" : "Use Selected Item";
   document.getElementById("pickItemCandidates").innerHTML = candidates.map((cand, idx) => `
     <div class="form-check">
-      <input class="form-check-input pick-item-radio" type="radio" name="pickItemChoice" id="pickItem_${idx}" value="${cand}"${idx === 0 ? " checked" : ""}>
-      <label class="form-check-label" for="pickItem_${idx}">${cand}</label>
+      <input class="form-check-input pick-item-radio" type="radio" name="pickItemChoice" id="pickItem_${idx}" value="${escText(cand.item)}"${idx === 0 ? " checked" : ""}>
+      <label class="form-check-label" for="pickItem_${idx}">${isMfgOnly ? describeMfgOnlyCandidate(cand) : escText(cand.item)}</label>
     </div>
   `).join("") || '<p class="text-muted small">No candidates recorded.</p>';
   new bootstrap.Modal(document.getElementById("pickItemModal")).show();
+}
+
+async function submitIssueItemChoice(issueId, action, itemNumber) {
+  const resp = await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/issues/${issueId}/${action}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ infor_item_number: itemNumber }),
+  });
+  const data = await resp.json();
+  if (!resp.ok) { alert("Update failed: " + (data.error || "unknown")); return false; }
+  return true;
 }
 
 document.getElementById("btnSubmitPickItem").addEventListener("click", async () => {
   const issueId = document.getElementById("pickItemIssueId").value;
   const radio = document.querySelector("input.pick-item-radio:checked");
   if (!radio) { alert("Pick one item first"); return; }
-  const resp = await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/issues/${issueId}/select-infor-item`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ infor_item_number: radio.value }),
-  });
-  const data = await resp.json();
-  if (!resp.ok) { alert("Pick failed: " + (data.error || "unknown")); return; }
+  const issue = currentIssues.find(i => String(i.issue_id) === String(issueId));
+  const action = issue && issue.issue_type === "MFG_ONLY_ITEM_WARN" ? "keep-mfg-only-item" : "select-infor-item";
+  if (!(await submitIssueItemChoice(issueId, action, radio.value))) return;
   bootstrap.Modal.getInstance(document.getElementById("pickItemModal")).hide();
   loadTask();
 });
+
+async function keepMfgOnlyItem(issueId) {
+  const issue = currentIssues.find(i => i.issue_id === issueId);
+  if (!issue) return;
+  const candidates = mfgOnlyCandidates(parseIssueDetail(issue));
+  if (candidates.length !== 1) { openPickItemModal(issueId); return; }
+  const kept = candidates[0].item;
+  if (!confirm(`Keep Infor item ${kept} on this row? It matched on manufacturer part number only.`)) return;
+  if (!(await submitIssueItemChoice(issueId, "keep-mfg-only-item", kept))) return;
+  loadTask();
+}
+
+async function detachMfgOnlyItem(issueId) {
+  if (!confirm("Detach this Infor item? The row will carry no Infor item number.")) return;
+  const resp = await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/issues/${issueId}/detach-mfg-only-item`, { method: "POST" });
+  const data = await resp.json();
+  if (!resp.ok) { alert("Detach failed: " + (data.error || "unknown")); return; }
+  loadTask();
+}
 
 async function noteBuyUom(issueId) {
   if (!confirm("Demote this BUY_UOM_ERROR to a warning and carry forward?")) return;

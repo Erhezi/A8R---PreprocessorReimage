@@ -695,6 +695,25 @@ def delete_item_matches_for_task(task_id: str) -> int:
         return count
 
 
+def delete_item_matches_for_items(task_id: str, item_ids: list[int]) -> int:
+    """Delete the item-match candidates of just these input items."""
+    if not item_ids:
+        return 0
+    with _session() as s:
+        count = 0
+        for id_chunk in _chunked(sorted(set(item_ids))):
+            count += (
+                s.query(ItemMatchCandidate)
+                .filter(
+                    ItemMatchCandidate.task_id == task_id,
+                    ItemMatchCandidate.item_id.in_(id_chunk),
+                )
+                .delete(synchronize_session=False)
+            )
+        s.commit()
+        return count
+
+
 def delete_item_matches_by_ids(match_item_ids: list[int]) -> int:
     if not match_item_ids:
         return 0
@@ -1076,6 +1095,52 @@ def get_dedup_candidates(task_id: str, *, source: Optional[str] = "CCX") -> list
         return [row.to_dict() for row in rows]
 
 
+def get_accepted_infor_pkids(
+    task_id: str,
+    input_item_ids: Optional[set[int]] = None,
+) -> list[tuple[int, str]]:
+    """``(input_item_id, infor_pkid)`` for every ACCEPTED INFOR_CL match row.
+
+    Column-only: Item# labeling needs just these two values, not the wide
+    rows. ``input_item_ids`` narrows to those items; ``None`` means the task.
+    """
+    if input_item_ids is None:
+        id_chunks: list[Optional[list[int]]] = [None]
+    else:
+        ordered_ids = sorted(input_item_ids)
+        if not ordered_ids:
+            return []
+        id_chunks = list(_chunked(ordered_ids))
+
+    pairs: list[tuple[int, str]] = []
+    with _session() as s:
+        for id_chunk in id_chunks:
+            query = s.query(MatchResult.input_item_id, MatchResult.infor_pkid).filter(
+                MatchResult.task_id == task_id,
+                MatchResult.matched_source == "INFOR_CL",
+                MatchResult.match_status == "ACCEPTED",
+                MatchResult.infor_pkid.isnot(None),
+            )
+            if id_chunk is not None:
+                query = query.filter(MatchResult.input_item_id.in_(id_chunk))
+            pairs.extend((row.input_item_id, row.infor_pkid) for row in query.all())
+    return pairs
+
+
+def get_input_item_ids_for_matches(match_ids: list[int]) -> set[int]:
+    """The input items behind these match rows."""
+    item_ids: set[int] = set()
+    with _session() as s:
+        for id_chunk in _chunked(sorted({int(mid) for mid in match_ids})):
+            item_ids.update(
+                row.input_item_id
+                for row in s.query(MatchResult.input_item_id)
+                .filter(MatchResult.match_id.in_(id_chunk))
+                .all()
+            )
+    return item_ids
+
+
 def get_match_results_by_contract(task_id: str) -> dict[str, list[MatchResult]]:
     """Return match results grouped by contract_number."""
     with _session() as s:
@@ -1385,7 +1450,8 @@ def bulk_update_match_decision_by_contract(
     Scope match treats NULL and '' as equivalent, the same rule
     ``_scope_equals`` applies on the read side.
 
-    Returns ``{"primary": <int>, "cascade": <int>}``.
+    Returns ``{"primary": <int>, "cascade": <int>, "input_item_ids": [...]}`` —
+    the input items behind the scope, for callers that refresh their labels.
     """
     contract_norm = (contract_number or "").strip()
     org_norm = (organization_eid or "").strip()
@@ -1412,7 +1478,7 @@ def bulk_update_match_decision_by_contract(
             .all()
         )
         if not affected_rows:
-            return {"primary": 0, "cascade": 0}
+            return {"primary": 0, "cascade": 0, "input_item_ids": []}
 
         affected_input_item_ids = {r.input_item_id for r in affected_rows}
 
@@ -1438,7 +1504,11 @@ def bulk_update_match_decision_by_contract(
         )
 
         s.commit()
-        return {"primary": primary_count, "cascade": cascade_count}
+        return {
+            "primary": primary_count,
+            "cascade": cascade_count,
+            "input_item_ids": sorted(affected_input_item_ids),
+        }
 
 
 def _reaggregate_cascade_for_input_items(
@@ -1853,19 +1923,30 @@ def delete_preprocess_issues_for_task(task_id: str) -> int:
         return count
 
 
-def delete_unresolved_preprocess_issues(task_id: str, issue_types: list[str]) -> int:
-    if not issue_types:
+def delete_unresolved_preprocess_issues(
+    task_id: str,
+    issue_types: list[str],
+    item_ids: Optional[list[int]] = None,
+) -> int:
+    """Delete unresolved issues of *issue_types*; *item_ids* narrows it to those items."""
+    if not issue_types or (item_ids is not None and not item_ids):
         return 0
     with _session() as s:
-        count = (
-            s.query(PreprocessIssue)
-            .filter(
-                PreprocessIssue.task_id == task_id,
-                PreprocessIssue.issue_type.in_(issue_types),
-                PreprocessIssue.resolved == False,  # noqa: E712
-            )
-            .delete(synchronize_session=False)
+        unresolved = s.query(PreprocessIssue).filter(
+            PreprocessIssue.task_id == task_id,
+            PreprocessIssue.issue_type.in_(issue_types),
+            PreprocessIssue.resolved == False,  # noqa: E712
         )
+        if item_ids is None:
+            count = unresolved.delete(synchronize_session=False)
+        else:
+            count = 0
+            for id_chunk in _chunked(sorted(set(item_ids))):
+                count += (
+                    unresolved
+                    .filter(PreprocessIssue.item_id.in_(id_chunk))
+                    .delete(synchronize_session=False)
+                )
         s.commit()
         return count
 

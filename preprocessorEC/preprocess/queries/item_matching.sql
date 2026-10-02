@@ -239,6 +239,22 @@ WHERE mi.Manufacturer = :manufacturer
   AND mi.ManufacturerNumber IN :mfg_catalog_nums
   AND mi.Active = 'Yes';
 
+-- name: item_label_mdm_item_by_mfg_num_set
+-- Source 4: MDM_ITEM by manufacturer part number alone, any manufacturer.
+-- Only asked for items Sources 1-3 left empty; every hit needs human review,
+-- so the manufacturer and description come back for the reviewer to compare.
+SELECT DISTINCT
+    mi.Manufacturer,
+    mn.ManufacturerName,
+    mi.ManufacturerNumber,
+    mi.Item,
+    mi.Description                AS mdm_description
+FROM PLMPreprocessorShared.infor.[MDM_ITEM] mi
+LEFT JOIN PLMPreprocessorShared.infor.[MDM_MANUFACTURER_NAME] mn
+    ON mn.Manufacturer = mi.Manufacturer
+WHERE mi.ManufacturerNumber IN :mfg_catalog_nums
+  AND mi.Active = 'Yes';
+
 -- name: item_label_mdm_vendoritem
 -- Find Infor Item# via MDM_VENDORITEM (vendor + vendor item number).
 -- Returns Item with Active status.

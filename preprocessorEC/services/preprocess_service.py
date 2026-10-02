@@ -1,7 +1,7 @@
 """Preprocess service -- Phase 3 business logic.
 
 Unified CCX duplicate detection + Infor cascading/residue matching +
-3-source item labeling + buy-UOM validation.
+4-source item labeling + buy-UOM validation.
 
 Pipeline:  SKU match -> similarity -> review -> Infor cascade ->
            Infor residue -> item labeling -> buy UOM -> finalise.
@@ -47,6 +47,11 @@ MATCH_TYPE_PRIORITY = {"CROSS_MATCH": 1, "REDUCED_VPN": 2, "REDUCED_MFG": 3}
 # snapshot, which is one event to log, not thousands of per-item to-dos.
 CCX_GONE_ISSUE_TYPE = "CCX_LINE_GONE"
 CCX_GONE_ISSUE_CAP = 200
+
+# Raised for every label that only Source 4 (manufacturer part number alone)
+# could supply. A part number can be reused across manufacturers, so a human
+# must keep (Noted) or detach the proposed Item# before the task advances.
+MFG_ONLY_ISSUE_TYPE = Status.MFG_ONLY_ITEM_WARN
 
 
 # ---------------------------------------------------------------------------
@@ -568,23 +573,25 @@ def _expected_buy_uom_option(item) -> Optional[str]:
     return _build_buy_uom_option(getattr(item, "uom_to_match_infor", None), getattr(item, "qoe", None))
 
 
-def _live_input_items(task_id: str) -> list:
-    """INPUT items minus soft-deleted rows.
+def _live_input_items(task_id: str, item_ids: Optional[set[int]] = None) -> list:
+    """INPUT items minus soft-deleted rows; *item_ids* narrows to those items.
 
     Single chokepoint for pipeline steps that drive matching, labeling, or
     bulk status updates — keeps DELETED_PC1 / DELETED_PREPROCESS rows from
     being resurrected or re-matched on a rerun.
     """
     return [
-        item for item in task_repo.get_items_by_source(task_id, "INPUT")
+        item for item in task_repo.get_items_by_source(task_id, "INPUT", item_ids=item_ids)
         if (item.status or "") not in Status.DELETED_STATUSES
     ]
 
 
 def _derive_item_status(types_open: set[str], buy_uom_severity: str) -> str:
-    """Status priority: MULTI > BUY_UOM > DUPLICATE > PREPROCESSED."""
+    """Status priority: MULTI > MFG_ONLY > BUY_UOM > DUPLICATE > PREPROCESSED."""
     if "MULTI_ITEM_ERROR" in types_open:
         return Status.MULTI_ITEM_ERROR
+    if MFG_ONLY_ISSUE_TYPE in types_open:
+        return Status.MFG_ONLY_ITEM_WARN
     if "BUY_UOM_ERROR" in types_open:
         return Status.BUY_UOM_WARN if buy_uom_severity == "WARN" else Status.BUY_UOM_ERROR
     if "DUPLICATE_ITEM_ERROR" in types_open:
@@ -752,6 +759,9 @@ def run_sku_matching(
     """
     state = state_machine.get_state(task_id)
     state["status"] = Status.PREPROCESSING
+    # The labels belong to the match set being replaced; decisions made before
+    # labeling runs again must not refresh them (see refresh_item_labels_after_decisions).
+    state["item_labeling_done"] = False
     state_machine.save_state(task_id, state)
     task_repo.update_task_phase(task_id, Phase.PREPROCESS, Status.PREPROCESSING)
 
@@ -1604,6 +1614,7 @@ def run_llm_review_pending_all(
     prompt, mode = _review_settings(task, prompt_version, review_mode)
 
     reviewed = 0
+    reviewed_item_ids: set[int] = set()
     for source in ("CCX", "INFOR_CL"):
         pending = [
             m for m in task_repo.get_match_results(task_id, matched_source=source)
@@ -1611,22 +1622,31 @@ def run_llm_review_pending_all(
         ]
         if not pending:
             continue
+        reviewed_item_ids.update(m.input_item_id for m in pending)
         reviewed += _llm_review_matches(
             pending, item_by_id, task=task, prompt=prompt, mode=mode,
         )
 
-    return {"reviewed": reviewed, "prompt_version": prompt.name, "review_mode": mode}
+    relabel = refresh_item_labels_after_decisions(task_id, state_machine, item_ids=reviewed_item_ids)
+    return {
+        "reviewed": reviewed,
+        "prompt_version": prompt.name,
+        "review_mode": mode,
+        "relabeled": relabel["relabeled"],
+    }
 
 
 # ---------------------------------------------------------------------------
-# Step 7 -- 3-Source Item# Labeling
+# Step 7 -- 4-Source Item# Labeling
 # ---------------------------------------------------------------------------
 def run_item_labeling(task_id: str, state_machine: TaskStateMachine) -> dict:
-    """Label each INPUT item with Infor Item# from 3 sources.
+    """Label each INPUT item with Infor Item# from 4 sources.
 
     Source 1: MDM_ITEM (Manufacturer + ManufacturerNumber)
     Source 2: MDM_VENDORITEM (Vendor + VendorItem)
     Source 3: Infor CL match (from accepted INFOR_CL match results)
+    Source 4: MDM_ITEM (ManufacturerNumber only) — used only when 1-3 are all
+              empty, and always raised as MFG_ONLY_ITEM_WARN for human review
 
     All source values and the final field store only 6-digit Infor Item values.
     """
@@ -1638,26 +1658,125 @@ def run_item_labeling(task_id: str, state_machine: TaskStateMachine) -> dict:
     task = task_repo.get_task(task_id)
     input_items = _live_input_items(task_id)
     # Clear unresolved labeling issues — pipeline reruns rebuild from scratch.
-    task_repo.delete_unresolved_preprocess_issues(task_id, ["MULTI_ITEM_ERROR"])
+    task_repo.delete_unresolved_preprocess_issues(task_id, ["MULTI_ITEM_ERROR", MFG_ONLY_ISSUE_TYPE])
     if not input_items:
         task_repo.delete_item_matches_for_task(task_id)
         return {"labeled": 0}
 
+    updates, pending_issue_records, item_match_rows = _label_items(
+        task_id, task, input_items, _accepted_infor_pkids_by_input(task_id),
+    )
+
+    # Bulk update items
+    if updates:
+        task_repo.update_items_bulk(updates)
+    task_repo.add_preprocess_issues_bulk(pending_issue_records)
+    task_repo.delete_item_matches_for_task(task_id)
+    if item_match_rows:
+        task_repo.add_item_matches_bulk(item_match_rows)
+
+    state["item_labeling_done"] = True
+    state["buy_uom_check_done"] = False
+    state_machine.save_state(task_id, state)
+
+    return {"labeled": len(updates), "item_match_candidates": len(item_match_rows)}
+
+
+def _accepted_infor_pkids_by_input(
+    task_id: str,
+    item_ids: Optional[set[int]] = None,
+) -> dict[int, set[str]]:
+    """Accepted INFOR_CL lineage per input item — the only input to Source 3."""
+    accepted: dict[int, set[str]] = {}
+    for input_item_id, infor_pkid in task_repo.get_accepted_infor_pkids(task_id, item_ids):
+        if infor_pkid:
+            accepted.setdefault(input_item_id, set()).add(str(infor_pkid))
+    return accepted
+
+
+def _infor_items_by_pkid(sess: Session, infor_pkids: set[str]) -> dict[str, set[str]]:
+    """6-digit Infor master Item(s) on each Infor contract line."""
+    infor_item_by_pkid: dict[str, set[str]] = {}
+    if not infor_pkids:
+        return infor_item_by_pkid
+    from sqlalchemy import bindparam
+    q_infor_item = load_query(
+        "preprocess",
+        "item_matching",
+        query="item_label_infor_item_by_pkids_set",
+    ).bindparams(bindparam("infor_pkids", expanding=True))
+    rows = _execute_expanding_batches(sess, q_infor_item, "infor_pkids", sorted(infor_pkids))
+    for row in rows:
+        infor_pkid = str(row.get("Infor_pkid") or "").strip()
+        normalized = _normalize_infor_item_number(row.get("Item"))
+        if infor_pkid and normalized:
+            infor_item_by_pkid.setdefault(infor_pkid, set()).add(normalized)
+    return infor_item_by_pkid
+
+
+def _source_4_candidates_by_mfg(sess: Session, mfg_nums: set[str]) -> dict[str, list[dict]]:
+    """Active MDM_ITEM rows by manufacturer part number alone, keyed by part number.
+
+    Each candidate carries the manufacturer and description so a reviewer can
+    judge whether the other manufacturer's item is really the input's.
+    """
+    if not mfg_nums:
+        return {}
+    from sqlalchemy import bindparam
+    q_mdm_item = load_query(
+        "preprocess",
+        "item_matching",
+        query="item_label_mdm_item_by_mfg_num_set",
+    ).bindparams(bindparam("mfg_catalog_nums", expanding=True))
+    by_mfg: dict[str, dict[str, dict]] = {}
+    for row in _execute_expanding_batches(sess, q_mdm_item, "mfg_catalog_nums", sorted(mfg_nums)):
+        mfg_key = _normalize_match_key(row.get("ManufacturerNumber"))
+        item_number = _normalize_infor_item_number(row.get("Item"))
+        if not mfg_key or not item_number:
+            continue
+        by_mfg.setdefault(mfg_key, {}).setdefault(item_number, {
+            "item": item_number,
+            "manufacturer": row.get("Manufacturer"),
+            "manufacturer_name": row.get("ManufacturerName"),
+            "description": row.get("mdm_description"),
+        })
+    return {
+        mfg_key: [by_item[item_number] for item_number in sorted(by_item)]
+        for mfg_key, by_item in by_mfg.items()
+    }
+
+
+def _source_3_items(
+    item_id: int,
+    accepted_infor_pkids_by_input: dict[int, set[str]],
+    infor_item_by_pkid: dict[str, set[str]],
+) -> list[str]:
+    return sorted(
+        {
+            item_number
+            for infor_pkid in accepted_infor_pkids_by_input.get(item_id, set())
+            for item_number in infor_item_by_pkid.get(infor_pkid, set())
+        }
+    )
+
+
+def _label_items(
+    task_id: str,
+    task,
+    input_items: list,
+    accepted_infor_pkids_by_input: dict[int, set[str]],
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """Compute the 4-source labels for *input_items* without writing anything.
+
+    Returns ``(item_updates, labeling_issue_records, item_match_rows)``; the
+    issues are MULTI_ITEM_ERROR and MFG_ONLY_ITEM_WARN.
+    """
     contract_manufacturer_infor = (getattr(task, "contract_manufacturer_infor", None) or "").strip()
 
-    # Buffer MULTI_ITEM_ERROR records and flush in one bulk insert after the
+    # Buffer labeling issue records and flush in one bulk insert after the
     # loop. Per-item upsert was causing one round-trip per flagged row.
     pending_issue_records: list[dict] = []
 
-    # Pre-build accepted INFOR_CL items by input_item_id via infor_pkid lineage.
-    infor_matches = task_repo.get_match_results(task_id, matched_source="INFOR_CL")
-    accepted_infor_pkids_by_input: dict[int, set[str]] = {}
-    for match in infor_matches:
-        if match.match_status != "ACCEPTED" or not match.infor_pkid:
-            continue
-        accepted_infor_pkids_by_input.setdefault(match.input_item_id, set()).add(match.infor_pkid)
-
-    labeled_count = 0
     updates = []
     item_match_rows = []
     final_items_by_item_id: dict[int, list[str]] = {}
@@ -1681,12 +1800,11 @@ def run_item_labeling(task_id: str, state_machine: TaskStateMachine) -> dict:
         vendor_ids.add(v_id)
         vendor_catalog_nums.add(vpn)
 
-    accepted_infor_pkids = sorted({
-        str(infor_pkid)
-        for infor_pkids in accepted_infor_pkids_by_input.values()
-        for infor_pkid in infor_pkids
-        if infor_pkid
-    })
+    accepted_infor_pkids = {
+        infor_pkid
+        for item in input_items
+        for infor_pkid in accepted_infor_pkids_by_input.get(item.item_id, set())
+    }
 
     with _sql_session() as sess:
         from sqlalchemy import bindparam
@@ -1738,19 +1856,7 @@ def run_item_labeling(task_id: str, state_machine: TaskStateMachine) -> dict:
                 if key[0] and key[1] and normalized:
                     source_2_by_vendor_pair.setdefault(key, set()).add(normalized)
 
-        infor_item_by_pkid: dict[str, set[str]] = {}
-        if accepted_infor_pkids:
-            q_infor_item = load_query(
-                "preprocess",
-                "item_matching",
-                query="item_label_infor_item_by_pkids_set",
-            ).bindparams(bindparam("infor_pkids", expanding=True))
-            rows = _execute_expanding_batches(sess, q_infor_item, "infor_pkids", accepted_infor_pkids)
-            for row in rows:
-                infor_pkid = str(row.get("Infor_pkid") or "").strip()
-                normalized = _normalize_infor_item_number(row.get("Item"))
-                if infor_pkid and normalized:
-                    infor_item_by_pkid.setdefault(infor_pkid, set()).add(normalized)
+        infor_item_by_pkid = _infor_items_by_pkid(sess, accepted_infor_pkids)
 
         for item in input_items:
             update = {
@@ -1761,6 +1867,8 @@ def run_item_labeling(task_id: str, state_machine: TaskStateMachine) -> dict:
                 "infor_item_2_active": None,
                 "infor_item_3": None,
                 "infor_item_3_active": None,
+                "infor_item_4": None,
+                "infor_item_4_active": None,
                 "infor_item_number": None,
             }
 
@@ -1780,23 +1888,52 @@ def run_item_labeling(task_id: str, state_machine: TaskStateMachine) -> dict:
                 update["infor_item_2_active"] = "Yes"
 
             # Source 3: Infor CL match
-            infor_items = sorted(
-                {
-                    item_number
-                    for infor_pkid in accepted_infor_pkids_by_input.get(item.item_id, set())
-                    for item_number in infor_item_by_pkid.get(str(infor_pkid), set())
-                }
-            )
+            infor_items = _source_3_items(item.item_id, accepted_infor_pkids_by_input, infor_item_by_pkid)
             if infor_items:
                 update["infor_item_3"] = ", ".join(infor_items)
                 update["infor_item_3_active"] = "Yes"  # from active CL table
 
+            updates.append(update)
+
+        # Source 4: MDM_ITEM by mfg part number alone — asked only for the
+        # items Sources 1-3 left empty.
+        source_4_by_mfg = _source_4_candidates_by_mfg(sess, {
+            item.mfg_catalog_num
+            for item, update in zip(input_items, updates)
+            if item.mfg_catalog_num
+            and not any(update[key] for key in ("infor_item_1", "infor_item_2", "infor_item_3"))
+        })
+
+        for item, update in zip(input_items, updates):
             # Determine consensus
             items_found = set()
             for key in ("infor_item_1", "infor_item_2", "infor_item_3"):
                 items_found.update(_split_multi_value_items(update.get(key)))
 
-            if len(items_found) == 0:
+            source_4_candidates = (
+                [] if items_found
+                else source_4_by_mfg.get(_normalize_match_key(item.mfg_catalog_num), [])
+            )
+            if source_4_candidates:
+                # Always needs a human: keep (Noted) or detach, even for one
+                # candidate. With several, Noted also picks which one.
+                candidate_items = [candidate["item"] for candidate in source_4_candidates]
+                update["infor_item_4"] = ", ".join(candidate_items)
+                update["infor_item_4_active"] = "Yes"
+                update["infor_item_number"] = ", ".join(candidate_items)
+                update["status"] = Status.MFG_ONLY_ITEM_WARN
+                pending_issue_records.append({
+                    "task_id": task_id,
+                    "item_id": item.item_id,
+                    "issue_type": MFG_ONLY_ISSUE_TYPE,
+                    "severity": "WARN",
+                    "detail": json.dumps({
+                        "mfg_catalog_num": item.mfg_catalog_num,
+                        "candidates": candidate_items,
+                        "candidate_details": source_4_candidates,
+                    }),
+                })
+            elif len(items_found) == 0:
                 update["status"] = Status.ITEM_FETCHED
             elif len(items_found) == 1:
                 final_item = next(iter(items_found))
@@ -1825,9 +1962,6 @@ def run_item_labeling(task_id: str, state_machine: TaskStateMachine) -> dict:
                 final_items_by_item_id[item.item_id] = final_items
                 all_final_items.update(final_items)
 
-            updates.append(update)
-            labeled_count += 1
-
         item_desc_cache: dict[str, Optional[str]] = {}
         if all_final_items:
             q_item_desc = load_query(
@@ -1850,19 +1984,7 @@ def run_item_labeling(task_id: str, state_machine: TaskStateMachine) -> dict:
                     "item_description": item_desc_cache.get(final_item),
                 })
 
-    # Bulk update items
-    if updates:
-        task_repo.update_items_bulk(updates)
-    task_repo.add_preprocess_issues_bulk(pending_issue_records)
-    task_repo.delete_item_matches_for_task(task_id)
-    if item_match_rows:
-        task_repo.add_item_matches_bulk(item_match_rows)
-
-    state["item_labeling_done"] = True
-    state["buy_uom_check_done"] = False
-    state_machine.save_state(task_id, state)
-
-    return {"labeled": labeled_count, "item_match_candidates": len(item_match_rows)}
+    return updates, pending_issue_records, item_match_rows
 
 
 # ---------------------------------------------------------------------------
@@ -1882,11 +2004,43 @@ def run_buy_uom_check(task_id: str, state_machine: TaskStateMachine) -> dict:
         return {"checked": 0, "matched_items": 0}
 
     task = task_repo.get_task(task_id)
+    candidate_rows = task_repo.get_item_matches(task_id)
+    updates, candidate_updates, pending_issue_records, matched_candidate_count = _check_buy_uom(
+        task_id, task, input_items, candidate_rows,
+    )
+
+    if updates:
+        task_repo.update_items_bulk(updates)
+    if candidate_updates:
+        task_repo.update_item_matches_bulk(candidate_updates)
+    task_repo.add_preprocess_issues_bulk(pending_issue_records)
+
+    state["buy_uom_check_done"] = True
+    state["status"] = Status.PENDING_FINALIZATION
+    state_machine.save_state(task_id, state)
+    task_repo.update_task_phase(task_id, Phase.PREPROCESS, Status.PENDING_FINALIZATION)
+    return {
+        "checked": len(input_items),
+        "matched_items": len(candidate_rows),
+        "buy_uom_matched_candidates": matched_candidate_count,
+    }
+
+
+def _check_buy_uom(
+    task_id: str,
+    task,
+    input_items: list,
+    candidate_rows: list,
+) -> tuple[list[dict], list[dict], list[dict], int]:
+    """Compute buy-UOM options, item statuses and BUY_UOM_ERROR issues without writing.
+
+    Returns ``(item_updates, candidate_updates, buy_uom_issue_records,
+    matched_candidate_count)``.
+    """
     task_intention = (getattr(task, "intention", None) or "").upper()
 
     q_uom = load_query("preprocess", "item_matching", query="item_uom_options")
     q_inactive_gtin = load_query("preprocess", "item_matching", query="inactive_gtin_items")
-    candidate_rows = task_repo.get_item_matches(task_id)
     input_item_by_id = {item.item_id: item for item in input_items}
     updates = [{"item_id": item.item_id, "infor_buy_uom_options": None} for item in input_items]
     options_by_item_id: dict[int, set[str]] = {}
@@ -1954,7 +2108,9 @@ def run_buy_uom_check(task_id: str, state_machine: TaskStateMachine) -> dict:
         if not has_item_number:
             update_map[item.item_id]["status"] = Status.ITEM_PREPROCESSED
             continue
-        if current_status == Status.MULTI_ITEM_ERROR:
+        # The label is not settled until the reviewer picks or keeps an item;
+        # that resolution runs the buy-UOM check for the item it keeps.
+        if current_status in (Status.MULTI_ITEM_ERROR, Status.MFG_ONLY_ITEM_WARN):
             continue
         if expected_option and expected_option not in option_values:
             item_intention = (getattr(item, "intention", None) or task_intention).upper()
@@ -1975,21 +2131,100 @@ def run_buy_uom_check(task_id: str, state_machine: TaskStateMachine) -> dict:
                 }),
             })
 
-    if updates:
-        task_repo.update_items_bulk(updates)
-    if candidate_updates:
-        task_repo.update_item_matches_bulk(candidate_updates)
-    task_repo.add_preprocess_issues_bulk(pending_issue_records)
+    return updates, candidate_updates, pending_issue_records, matched_candidate_count
 
-    state["buy_uom_check_done"] = True
-    state["status"] = Status.PENDING_FINALIZATION
-    state_machine.save_state(task_id, state)
-    task_repo.update_task_phase(task_id, Phase.PREPROCESS, Status.PENDING_FINALIZATION)
-    return {
-        "checked": len(input_items),
-        "matched_items": len(candidate_rows),
-        "buy_uom_matched_candidates": matched_candidate_count,
-    }
+
+def refresh_stale_item_labels(task_id: str, item_ids: Optional[set[int]] = None) -> dict:
+    """Relabel items whose accepted Infor CL lineage changed after labeling ran.
+
+    The pipeline labels items as its last steps, but MED/LOW matches are mostly
+    accepted or rejected afterwards on the review screen. Source 3 reads only
+    ACCEPTED INFOR_CL rows, so an item whose Infor line was accepted after
+    labeling kept an empty label even though that line carries an Item#.
+
+    An item is stale when its stored ``infor_item_3`` differs from what its
+    accepted lineage yields now. Only those items are relabeled and buy-UOM
+    checked again, so a MULTI_ITEM_ERROR pick or a BUY_UOM resolution on any
+    other item is left alone. A relabeled item goes through all four sources
+    again, so an item that now has a contract-line Item# drops its Source 4
+    review, and one that lost it can get a new one. *item_ids* limits the check
+    to those items; ``None`` checks the whole task. Returns ``{"relabeled": n}``.
+    """
+    input_items = _live_input_items(task_id, item_ids)
+    if not input_items:
+        return {"relabeled": 0}
+
+    accepted_infor_pkids_by_input = _accepted_infor_pkids_by_input(task_id, item_ids)
+    with _sql_session() as sess:
+        infor_item_by_pkid = _infor_items_by_pkid(
+            sess,
+            {pkid for pkids in accepted_infor_pkids_by_input.values() for pkid in pkids},
+        )
+    stale_items = [
+        item for item in input_items
+        if _source_3_items(item.item_id, accepted_infor_pkids_by_input, infor_item_by_pkid)
+        != sorted(set(_split_multi_value_items(item.infor_item_3)))
+    ]
+    if not stale_items:
+        return {"relabeled": 0}
+
+    stale_ids = {item.item_id for item in stale_items}
+    task = task_repo.get_task(task_id)
+
+    task_repo.delete_unresolved_preprocess_issues(
+        task_id, ["MULTI_ITEM_ERROR", MFG_ONLY_ISSUE_TYPE, "BUY_UOM_ERROR"], item_ids=sorted(stale_ids),
+    )
+    updates, labeling_issues, item_match_rows = _label_items(
+        task_id, task, stale_items, accepted_infor_pkids_by_input,
+    )
+    task_repo.update_items_bulk(updates)
+    task_repo.delete_item_matches_for_items(task_id, sorted(stale_ids))
+    task_repo.add_item_matches_bulk(item_match_rows)
+    task_repo.add_preprocess_issues_bulk(labeling_issues)
+
+    # Buy-UOM reads the new label and status back off the item rows.
+    relabeled_items = _live_input_items(task_id, stale_ids)
+    candidate_rows = [row for row in task_repo.get_item_matches(task_id) if row.item_id in stale_ids]
+    uom_updates, candidate_updates, buy_uom_issues, _ = _check_buy_uom(
+        task_id, task, relabeled_items, candidate_rows,
+    )
+    task_repo.update_items_bulk(uom_updates)
+    task_repo.update_item_matches_bulk(candidate_updates)
+    task_repo.add_preprocess_issues_bulk(buy_uom_issues)
+
+    logger.info(
+        "Task %s: relabeled %d item(s) whose accepted Infor CL matches changed after labeling.",
+        task_id, len(stale_items),
+    )
+    return {"relabeled": len(stale_items)}
+
+
+def refresh_item_labels_after_decisions(
+    task_id: str,
+    state_machine: TaskStateMachine,
+    *,
+    item_ids: Optional[set[int]] = None,
+    match_ids: Optional[list[int]] = None,
+) -> dict:
+    """Keep Item# labels in step with accept/reject decisions on the review screen.
+
+    Pass the decided *match_ids* or the affected *item_ids*; neither means the
+    whole task. Nothing runs until labeling has run for the current matches —
+    SKU matching clears that flag — since before then there is no label to keep
+    current. Finalize makes the same refresh, so a failure here is logged
+    rather than failing a decision that is already saved.
+    """
+    if not state_machine.get_state(task_id).get("item_labeling_done"):
+        return {"relabeled": 0}
+    try:
+        if match_ids is not None:
+            item_ids = task_repo.get_input_item_ids_for_matches(match_ids)
+        if item_ids is not None and not item_ids:
+            return {"relabeled": 0}
+        return refresh_stale_item_labels(task_id, item_ids)
+    except Exception:  # noqa: BLE001 — the decision is saved; finalize retries the refresh
+        logger.exception("Task %s: Item# label refresh after a match decision failed.", task_id)
+        return {"relabeled": 0, "refresh_failed": True}
 
 
 # ---------------------------------------------------------------------------
@@ -2014,7 +2249,7 @@ def run_full_preprocess(
     3. Infor cascade (via deterministic CCX HIGH matches)
     4. LLM review for MED/LOW CCX matches
     5. Infor residue matching + LLM review
-    6. 3-source Item# labeling
+    6. 4-source Item# labeling
     7. Buy UOM aggregation
 
     Returns aggregated results dict.
@@ -2116,6 +2351,10 @@ def submit_contract_decision(
     state["ccx_decisions_done"] = True
     state_machine.save_state(task_id, state)
 
+    relabel = refresh_item_labels_after_decisions(
+        task_id, state_machine, item_ids=set(counts["input_item_ids"]),
+    )
+
     return {
         "contract_number": contract_number,
         "organization_eid": organization_eid,
@@ -2124,6 +2363,7 @@ def submit_contract_decision(
         "match_status": match_status,
         "affected": counts["primary"],
         "cascade_affected": counts["cascade"],
+        "relabeled": relabel["relabeled"],
     }
 
 
@@ -2141,7 +2381,8 @@ def submit_item_decision(
     state["infor_decisions_done"] = True
     state_machine.save_state(task_id, state)
 
-    return {"match_id": match_id, "decision": decision}
+    relabel = refresh_item_labels_after_decisions(task_id, state_machine, match_ids=[match_id])
+    return {"match_id": match_id, "decision": decision, "relabeled": relabel["relabeled"]}
 
 
 # ---------------------------------------------------------------------------
@@ -2201,13 +2442,38 @@ def resolve_multi_item_pick(task_id: str, issue_id: int, infor_item_number: str,
     if candidates and picked not in candidates:
         raise ValueError(f"{picked} is not one of the candidates {sorted(candidates)}")
 
+    item_status, new_buy_uom_issue = _settle_item_number(task_id, issue.item_id, picked, "PICK_ITEM")
+
+    task_repo.resolve_preprocess_issue(
+        issue_id=issue_id,
+        resolution_action="PICK_ITEM",
+        resolved_by=decided_by,
+        detail=json.dumps({**detail, "picked": picked}),
+    )
+
+    return {
+        "issue_id": issue_id,
+        "picked": picked,
+        "item_status": item_status,
+        "buy_uom_issue_id": new_buy_uom_issue.issue_id if new_buy_uom_issue else None,
+    }
+
+
+def _settle_item_number(task_id: str, item_id: int, picked: str, raised_after: str):
+    """Make *picked* the item's one Infor Item# and run the buy-UOM check for it.
+
+    Prunes the item's ItemMatchCandidate rows to *picked* (inserting it if it
+    was never materialised) and raises a BUY_UOM_ERROR/WARN issue when the
+    input UOM*QOE is not a buy option of *picked*.
+    Returns ``(item_status, buy_uom_issue_or_None)``.
+    """
     # Prune ItemMatchCandidate rows to the picked one.
     surviving_match_item_id = None
     item_desc = None
     candidate_rows = task_repo.get_item_matches(task_id)
     to_delete = []
     for cand in candidate_rows:
-        if cand.item_id != issue.item_id:
+        if cand.item_id != item_id:
             continue
         if cand.infor_item_number == picked:
             surviving_match_item_id = cand.match_item_id
@@ -2224,14 +2490,14 @@ def resolve_multi_item_pick(task_id: str, issue_id: int, infor_item_number: str,
             item_desc = rows[0]["item_description"] if rows else None
         task_repo.add_item_matches_bulk([{
             "task_id": task_id,
-            "item_id": issue.item_id,
+            "item_id": item_id,
             "infor_item_number": picked,
             "item_description": item_desc,
         }])
 
     # Recompute buy-UOM for just this item.
     task = task_repo.get_task(task_id)
-    item = task_repo.get_task_item(issue.item_id)
+    item = task_repo.get_task_item(item_id)
     expected_option = _expected_buy_uom_option(item) if item else None
     intention = _intention_for_item(item, task) if item else ""
     is_expire = intention == "EXPIRE"
@@ -2246,7 +2512,7 @@ def resolve_multi_item_pick(task_id: str, issue_id: int, infor_item_number: str,
         item_status = Status.BUY_UOM_WARN if is_expire else Status.BUY_UOM_ERROR
         new_buy_uom_issue = task_repo.upsert_preprocess_issue(
             task_id=task_id,
-            item_id=issue.item_id,
+            item_id=item_id,
             issue_type="BUY_UOM_ERROR",
             severity="WARN" if is_expire else "ERROR",
             detail=json.dumps({
@@ -2254,30 +2520,107 @@ def resolve_multi_item_pick(task_id: str, issue_id: int, infor_item_number: str,
                 "available": option_values,
                 "infor_item_number": picked,
                 "intention": intention,
-                "raised_after": "PICK_ITEM",
+                "raised_after": raised_after,
             }),
         )
 
     task_repo.update_items_bulk([{
-        "item_id": issue.item_id,
+        "item_id": item_id,
         "infor_item_number": picked,
         "infor_buy_uom_options": options_str,
+        "status": item_status,
+    }])
+    return item_status, new_buy_uom_issue
+
+
+def _open_mfg_only_issue(task_id: str, issue_id: int) -> tuple:
+    """Load an unresolved MFG_ONLY_ITEM_WARN issue of this task, with its detail."""
+    issue = task_repo.get_preprocess_issue(issue_id)
+    if not issue or issue.task_id != task_id:
+        raise ValueError("Issue not found")
+    if issue.issue_type != MFG_ONLY_ISSUE_TYPE or issue.resolved:
+        raise ValueError("Issue is not an open manufacturer-part-number-only label")
+    try:
+        detail = json.loads(issue.detail or "{}")
+    except (TypeError, ValueError):
+        detail = {}
+    return issue, detail
+
+
+def resolve_mfg_only_keep(task_id: str, issue_id: int, infor_item_number: str, decided_by: str) -> dict:
+    """Noted: the reviewer confirms a Source 4 Item# and keeps it on the input item.
+
+    Source 4 matched on manufacturer part number alone, so with several
+    candidates the reviewer also picks which one. The kept item then gets the
+    buy-UOM check that was held back while the label was unconfirmed.
+    """
+    issue, detail = _open_mfg_only_issue(task_id, issue_id)
+
+    kept = _normalize_infor_item_number(infor_item_number)
+    if not kept:
+        raise ValueError("infor_item_number must be a 6-digit Infor item")
+    candidates = set(detail.get("candidates") or [])
+    if kept not in candidates:
+        raise ValueError(f"{kept} is not one of the candidates {sorted(candidates)}")
+
+    item_status, new_buy_uom_issue = _settle_item_number(task_id, issue.item_id, kept, "KEEP_MFG_ONLY")
+
+    task_repo.resolve_preprocess_issue(
+        issue_id=issue_id,
+        resolution_action="NOTED",
+        resolved_by=decided_by,
+        detail=json.dumps({**detail, "kept": kept}),
+    )
+
+    return {
+        "issue_id": issue_id,
+        "kept": kept,
+        "item_status": item_status,
+        "buy_uom_issue_id": new_buy_uom_issue.issue_id if new_buy_uom_issue else None,
+    }
+
+
+def resolve_mfg_only_detach(task_id: str, issue_id: int, decided_by: str) -> dict:
+    """Detach: the reviewer rejects the Source 4 Item#, so the input item stays unlabeled.
+
+    ``infor_item_4`` keeps the rejected candidates as a record of what was
+    offered; only the final label, its buy-UOM options and item-match rows go.
+    """
+    issue, detail = _open_mfg_only_issue(task_id, issue_id)
+
+    task_repo.delete_item_matches_for_items(task_id, [issue.item_id])
+
+    other_open = [
+        other for other in task_repo.get_preprocess_issues(task_id, include_resolved=False)
+        if other.item_id == issue.item_id and other.issue_id != issue_id and not other.resolved
+    ]
+    # A buy-UOM finding was about the detached Item#, so it no longer applies.
+    for other in other_open:
+        if other.issue_type == "BUY_UOM_ERROR":
+            task_repo.resolve_preprocess_issue(
+                issue_id=other.issue_id,
+                resolution_action="ITEM_DETACHED",
+                resolved_by=decided_by,
+            )
+    item_status = _derive_item_status(
+        {other.issue_type for other in other_open if other.issue_type != "BUY_UOM_ERROR"},
+        "ERROR",
+    )
+    task_repo.update_items_bulk([{
+        "item_id": issue.item_id,
+        "infor_item_number": None,
+        "infor_buy_uom_options": None,
         "status": item_status,
     }])
 
     task_repo.resolve_preprocess_issue(
         issue_id=issue_id,
-        resolution_action="PICK_ITEM",
+        resolution_action="DETACHED",
         resolved_by=decided_by,
-        detail=json.dumps({**detail, "picked": picked}),
+        detail=json.dumps(detail),
     )
 
-    return {
-        "issue_id": issue_id,
-        "picked": picked,
-        "item_status": item_status,
-        "buy_uom_issue_id": new_buy_uom_issue.issue_id if new_buy_uom_issue else None,
-    }
+    return {"issue_id": issue_id, "item_status": item_status}
 
 
 def resolve_buy_uom_note(task_id: str, issue_id: int, decided_by: str) -> dict:
@@ -2686,6 +3029,9 @@ def maybe_auto_advance_preprocess(task_id: str, state_machine: TaskStateMachine,
     task_repo.reaggregate_cascade_statuses(task_id)
     if task_repo.count_pending_matches(task_id):
         return None
+    # A decision changed since finalize can relabel an item into a new issue.
+    if refresh_stale_item_labels(task_id)["relabeled"] and _get_unresolved_preprocess_issues(task_id):
+        return None
 
     # Zero-viable guard: don't silently advance an empty task. Log and skip.
     if not task_repo.count_live_input_items(task_id):
@@ -2747,6 +3093,10 @@ def finalize_preprocess(task_id: str, state_machine: TaskStateMachine, user: str
                 n=pending_count
             )
         )
+
+    # Every match is decided now; bring Item# labels in line with the final
+    # decisions before judging which issues are still open.
+    refresh_stale_item_labels(task_id)
 
     unresolved_issues = _get_unresolved_preprocess_issues(task_id)
     unresolved_item_ids = {issue.item_id for issue in unresolved_issues}
