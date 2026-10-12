@@ -19,6 +19,12 @@ a change here, not in the calling code.
 | --- | --- | --- | --- | --- |
 | `preprocess_review_v1.md` | Preprocess Review v1 — supplier-role-aware, packaging aware | PAIR, GROUP | active | Supplier-aware product identity and packaging judged together — same product, different packaging is a different item. |
 | `preprocess_review_v2.md` | Preprocess Review v2 — supplier-role-aware, ignore packaging | PAIR, GROUP | active | Product identity alone — packaging variants count as the same item; supplier role determines how catalog-number matches are weighed. Default. |
+| `mfg_only_desc_review_v1.md` | MPN-only Description Check v1 | PAIR | active | Source 4 Item# labels (manufacturer part number alone): do the two descriptions name the same product? Separate `mfg_only_desc_review` family — never in the picker. |
+
+The picker lists only the `preprocess_review` family. Other families run their
+latest active version (`llm_review_prompts.latest(key)`) with no per-task choice;
+`mfg_only_desc_review` answers `{"verdict": "same" | "different", "reason": ...}`
+from `input_desc` and `match_desc` alone.
 
 ## Input modes
 

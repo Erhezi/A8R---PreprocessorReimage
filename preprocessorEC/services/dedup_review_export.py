@@ -632,13 +632,21 @@ def get_review_data(task_id: str) -> dict:
     for sheet_name, payload in groups.items():
         key = payload["key"]
         formatted_rows: list[dict] = []
-        matched_lines = 0
+        # Distinct CCX lines, not match pairs: a UOM-unaware match can pair
+        # several input lines with one CCX line, and Matched Lines is read
+        # against Total Lines (a CCX line count). (MPN, UOM) identifies a CCX
+        # line within its (Org, Contract, ERPVendor) group.
+        matched_ccx_lines: set = set()
         for raw in payload["rows"]:
             if raw.get("__replacement__"):
                 formatted_rows.append(_replacement_unmatched_row_dict(raw))
             else:
                 formatted_rows.append(_matched_row_dict(raw))
-                matched_lines += 1
+                matched_ccx_lines.add((
+                    _safe_str(raw.get("manufacturer_number_matched")).strip(),
+                    _safe_str(raw.get("uom_matched")).strip(),
+                ))
+        matched_lines = len(matched_ccx_lines)
         info = contract_meta.get(
             (key["organization_eid"], key["contract_id"], key["erp_vendor_id"]),
             {},

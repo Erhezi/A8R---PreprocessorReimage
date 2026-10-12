@@ -205,10 +205,13 @@ LEFT JOIN PLMPreprocessorShared.Preprocessor.[CCXSyncedContractLine] ccx
    AND ccx.ERPVendorID            = tid.erp_vendor_id_matched
    AND ccx.ManufacturerNumber_CCX = tid.manufacturer_number_matched
    AND ccx.UOM_CCX                = tid.uom_matched
+-- Only linked candidates: a Source 4 (mfg part number only) row that was
+-- rejected or never decided is a proposal, not the item's Item#.
 LEFT JOIN [Preprocessor].[PreprocessorItemMatching] pim
     ON pim.task_id          = ti.task_id
     AND pim.item_id          = ti.item_id
     AND pim.infor_item_number = COALESCE(tid.infor_item_number, ti.infor_item_number)
+    AND (pim.mfg_only = 0 OR pim.match_status = 'ACCEPTED')
 WHERE ti.task_id        = :task_id
   AND ti.source_dataset = 'INPUT'
   AND ti.status         = 'ITEM_PREPROCESSED'

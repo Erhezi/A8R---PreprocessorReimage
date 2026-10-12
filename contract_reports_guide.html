@@ -13,6 +13,7 @@
     --orange-border: #E0A57A;
     --green: #E2EFDA;
     --green-border: #8FC79B;
+    --purple: #E4DFEC;
     --gray: #F2F2F2;
     --text: #222;
     --muted: #666;
@@ -74,6 +75,7 @@
   }
   th.yellow, td.yellow { background: var(--yellow); }
   th.blue, td.blue { background: var(--blue); }
+  th.purple, td.purple { background: var(--purple); }
   .legend {
     display: flex;
     gap: 16px;
@@ -98,7 +100,7 @@
   .callout.warn      { background: var(--orange); border-color: var(--orange-border); }
   .callout.note      { background: var(--blue);   border-color: var(--blue-border); }
   .callout.matched   { background: var(--yellow); border-color: var(--yellow-border); }
-  .callout strong { display: block; margin-bottom: 4px; }
+  .callout > strong:first-child { display: block; margin-bottom: 4px; }
   .toc {
     background: var(--gray);
     padding: 14px 22px;
@@ -191,7 +193,7 @@
     <tr>
       <td>Who makes the product?</td>
       <td>The manufacturer responsible for producing the item.</td>
-      <td>Manufacturer, Mfg Part Number</td>
+      <td>Manufacturer</td>
     </tr>
     <tr>
       <td>What product is included?</td>
@@ -231,6 +233,12 @@
 <div class="callout note">
   <strong>UOM aliases also count as duplicates</strong>
   Some vendors use codes like <code>CS</code> and <code>CA</code> interchangeably to mean "case" — the same physical packaging, just labeled differently on different lines. The system treats these as equivalent, so two lines with the same Mfg Part Number and the same QOE, one labeled <code>CS</code> and the other <code>CA</code>, are flagged as duplicates and need to be reconciled to a single line.
+</div>
+<div class="callout warn">
+  <strong>Same UOM should mean same QOE, across every supplier</strong>
+  Within a single vendor, the same UOM almost always comes with the same QOE: if a vendor sells an item by the <code>BX</code>, its box is always the same size. It gets harder when we source the same product from more than one supplier, because suppliers can break the packaging down differently. For example, with table tissue one supplier may list it as <code>BX</code>/1 and another as <code>BX</code>/150. Neither is necessarily wrong, but we want one standard definition across all suppliers so that comparisons are apples to apples.
+  <br><br>
+  This matters most for products on the <strong>Item Master</strong>. In Infor, the same UOM has to carry the same QOE. If two contract lines give the same UOM different QOEs, Infor cannot reconcile them to the item. Settle on one definition, such as <code>BX</code> = 150, and align every supplier's line to it.
 </div>
 
 <h3>1.3 The "one item, one contract" guidance</h3>
@@ -310,19 +318,21 @@
 <div class="legend">
   <div><span class="swatch" style="background: var(--yellow);"></span> <strong>Yellow</strong> = data already on file in CCX (the "matched" side)</div>
   <div><span class="swatch" style="background: var(--blue);"></span> <strong>Light blue</strong> = data from your uploaded input file</div>
+  <div><span class="swatch" style="background: var(--purple);"></span> <strong>Purple</strong> = a comparison the system worked out between the two sides (the <code>Different UOM/QOE</code> column)</div>
 </div>
-<p>If you only remember one thing about the colors: <em>yellow is what we already have, blue is what you're bringing in.</em></p>
+<p>If you only remember one thing about the colors: <em>yellow is what we already have, blue is what you're bringing in, purple is the system comparing the two.</em></p>
 
 <h3>2.3 The sheets in the workbook</h3>
 <p>The workbook opens with two summary-style sheets, then one sheet per matched contract.</p>
 
 <h4>Sheet: <code>quick_line_count</code> (the cover sheet)</h4>
 <p>One row per contract that produced any matches. Use this to navigate.</p>
+<p>The <strong>first row</strong> is a task-wide row that links to the <code>view_by_input</code> sheet. Its ID columns are blank. <em>Total Lines</em> is the number of lines on your input file, and <em>Matched Lines</em> is how many of them overlapped with at least one CCX line. Every row after that is one CCX contract.</p>
 <table>
   <tr><th>Column</th><th>What it means</th></tr>
-  <tr><td>Contract&nbsp;ID, ERP&nbsp;Vendor&nbsp;ID, Organization (yellow)</td><td>Identifies the existing CCX contract that overlapped with your input.</td></tr>
+  <tr><td>Contract&nbsp;ID, Contract&nbsp;Name, CCX&nbsp;Vendor&nbsp;Name, ERP&nbsp;Vendor&nbsp;ID, Organization (yellow)</td><td>Identifies the existing CCX contract that overlapped with your input.</td></tr>
   <tr><td>Total Lines</td><td>How many lines that CCX contract has in total (across all products).</td></tr>
-  <tr><td>Matched Lines</td><td>How many of those lines overlap with your input file.</td></tr>
+  <tr><td>Matched Lines</td><td>How many of those CCX lines overlap with your input file. Each CCX line (Mfg Part Number + UOM) is counted once, even if several input lines matched it, so this number is never larger than Total Lines. The per-contract sheet can still have more rows than this, because it lists every input/CCX pair.</td></tr>
   <tr><td>Contract&nbsp;ID, ERP&nbsp;Vendor&nbsp;ID, Organization (Input) (blue)</td><td>The input-side contract identifiers that produced the overlap.</td></tr>
   <tr><td>Sheet</td><td>A clickable link that jumps to the per-contract sheet for these matches.</td></tr>
 </table>
@@ -341,6 +351,7 @@
   <tr><td>Infor Item BuyUOM Options</td><td>The UOM/QOE combinations that the Infor Item Master allows for ordering this item.</td></tr>
   <tr><td>Valid BuyUOM (Y/N)</td><td>"Yes" if the input line's UOM &times; QOE matches one of the allowed Infor combinations. "No" means the item exists but the packaging on your line is not currently set up to be bought in that unit. Rows with "No" are visually flagged on this sheet so they're easy to spot.</td></tr>
   <tr><td>Input Ref</td><td>The row number from your original spreadsheet, so you can find the line again in your file.</td></tr>
+  <tr><td class="purple">Different UOM/QOE</td><td>Whether your input line and the CCX line it matched use the same packaging. See <a href="#uomqoe">2.4 The Different UOM/QOE column</a>. Blank when there is no match.</td></tr>
 </table>
 <div class="callout warn">
   <strong>"Valid BuyUOM = No" — what it means in practice</strong>
@@ -355,14 +366,16 @@
     <tr>
       <th class="yellow" colspan="2">Yellow — what's on file in CCX (the matched side)</th>
       <th class="blue" colspan="2">Light blue — what's on your input</th>
+      <th class="purple">Purple — comparison</th>
     </tr>
   </thead>
   <tbody>
     <tr>
       <td class="yellow">Mfg Part Number</td>
-      <td class="yellow">Vendor Part Number</td>
+      <td class="yellow">Vendor Part Number, Buyer Part Num</td>
       <td class="blue">Mfg Part Num (Input)</td>
       <td class="blue">Vendor Part Num (Input)</td>
+      <td class="purple" rowspan="4">Different UOM/QOE<br><span class="small">(sits right after Notes)</span></td>
     </tr>
     <tr>
       <td class="yellow">Description</td>
@@ -385,9 +398,29 @@
   </tbody>
 </table>
 
-<p>Each row pairs <strong>one CCX line with one input line</strong> that overlapped on Mfg Part Number. The two most important columns are <strong>Action</strong> and <strong>Notes</strong> — the system's recommendation for that pair.</p>
+<p>Each row pairs <strong>one CCX line with one input line</strong> that overlapped on Mfg Part Number. The two most important columns are <strong>Action</strong> and <strong>Notes</strong> — the system's recommendation for that pair. Read them together with <strong>Different UOM/QOE</strong>, which tells you whether the two lines are packaged the same way.</p>
 
-<h3>2.4 The five "groups" — what kind of overlap each row represents</h3>
+<h3 id="uomqoe">2.4 The Different UOM/QOE column (purple)</h3>
+<p>This column appears on <code>view_by_input</code> and on every per-contract sheet. It answers one question: <em>are the input line and the matched CCX line sold in the same unit and the same pack size?</em></p>
+<table>
+  <tr><th>Value</th><th>What it means</th></tr>
+  <tr><td class="purple">Same UOM/QOE</td><td>Both the UOM <strong>and</strong> the QOE agree (e.g., <code>BX</code> of 10 vs <code>BX</code> of 10). The two lines are directly comparable.</td></tr>
+  <tr><td class="purple">Different UOM/QOE</td><td>The unit, the pack size, or both differ (e.g., <code>BX</code> 5 vs <code>PK</code> 5, or <code>BX</code> 10 vs <code>EA</code> 1).</td></tr>
+  <tr><td class="purple"><em>(blank)</em></td><td>One side is missing its UOM or QOE, so the system can't tell. Blank means "unknown," not "different." Check the raw columns yourself.</td></tr>
+</table>
+<p>The comparison uses the <strong>Infor-mapped UOM</strong>, not the raw text on the line, so vendor spellings of the same unit (for example <code>CS</code> vs <code>CA</code>) count as the same.</p>
+<div class="callout warn">
+  <strong>Why it matters: price comparisons across different packaging are less certain</strong>
+  The Notes column compares prices on EA price (Contract Price &divide; QOE). That is only reliable when both lines agree on the unit. When the row says <em>Different UOM/QOE</em>, the Notes wording is automatically softened:
+  <ul style="margin-top: 4px;">
+    <li><em>"has better price"</em> becomes <em>"may have better unit price"</em></li>
+    <li><em>"have the same price"</em> becomes <em>"seem to have the same unit price"</em></li>
+  </ul>
+  When you see the softened wording, check that the QOE on each side is correct before acting on the price recommendation. A wrong QOE can make the cheaper line look like the more expensive one.
+</div>
+<p>The column also tells you which "consistent data elements" rule from 1.3 applies. <em>Same UOM/QOE</em> rows should match field for field apart from price. <em>Different UOM/QOE</em> rows are the "different packaging" case, where only Manufacturer and Mfg Part Number have to agree.</p>
+
+<h3>2.5 The five "groups" — what kind of overlap each row represents</h3>
 <p>Every match row is classified into one of five groups. The group is reflected in the wording of the Action column. You don't see the group code itself — but understanding the five groups makes the Action column self-explanatory:</p>
 
 <table>
@@ -439,7 +472,7 @@
   Letting both stand without review is how you end up with conflicting duplicate lines on the same contract.
 </div>
 
-<h3>2.5 Reading the Action column</h3>
+<h3>2.6 Reading the Action column</h3>
 <p>The Action column is the system's one-line recommendation. The exact wording depends on whether your input line is doing an UPDATE/NEW or an EXPIRE.</p>
 
 <table>
@@ -474,13 +507,14 @@
   <strong>"Review" means a human decision is required.</strong> The system has flagged a real overlap and is telling you it doesn't have enough business context to pick a side. Use the Notes column for guidance.
 </div>
 
-<h3>2.6 Reading the Notes column</h3>
+<h3>2.7 Reading the Notes column</h3>
 <p>Notes is empty for SS, DV, and any EXPIRE row — those cases are unambiguous. Notes is populated for <strong>ODO, TCCD, and CECCD</strong> on UPDATE/NEW rows. The wording captures the two business levers that drive the decision:</p>
 
 <ul>
   <li><strong>Price comparison</strong> — is the existing CCX line cheaper, the new input line cheaper, or are they equal? Comparison is on EA price (Contract Price &divide; QOE), so packaging differences are normalized out.</li>
   <li><strong>Premier protection</strong> — if one side is on a Premier contract, we are obliged to keep that side. Premier lines cannot be dropped just because a local contract has a better price.</li>
 </ul>
+<p>If the row is marked <em>Different UOM/QOE</em>, the price phrases in the note are softened (e.g., "may have better unit price"). See <a href="#uomqoe">2.4</a>.</p>
 
 <h4>ODO — same contract, different organization</h4>
 <p>Two cases, price doesn't enter:</p>
@@ -517,7 +551,7 @@
   When the note says <em>"verify the price difference is real"</em>: confirm with the vendor or the contract documents that the gap is intentional, not a data-entry error.
 </div>
 
-<h3>2.7 The "to-be-replaced" special case</h3>
+<h3>2.8 The "to-be-replaced" special case</h3>
 <p>If your input file is replacing an existing CCX contract (rather than just updating it), the per-contract sheet for that CCX contract will <strong>also include rows for items on the old contract that did NOT match anything on your input</strong>. These rows carry:</p>
 <ul>
   <li>Action: <em>"Only seen on to-be-replaced contract &lt;ContractID&gt;"</em></li>
@@ -525,14 +559,16 @@
 </ul>
 <p>This tells you what you would <strong>lose</strong> if the replacement went through as-is. For each such row, decide whether the item is genuinely going away (discontinued / no longer ordered) or whether it needs to be added to the new contract before you load it.</p>
 
-<h3>2.8 A worked example</h3>
+<h3>2.9 A worked example</h3>
 <p>Suppose your input file has 3M part number <code>1860</code> at $42.00/box of 50, on contract <code>NEW-2026-001</code>, organization MHS. CCX already has <code>1860</code> at $45.00/box of 50, on contract <code>OLD-2024-099</code>, also organization MHS, also vendor 3M. Both contracts are local.</p>
 <ul>
   <li><strong>Group:</strong> TCCD (same org, same vendor, different Contract&nbsp;ID).</li>
   <li><strong>Action:</strong> <em>Consider only keep one record, review.</em></li>
   <li><strong>Notes:</strong> <em>Input contract has better price, both are local contract, review and keep the input record and drop the matched line.</em></li>
+  <li><strong>Different UOM/QOE:</strong> <em>Same UOM/QOE</em> (both <code>BX</code> of 50).</li>
   <li><strong>What you do:</strong> Confirm <code>OLD-2024-099</code> can be expired for this item, and let the input load. The two lines have identical Mfg Part / UOM / QOE, so packaging is not an issue — only price.</li>
 </ul>
+<p>A packaging variation: if the CCX line instead sold <code>1860</code> by <code>CS</code> of 500 at $430.00, the column would read <em>Different UOM/QOE</em> and the note would say the input contract <em>"may have better unit price"</em>. Before expiring anything, confirm both QOEs are right ($42 &divide; 50 = $0.84 EA vs $430 &divide; 500 = $0.86 EA). Different packaging is also allowed to coexist, so you may decide to keep both.</p>
 <p>Now flip it: same scenario, but the existing CCX line is on a Premier contract. The action is the same, but the note now says: <em>"input contract has better price, but matched contract is premier while input contract is local, go back to Premier to make a custom tier on matched contract OLD-2024-099 reflecting the desirable lower price of the input contract."</em> Per the May 2026 policy guidance, the Premier side cannot be dropped &mdash; instead, work with Premier to add a custom tier on <code>OLD-2024-099</code> at the input's lower price, then let the cheaper line load against that updated tier.</p>
 
 <!-- =============== PART 3 =============== -->
@@ -645,7 +681,16 @@
 <div class="legend">
   <div><span class="swatch" style="background: var(--yellow);"></span> Yellow = matched (already in CCX)</div>
   <div><span class="swatch" style="background: var(--blue);"></span> Light blue = input (your upload)</div>
+  <div><span class="swatch" style="background: var(--purple);"></span> Purple = system comparison (Different UOM/QOE)</div>
 </div>
+
+<h3>Different UOM/QOE at a glance</h3>
+<table>
+  <tr><th>Value</th><th>Meaning</th><th>What to do</th></tr>
+  <tr><td>Same UOM/QOE</td><td>Same unit and pack size (Infor-mapped UOM)</td><td>The price comparison in Notes is direct. Identifiers should match too.</td></tr>
+  <tr><td>Different UOM/QOE</td><td>Unit, pack size, or both differ</td><td>Notes price wording is softened. Verify both QOEs before acting on price.</td></tr>
+  <tr><td><em>(blank)</em></td><td>A side is missing UOM or QOE</td><td>Unknown, not different. Check the raw columns.</td></tr>
+</table>
 
 <h3>The five overlap groups</h3>
 <table>

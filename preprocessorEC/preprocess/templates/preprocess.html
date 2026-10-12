@@ -241,8 +241,13 @@
           <span class="step-label">4-Source Item# Labeling</span>
           <span class="step-status ms-2 text-muted"></span>
         </div>
-        <div class="step-row mb-1" data-step="buy-uom-check">
+        <div class="step-row mb-1" data-step="llm-review-mfg-only">
           <span class="badge bg-secondary me-2 step-badge">8</span>
+          <span class="step-label">LLM Description Check (MPN-only Item#)</span>
+          <span class="step-status ms-2 text-muted"></span>
+        </div>
+        <div class="step-row mb-1" data-step="buy-uom-check">
+          <span class="badge bg-secondary me-2 step-badge">9</span>
           <span class="step-label">Buy UOM Checking</span>
           <span class="step-status ms-2 text-muted"></span>
         </div>
@@ -429,10 +434,16 @@
       <span id="itemMatchCount" class="small text-muted">0 rows</span>
     </div>
     <div class="card-body p-0">
+      <div class="d-flex justify-content-between align-items-center px-3 py-2 border-bottom bg-light">
+        <span id="mfgOnlySummary" class="small text-muted"></span>
+        <button class="btn btn-sm btn-outline-primary" id="btnMfgOnlyLlm" disabled
+                title="No MPN-only matches awaiting the LLM">Send PENDING to LLM</button>
+      </div>
       <div class="table-responsive" style="max-height:420px; overflow-y:auto">
         <table class="table table-sm table-hover mb-0">
           <thead class="table-light" style="position:sticky;top:0;z-index:1">
             <tr>
+              <th title="How the Item# was found. MPN only: manufacturer part number alone, manufacturer not confirmed — accept or reject it">Basis</th>
               <th>Input ID</th>
               <th>Input UOM</th>
               <th>Input UOM (Infor)</th>
@@ -442,10 +453,13 @@
               <th>Item Desc.</th>
               <th>Valid Buy UOMs</th>
               <th>Input Buy UOM</th>
+              <th title="LLM description check on MPN-only matches: same product, or different">LLM Verdict</th>
+              <th title="Only accepted MPN-only matches label the input row">Decision</th>
+              <th></th>
             </tr>
           </thead>
           <tbody id="itemMatchBody">
-            <tr><td colspan="10" class="text-center text-muted">No item matching results yet</td></tr>
+            <tr><td colspan="13" class="text-center text-muted">No item matching results yet</td></tr>
           </tbody>
         </table>
       </div>
@@ -467,6 +481,9 @@ const MATCH_PAGE_SIZE = 1000;
 let matchResultsData = [];
 let matchCurrentPage = 1;
 let selectedMatchIds = new Set();
+// Item Matching Results rows found by manufacturer part number alone that are
+// still PENDING. Like PENDING contract-line matches, they block finalize.
+let mfgOnlyPendingCount = 0;
 
 // ---- Step-by-step pipeline -----------
 const STEPS = [
@@ -485,6 +502,9 @@ const STEPS = [
   { key: "llm-review-infor",endpoint: `${PREFIX}/api/preprocess/${TASK_ID}/llm-review?source=INFOR`,
     body: () => ({ prompt_version: selectedPromptVersion(), review_mode: selectedReviewMode() }) },
   { key: "item-labeling",   endpoint: `${PREFIX}/api/preprocess/${TASK_ID}/item-labeling` },
+  // Decides the Item#s labeling found by manufacturer part number alone; must
+  // run before Buy UOM so accepted ones get their buy-UOM check.
+  { key: "llm-review-mfg-only", endpoint: `${PREFIX}/api/preprocess/${TASK_ID}/llm-review-mfg-only` },
   { key: "buy-uom-check",   endpoint: `${PREFIX}/api/preprocess/${TASK_ID}/buy-uom` },
 ];
 
@@ -589,7 +609,11 @@ function summariseResult(key, data) {
     case "infor-residue":
       return `${data.residue_matches || 0} residue matches`;
     case "item-labeling":
-      return `${data.labeled || 0} items labeled`;
+      return `${data.labeled || 0} items labeled`
+        + (data.mfg_only_candidates ? `, ${data.mfg_only_candidates} MPN-only candidate(s) to check` : "");
+    case "llm-review-mfg-only":
+      return `${data.same || 0} same, ${data.different || 0} different`
+        + (data.undecided ? `, ${data.undecided} left PENDING (no verdict)` : "");
     case "buy-uom-check":
       return `${data.checked || 0} items checked`;
     default: return "Done";
@@ -959,6 +983,9 @@ function updateFinalizeGate() {
   if (pendingTotal > 0) {
     btn.disabled = true;
     btn.title = `${pendingTotal} match(es) still PENDING — accept or reject every match before advancing.`;
+  } else if (mfgOnlyPendingCount > 0) {
+    btn.disabled = true;
+    btn.title = `${mfgOnlyPendingCount} MPN-only item match(es) still PENDING in Item Matching Results — accept or reject each before advancing.`;
   } else {
     btn.disabled = false;
     btn.title = "";
@@ -1180,20 +1207,28 @@ function refreshItemMatchesIfRelabeled(payload) {
   }
 }
 
-async function loadItemMatches() {
-  document.getElementById("itemMatchCard").style.display = "";
+async function loadItemMatches({ showWhenEmpty = true } = {}) {
   const resp = await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/item-matches`);
   const rows = await resp.json();
+  if (!rows.length && !showWhenEmpty) return;
+  document.getElementById("itemMatchCard").style.display = "";
   document.getElementById("itemMatchCount").textContent = `${rows.length} rows`;
+
+  const mfgOnly = rows.filter(r => r.mfg_only);
+  mfgOnlyPendingCount = mfgOnly.filter(r => r.match_status === "PENDING").length;
+  updateMfgOnlyToolbar(mfgOnly);
+  updateFinalizeGate();
 
   const tbody = document.getElementById("itemMatchBody");
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted">No item matching results yet</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="13" class="text-center text-muted">No item matching results yet</td></tr>';
     return;
   }
 
+  // The server sends Source 4 rows first.
   tbody.innerHTML = rows.map(r => `
-    <tr>
+    <tr class="${itemMatchRowClass(r)}">
+      <td>${itemMatchBasisBadge(r)}</td>
       <td>${esc(r.input_item_id ?? '-')}</td>
       <td>${esc(r.input_uom || '-')}</td>
       <td>${esc(r.input_uom_to_match_infor || '-')}</td>
@@ -1203,9 +1238,116 @@ async function loadItemMatches() {
       <td class="text-truncate" style="max-width:240px" title="${esc(r.item_description)}">${esc(r.item_description || '-')}</td>
       <td class="text-truncate" style="max-width:260px" title="${esc(r.infor_buy_uom_options)}">${esc(r.infor_buy_uom_options || '-')}</td>
       <td title="${esc(r.expected_buy_uom_option || '')}">${buyUomBadge(r.buy_uom_match)}</td>
+      <td>${r.mfg_only ? llmVerdictBadge(r) : '-'}</td>
+      <td>${r.mfg_only ? mfgOnlyDecisionBadge(r) : '-'}</td>
+      <td class="text-nowrap">${r.mfg_only ? mfgOnlyActions(r) : ''}</td>
     </tr>
   `).join("");
 }
+
+function itemMatchRowClass(r) {
+  if (!r.mfg_only) return "";
+  // A rejected candidate is not linked to the input row; keep it visible but quiet.
+  return r.match_status === "REJECTED" ? "table-warning text-muted" : "table-warning";
+}
+
+function itemMatchBasisBadge(r) {
+  if (!r.mfg_only) return '-';
+  const title = `Matched on manufacturer part number ${r.input_mfg_catalog_num || ''} alone — `
+    + `the manufacturer was not confirmed. Only an accepted match labels the input row.`;
+  return `<span class="badge bg-warning text-dark" title="${esc(title)}">MPN only</span>`;
+}
+
+function llmVerdictBadge(r) {
+  const reason = r.llm_reason || '';
+  if (r.llm_verdict === "SAME") return `<span class="badge bg-success" title="${esc(reason)}">Same</span>`;
+  if (r.llm_verdict === "DIFFERENT") return `<span class="badge bg-danger" title="${esc(reason)}">Different</span>`;
+  // No verdict yet: never sent, or the call failed (the reason says why).
+  return reason
+    ? `<span class="badge bg-secondary" title="${esc(reason)}">No verdict</span>`
+    : '-';
+}
+
+function mfgOnlyDecisionBadge(r) {
+  const by = r.reviewed_by ? `Decided by ${r.reviewed_by}` : "Not decided yet";
+  const label = r.match_status === "ACCEPTED" ? "Accepted"
+    : r.match_status === "REJECTED" ? "Rejected" : "Pending";
+  return `<span class="badge bg-${statusColor(r.match_status)}" title="${esc(by)}">${label}</span>`;
+}
+
+function mfgOnlyActions(r) {
+  const buttons = [];
+  if (r.match_status !== "ACCEPTED") {
+    buttons.push(`<button class="btn btn-sm btn-outline-success py-0 px-1 me-1 mfg-only-decision" data-id="${r.match_item_id}" data-decision="ACCEPTED" title="Same product — link this Item# to the input row">Accept</button>`);
+  }
+  if (r.match_status !== "REJECTED") {
+    buttons.push(`<button class="btn btn-sm btn-outline-danger py-0 px-1 mfg-only-decision" data-id="${r.match_item_id}" data-decision="REJECTED" title="Not the same product — do not link this Item# to the input row">Reject</button>`);
+  }
+  return buttons.join("");
+}
+
+function updateMfgOnlyToolbar(mfgOnlyRows) {
+  const summary = document.getElementById("mfgOnlySummary");
+  const btn = document.getElementById("btnMfgOnlyLlm");
+  if (!mfgOnlyRows.length) {
+    summary.textContent = "";
+  } else {
+    const accepted = mfgOnlyRows.filter(r => r.match_status === "ACCEPTED").length;
+    const rejected = mfgOnlyRows.filter(r => r.match_status === "REJECTED").length;
+    summary.textContent = `${mfgOnlyRows.length} MPN-only match(es) at the top: `
+      + `${accepted} accepted, ${rejected} rejected, ${mfgOnlyPendingCount} pending`;
+  }
+  if (btn.dataset.busy === "1") return;
+  const awaiting = mfgOnlyRows.filter(r => r.awaiting_llm).length;
+  btn.disabled = awaiting === 0;
+  btn.textContent = awaiting ? `Send ${awaiting} PENDING to LLM` : "Send PENDING to LLM";
+  btn.title = awaiting
+    ? `Ask the LLM to compare descriptions for ${awaiting} pending MPN-only match(es)`
+    : "No MPN-only matches awaiting the LLM";
+}
+
+document.getElementById("itemMatchBody").addEventListener("click", async (event) => {
+  const btn = event.target.closest(".mfg-only-decision");
+  if (!btn) return;
+  btn.disabled = true;
+  try {
+    const resp = await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/item-matches/${btn.dataset.id}/decision`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ decision: btn.dataset.decision }),
+    });
+    if (!resp.ok) {
+      const data = await readResponsePayload(resp);
+      alert(`Could not save the decision. ${data.error || `HTTP ${resp.status}`}`);
+    }
+  } catch (err) {
+    alert(`Could not save the decision: ${err}`);
+  }
+  await loadItemMatches();
+});
+
+document.getElementById("btnMfgOnlyLlm").addEventListener("click", async () => {
+  const btn = document.getElementById("btnMfgOnlyLlm");
+  if (btn.disabled) return;
+  btn.dataset.busy = "1";
+  btn.disabled = true;
+  btn.textContent = "Checking…";
+  try {
+    const resp = await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/llm-review-mfg-only`, { method: "POST" });
+    const data = await readResponsePayload(resp);
+    if (!resp.ok) {
+      alert(`LLM description check failed. ${data.error || `HTTP ${resp.status}`}`);
+    } else if (data.undecided) {
+      alert(`${data.same || 0} same, ${data.different || 0} different; `
+        + `${data.undecided} got no verdict and stay PENDING (hover "No verdict" for why).`);
+    }
+  } catch (err) {
+    alert(`LLM description check failed: ${err}`);
+  } finally {
+    btn.dataset.busy = "0";
+    await loadItemMatches();
+  }
+});
 
 function clearMatchFilters() {
   document.getElementById("filterBucket").value = "";
@@ -1412,7 +1554,14 @@ document.getElementById("btnLlmPending").addEventListener("click", async () => {
 // ---- Finalize ------------------------
 document.getElementById("btnFinalize").addEventListener("click", async () => {
   const resp = await fetch(`${PREFIX}/api/preprocess/${TASK_ID}/finalize`, { method: "POST" });
-  if (resp.ok) location.href = `${PREFIX}/tasks/${TASK_ID}`;
+  if (resp.ok) {
+    location.href = `${PREFIX}/tasks/${TASK_ID}`;
+    return;
+  }
+  // Finalize relabels items first, which can surface new MPN-only matches.
+  const data = await readResponsePayload(resp);
+  alert(data.error || `Finalize failed (HTTP ${resp.status}).`);
+  loadItemMatches();
 });
 
 /**
@@ -1454,6 +1603,10 @@ async function checkDataFreshness() {
     loadMatches();
     loadItemMatches();
     document.getElementById("btnRun").textContent = "Rerun Full Preprocess";
+  } else {
+    // No contract-line matches, but labeling may still have found Item#s —
+    // including MPN-only ones that need a decision.
+    loadItemMatches({ showWhenEmpty: false });
   }
 })();
 </script>

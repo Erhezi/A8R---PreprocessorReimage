@@ -621,11 +621,28 @@ class ItemMatchCandidate(Base):
     item_description = Column(Text, nullable=True)
     infor_buy_uom_options = Column(String(500), nullable=True)
     active_gtin = Column(String(10), nullable=True)
+
+    # Source 4 (manufacturer part number alone) proposes rather than links: each
+    # candidate carries a decision, and only ACCEPTED ones label the input item.
+    # Rows from Sources 1-3 leave mfg_only False and match_status NULL, and are
+    # always linked.
+    mfg_only = Column(Boolean, nullable=False, default=False)
+    match_status = Column(String(20), nullable=True)  # PENDING | ACCEPTED | REJECTED (Source 4 only)
+    llm_verdict = Column(String(10), nullable=True)   # SAME | DIFFERENT — description comparison
+    llm_reason = Column(String(1000), nullable=True)
+    reviewed_by = Column(String(120), nullable=True)  # "LLM" or the reviewer's username
+    reviewed_at = Column(DateTime, nullable=True)
+
     created_at = Column(DateTime, default=ny_now)
     updated_at = Column(DateTime, default=ny_now, onupdate=ny_now)
 
     task = relationship("Task", back_populates="item_match_candidates")
     item = relationship("TaskItem", back_populates="item_match_candidates")
+
+    @property
+    def is_linked(self) -> bool:
+        """True when this candidate labels its input item."""
+        return not self.mfg_only or self.match_status == "ACCEPTED"
 
     def to_dict(self) -> dict:
         return {
@@ -636,6 +653,12 @@ class ItemMatchCandidate(Base):
             "item_description": self.item_description,
             "infor_buy_uom_options": self.infor_buy_uom_options,
             "active_gtin": self.active_gtin,
+            "mfg_only": bool(self.mfg_only),
+            "match_status": self.match_status,
+            "llm_verdict": self.llm_verdict,
+            "llm_reason": self.llm_reason,
+            "reviewed_by": self.reviewed_by,
+            "reviewed_at": self.reviewed_at.isoformat() if self.reviewed_at else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

@@ -22,8 +22,8 @@ class RefreshStaleItemLabelsTest(unittest.TestCase):
     def _run(self, items, accepted, items_by_pkid):
         repo = MagicMock()
         repo.get_item_matches.return_value = [
-            SimpleNamespace(item_id=2, match_item_id=10, infor_item_number="112204"),
-            SimpleNamespace(item_id=1, match_item_id=11, infor_item_number="102713"),
+            SimpleNamespace(item_id=2, match_item_id=10, infor_item_number="112204", mfg_only=False),
+            SimpleNamespace(item_id=1, match_item_id=11, infor_item_number="102713", mfg_only=False),
         ]
         label_items = MagicMock(return_value=([{"item_id": 2}], [], [{"item_id": 2}]))
         check_buy_uom = MagicMock(return_value=([{"item_id": 2}], [], [], 0))

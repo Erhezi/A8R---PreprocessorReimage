@@ -643,3 +643,38 @@ IF COL_LENGTH('Preprocessor.PreprocessorTaskItem', 'infor_item_4_active') IS NUL
 ALTER TABLE [Preprocessor].[PreprocessorTaskItem]
     ADD [infor_item_4_active] varchar(5) COLLATE SQL_Latin1_General_CP1_CI_AS NULL;
 GO
+
+-- ------------------------------------------------------------
+-- Added 2026-10-06 (migration 043), not part of the PRIME snapshot:
+-- review decision on Source 4 rows of ItemMatching.
+-- ------------------------------------------------------------
+
+IF COL_LENGTH('Preprocessor.PreprocessorItemMatching', 'mfg_only') IS NULL
+ALTER TABLE [Preprocessor].[PreprocessorItemMatching]
+    ADD [mfg_only] bit NOT NULL CONSTRAINT [DF_PreprocessorItemMatching_mfg_only] DEFAULT ((0));
+GO
+
+IF COL_LENGTH('Preprocessor.PreprocessorItemMatching', 'match_status') IS NULL
+ALTER TABLE [Preprocessor].[PreprocessorItemMatching]
+    ADD [match_status] varchar(20) COLLATE SQL_Latin1_General_CP1_CI_AS NULL;
+GO
+
+IF COL_LENGTH('Preprocessor.PreprocessorItemMatching', 'llm_verdict') IS NULL
+ALTER TABLE [Preprocessor].[PreprocessorItemMatching]
+    ADD [llm_verdict] varchar(10) COLLATE SQL_Latin1_General_CP1_CI_AS NULL;
+GO
+
+IF COL_LENGTH('Preprocessor.PreprocessorItemMatching', 'llm_reason') IS NULL
+ALTER TABLE [Preprocessor].[PreprocessorItemMatching]
+    ADD [llm_reason] varchar(1000) COLLATE SQL_Latin1_General_CP1_CI_AS NULL;
+GO
+
+IF COL_LENGTH('Preprocessor.PreprocessorItemMatching', 'reviewed_by') IS NULL
+ALTER TABLE [Preprocessor].[PreprocessorItemMatching]
+    ADD [reviewed_by] varchar(120) COLLATE SQL_Latin1_General_CP1_CI_AS NULL;
+GO
+
+IF COL_LENGTH('Preprocessor.PreprocessorItemMatching', 'reviewed_at') IS NULL
+ALTER TABLE [Preprocessor].[PreprocessorItemMatching]
+    ADD [reviewed_at] datetime NULL;
+GO

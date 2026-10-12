@@ -788,6 +788,33 @@ def get_item_matches(task_id: str) -> list[ItemMatchCandidate]:
         return matches
 
 
+def get_item_match(match_item_id: int) -> Optional[ItemMatchCandidate]:
+    with _session() as s:
+        match = s.get(ItemMatchCandidate, match_item_id)
+        if match is not None:
+            s.expunge(match)
+        return match
+
+
+def count_pending_mfg_only_item_matches(task_id: str) -> int:
+    """Count Source 4 item matches nobody has accepted or rejected yet.
+
+    These gate finalize the same way PENDING contract-line matches do.
+    """
+    with _session() as s:
+        count = (
+            s.query(func.count(ItemMatchCandidate.match_item_id))
+            .filter(
+                ItemMatchCandidate.task_id == task_id,
+                # BIT column: T-SQL allows IS only with NULL, so not .is_(True).
+                ItemMatchCandidate.mfg_only == True,  # noqa: E712
+                ItemMatchCandidate.match_status == "PENDING",
+            )
+            .scalar()
+        )
+        return int(count or 0)
+
+
 # ---------------------------------------------------------------------------
 # PreCheckError CRUD
 # ---------------------------------------------------------------------------

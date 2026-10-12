@@ -344,3 +344,55 @@ def review_match_batch(
     """
     prompt = prompt or resolve_prompt()
     return [review_match_pair(input_item, match_item, prompt) for input_item, match_item in pairs]
+
+
+# ---------------------------------------------------------------------------
+# Source 4 description check
+# ---------------------------------------------------------------------------
+VERDICTS = ("SAME", "DIFFERENT")
+
+
+def _no_verdict(reason: str) -> dict:
+    """No same/different answer — the Source 4 row stays PENDING for a reviewer."""
+    return {"verdict": None, "reason": reason}
+
+
+def _parse_verdict(content: str) -> dict:
+    try:
+        data = json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        return _no_verdict("LLM response parse error")
+    if not isinstance(data, dict):
+        return _no_verdict("LLM response was not a JSON object")
+    verdict = str(data.get("verdict", "")).strip().upper()
+    if verdict not in VERDICTS:
+        return _no_verdict(f"LLM gave no same/different verdict ({data.get('verdict')!r})")
+    return {"verdict": verdict, "reason": str(data.get("reason", "") or "")}
+
+
+def review_description_pair(
+    input_desc: str | None,
+    item_desc: str | None,
+    prompt: ReviewPrompt | None = None,
+) -> dict:
+    """Do two descriptions name the same product? For Source 4 item matches.
+
+    Source 4 pairs an input row with an Item Master item on manufacturer part
+    number alone, so only the descriptions can say whether the pairing is real.
+    Returns ``{"verdict": "SAME" | "DIFFERENT" | None, "reason": str}``; ``None``
+    means no usable answer (blank description, API failure, malformed reply) and
+    leaves the decision with a reviewer.
+    """
+    if not str(input_desc or "").strip() or not str(item_desc or "").strip():
+        return _no_verdict("A description is blank on one side; nothing to compare.")
+    prompt = prompt or llm_review_prompts.latest(llm_review_prompts.MFG_ONLY_DESC_REVIEW)
+    messages = [
+        {"role": "system", "content": prompt.render_system("PAIR")},
+        {"role": "user", "content": prompt.render_user(
+            "PAIR", input_desc=str(input_desc).strip(), match_desc=str(item_desc).strip(),
+        )},
+    ]
+    content, error = _chat(messages, current_app.config.get("LLM_MAX_TOKENS", 1024))
+    if error is not None:
+        return _no_verdict(error)
+    return _parse_verdict(content)

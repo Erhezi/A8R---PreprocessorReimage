@@ -5,6 +5,7 @@ Usage:
   Production:   python run.py production
 """
 
+import os
 import sys
 from preprocessorEC import create_app
 
@@ -19,4 +20,5 @@ if __name__ == "__main__":
         print(f"Starting Waitress on port {port}...")
         serve(app, host="0.0.0.0", port=port)
     else:
-        app.run(debug=True, port=5000)
+        # 5000 is taken by another local app; override with PORT if needed.
+        app.run(debug=True, port=int(os.environ.get("PORT", 5001)))

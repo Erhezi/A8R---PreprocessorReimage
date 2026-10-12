@@ -34,6 +34,11 @@ _JINJA = SandboxedEnvironment(trim_blocks=True, lstrip_blocks=True, autoescape=F
 #: Prompt family used by the preprocess MED/LOW match review step.
 PREPROCESS_REVIEW = "preprocess_review"
 
+#: Prompt family that compares the two descriptions of a Source 4 item match
+#: (manufacturer part number alone). Not user-selectable: the latest active
+#: version always runs, and it never appears in the review-prompt picker.
+MFG_ONLY_DESC_REVIEW = "mfg_only_desc_review"
+
 #: Applied when a task has recorded no prompt version.
 DEFAULT_PROMPT_NAME = "preprocess_review_v2"
 
@@ -246,6 +251,14 @@ def available(key: str = PREPROCESS_REVIEW) -> list[ReviewPrompt]:
         (p for p in _catalog().values() if p.key == key and p.status == "active"),
         key=lambda p: p.version,
     )
+
+
+def latest(key: str) -> ReviewPrompt:
+    """Highest active version in a family, for families with no picker."""
+    prompts = available(key)
+    if not prompts:
+        raise KeyError(f"no active prompt for {key!r}")
+    return prompts[-1]
 
 
 def names(key: str = PREPROCESS_REVIEW) -> list[str]:

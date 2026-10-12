@@ -363,7 +363,10 @@ def api_infor_residue(task_id: str):
 @preprocess_bp.route("/api/preprocess/<task_id>/item-labeling", methods=["POST"])
 @login_required
 def api_item_labeling(task_id: str):
-    """Run 4-source Item# labeling step."""
+    """Run 4-source Item# labeling step.
+
+    Source 4 candidates come out PENDING; ``llm-review-mfg-only`` decides them.
+    """
     result = preprocess_service.run_item_labeling(task_id, _sm())
     return jsonify(result)
 
@@ -685,11 +688,17 @@ def api_get_matches(task_id: str):
 @preprocess_bp.route("/api/preprocess/<task_id>/item-matches", methods=["GET"])
 @login_required
 def api_get_item_matches(task_id: str):
-    """Return exploded item matching results enriched with input item fields."""
+    """Return exploded item matching results enriched with input item fields.
+
+    Source 4 rows (matched on manufacturer part number alone) come first: they
+    are the ones carrying an accept/reject decision for the reviewer.
+    """
     input_items = task_repo.get_items_by_source(task_id, "INPUT")
     item_by_id = {it.item_id: it for it in input_items}
     rows = []
-    for match in task_repo.get_item_matches(task_id):
+    # Stable sort keeps the repo's item_id / Item# order within each group.
+    matches = sorted(task_repo.get_item_matches(task_id), key=lambda m: not m.mfg_only)
+    for match in matches:
         input_item = item_by_id.get(match.item_id)
         expected_buy_uom_option = None
         buy_uom_match = None
@@ -712,13 +721,49 @@ def api_get_item_matches(task_id: str):
                 "expected_buy_uom_option": expected_buy_uom_option,
                 "buy_uom_match": buy_uom_match,
                 "input_description": input_item.description if input_item else None,
+                "input_mfg_catalog_num": input_item.mfg_catalog_num if input_item else None,
                 "infor_item_number": match.infor_item_number,
                 "item_description": match.item_description,
                 "infor_buy_uom_options": match.infor_buy_uom_options,
                 "active_gtin": match.active_gtin,
+                "mfg_only": bool(match.mfg_only),
+                "match_status": match.match_status,
+                "llm_verdict": match.llm_verdict,
+                "llm_reason": match.llm_reason,
+                "reviewed_by": match.reviewed_by,
+                "awaiting_llm": preprocess_service.awaiting_mfg_only_llm_review(match),
             }
         )
     return jsonify(rows)
+
+
+@preprocess_bp.route("/api/preprocess/<task_id>/llm-review-mfg-only", methods=["POST"])
+@login_required
+def api_llm_review_mfg_only(task_id: str):
+    """LLM description check on every PENDING Source 4 item match.
+
+    Pipeline step after Item# labeling, and the "Send PENDING to LLM" button
+    on the Item Matching Results table.
+    """
+    return jsonify(preprocess_service.run_mfg_only_llm_review(task_id))
+
+
+@preprocess_bp.route("/api/preprocess/<task_id>/item-matches/<int:match_item_id>/decision", methods=["POST"])
+@login_required
+def api_mfg_only_decision(task_id: str, match_item_id: int):
+    """Accept or reject one Source 4 item match.
+
+    Body: {"decision": "ACCEPTED" | "REJECTED"}
+    """
+    data = request.get_json(force=True) or {}
+    user = current_user.username if current_user.is_authenticated else "system"
+    try:
+        result = preprocess_service.submit_mfg_only_decision(
+            task_id, match_item_id, data.get("decision"), user,
+        )
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(result)
 
 
 def _apply_match_decision(task_id: str, match_ids, match_status: str):
