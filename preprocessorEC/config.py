@@ -58,6 +58,9 @@ class Config:
     SESSION_USE_SIGNER = True
     PERMANENT_SESSION_LIFETIME = timedelta(hours=24)
     SESSION_REFRESH_EACH_REQUEST = False
+    # Own cookie name: cookies ignore the port, so on localhost the default "session"
+    # is shared with PLM (:5000) and each login would log out the other.
+    SESSION_COOKIE_NAME = "prep_session"
 
     # ── Sentence Transformer ────────────────────────────────────────
     MODEL_NAME = "all-MiniLM-L6-v2"
